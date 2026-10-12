@@ -14,6 +14,7 @@ from unisim import (
     tensor_device_matches,
 )
 from unisim import support as support_module
+from unisim.backend.base import SelectedResetPublication
 from unisim.support import FEATURES, get_adapter_capabilities, get_tensor_platform_profiles
 
 
@@ -139,6 +140,58 @@ def test_tensor_feature_dependencies_fail_closed() -> None:
     for matrix, message in zip(invalid_matrices, messages, strict=True):
         with pytest.raises(ValueError, match=message):
             TensorLifecycleCapabilities(**matrix)
+
+
+def test_mask_selected_reset_accepts_in_process_host_bridge() -> None:
+    capabilities = TensorLifecycleCapabilities(
+        execution=TensorExecution.HOST_BRIDGE,
+        state_views=True,
+        state_fields=frozenset({"qpos", "qvel"}),
+        sensor_views=True,
+        stepping=True,
+        selected_reset=True,
+        process_topology=TensorProcessTopology.IN_PROCESS,
+        data_plane=TensorDataPlane.HOST_BRIDGE,
+        stream_event_ownership="caller owns the packed boundary",
+        torch_devices=("cpu", "cuda"),
+        selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+        mask_selected_reset=True,
+        mask_selected_reset_full_refresh=True,
+    )
+
+    assert capabilities.mask_selected_reset
+    assert capabilities.mask_selected_reset_full_refresh
+
+
+def test_mask_selected_reset_rejects_external_host_bridge() -> None:
+    base = {
+        "execution": TensorExecution.HOST_BRIDGE,
+        "state_views": True,
+        "state_fields": frozenset({"qpos", "qvel"}),
+        "selected_reset": True,
+        "stream_event_ownership": "caller owns the packed boundary",
+        "torch_devices": ("cpu", "cuda"),
+        "mask_selected_reset": True,
+    }
+    external = base | {
+        "process_topology": TensorProcessTopology.EXTERNAL_WORKER,
+        "data_plane": TensorDataPlane.HOST_SHARED_MEMORY,
+    }
+
+    with pytest.raises(ValueError, match="mask-selected reset requires"):
+        TensorLifecycleCapabilities(**external)
+    with pytest.raises(ValueError, match="mask-selected full refresh requires"):
+        TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            state_fields=frozenset({"qpos", "qvel"}),
+            selected_reset=True,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="caller owns the packed boundary",
+            torch_devices=("cpu",),
+            selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+            mask_selected_reset_full_refresh=True,
+        )
 
 
 @pytest.mark.parametrize(

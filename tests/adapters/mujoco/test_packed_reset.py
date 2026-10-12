@@ -7,7 +7,7 @@ pytest.importorskip("mujoco")
 torch = pytest.importorskip("torch")
 
 from unisim import MuJoCoBackend  # noqa: E402
-from unisim.dr.types import RESET_TERM_KP  # noqa: E402
+from unisim.dr.types import RESET_TERM_KP, ResetRandomizationPayload  # noqa: E402
 from unisim.entities import ModelSourceDescriptor, SceneEntitySpec  # noqa: E402
 from unisim.scene import SceneCfg  # noqa: E402
 
@@ -122,6 +122,152 @@ def test_mujoco_packed_reset_selected_state_and_persistent_channels(tmp_path: Pa
     torch.testing.assert_close(after["qpos"][0], before["qpos"][0])
     np.testing.assert_allclose(backend._ctrl_view[2], 0.0)
     np.testing.assert_allclose(backend._time_view[2], 0.0)
+
+
+def test_mujoco_mask_tensor_reset_preserves_false_rows(tmp_path: Path) -> None:
+    backend = _backend(tmp_path, num_envs=4)
+    capabilities = backend.get_tensor_capabilities()
+    assert capabilities.mask_selected_reset
+    assert capabilities.mask_selected_reset_full_refresh
+
+    backend._host_step(np.full((4, 2), 0.5), nsteps=2)
+    before = backend.get_state_views(("qpos", "qvel"), device="cpu")
+    old_time = backend._time_view.copy()
+    mask = torch.tensor([False, True, False, True], dtype=torch.bool)
+    qpos = before["qpos"].clone()
+    qvel = before["qvel"].clone()
+    qpos[mask] += 0.125
+    qvel[mask] += 0.25
+
+    result = backend.set_state_tensor_mask(mask, qpos, qvel)
+
+    after = backend.get_state_views(("qpos", "qvel"), device="cpu")
+    torch.testing.assert_close(after["qpos"][mask], qpos[mask])
+    torch.testing.assert_close(after["qvel"][mask], qvel[mask])
+    torch.testing.assert_close(after["qpos"][~mask], before["qpos"][~mask])
+    torch.testing.assert_close(after["qvel"][~mask], before["qvel"][~mask])
+    np.testing.assert_allclose(backend._time_view[~mask], old_time[~mask])
+    np.testing.assert_allclose(backend._time_view[mask], 0.0)
+    assert result is not None
+    assert result["timing"]["set_state_tensor_mask_ms"] >= 0.0
+
+
+def test_mujoco_mask_tensor_reset_full_refresh_is_eager(tmp_path: Path) -> None:
+    backend = _backend(tmp_path, num_envs=3)
+    views = backend.get_state_views(("qpos", "qvel"), device="cpu")
+    mask = torch.tensor([True, False, False], dtype=torch.bool)
+    qpos = views["qpos"].clone()
+    qvel = views["qvel"].clone()
+    qpos[0] += 0.1
+    backend._tracked_body_state_dirty.fill(True)
+
+    result = backend.set_state_tensor_mask(mask, qpos, qvel, full_refresh=True)
+
+    assert not bool(backend._tracked_body_state_dirty.any())
+    after = backend.get_state_views(("qpos",), device="cpu")["qpos"]
+    torch.testing.assert_close(after[0], qpos[0])
+    torch.testing.assert_close(after[~mask], views["qpos"][~mask])
+    assert result is not None
+    assert result["timing"]["set_state_tensor_commit_forward_ms"] >= 0.0
+
+
+def test_mujoco_mask_tensor_reset_full_refresh_covers_empty_mask(tmp_path: Path) -> None:
+    backend = _backend(tmp_path, num_envs=2)
+    views = backend.get_state_views(("qpos", "qvel"), device="cpu")
+    backend._tracked_body_state_dirty.fill(True)
+
+    result = backend.set_state_tensor_mask(
+        torch.zeros((2,), dtype=torch.bool),
+        views["qpos"],
+        views["qvel"],
+        full_refresh=True,
+    )
+
+    assert not bool(backend._tracked_body_state_dirty.any())
+    assert result is not None
+    assert result["timing"]["set_state_tensor_commit_forward_ms"] >= 0.0
+
+
+def test_mujoco_mask_tensor_reset_rejects_randomization(tmp_path: Path) -> None:
+    backend = _backend(tmp_path, num_envs=2)
+    mask = torch.zeros((2,), dtype=torch.bool)
+    qpos = torch.zeros((2, backend.nq), dtype=torch.float32)
+    qvel = torch.zeros((2, backend.nv), dtype=torch.float32)
+
+    with pytest.raises(NotImplementedError, match="does not support reset randomization"):
+        backend.set_state_tensor_mask(
+            mask,
+            qpos,
+            qvel,
+            randomization=ResetRandomizationPayload(kp=np.ones((0, 1))),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mask", "qpos", "qvel", "message"),
+    [
+        (
+            torch.zeros((2, 1), dtype=torch.bool),
+            torch.zeros((2, 2), dtype=torch.float32),
+            torch.zeros((2, 2), dtype=torch.float32),
+            "1-D bool",
+        ),
+        (
+            torch.zeros((3,), dtype=torch.bool),
+            torch.zeros((3, 2), dtype=torch.float32),
+            torch.zeros((3, 2), dtype=torch.float32),
+            "reset_mask must have shape",
+        ),
+        (
+            torch.zeros((4,), dtype=torch.bool)[::2],
+            torch.zeros((2, 2), dtype=torch.float32),
+            torch.zeros((2, 2), dtype=torch.float32),
+            "reset_mask must be contiguous",
+        ),
+        (
+            torch.zeros((2,), dtype=torch.float32),
+            torch.zeros((2, 2), dtype=torch.float32),
+            torch.zeros((2, 2), dtype=torch.float32),
+            "1-D bool",
+        ),
+        (
+            torch.zeros((2,), dtype=torch.bool),
+            torch.zeros((2, 3), dtype=torch.float32),
+            torch.zeros((2, 2), dtype=torch.float32),
+            "qpos must have shape",
+        ),
+        (
+            torch.zeros((2,), dtype=torch.bool),
+            torch.zeros((2, 2), dtype=torch.float64),
+            torch.zeros((2, 2), dtype=torch.float32),
+            "float32",
+        ),
+        (
+            torch.zeros((2,), dtype=torch.bool),
+            torch.zeros((2, 4), dtype=torch.float32)[:, :2],
+            torch.zeros((2, 2), dtype=torch.float32),
+            "qpos must be contiguous",
+        ),
+        (
+            torch.zeros((2,), dtype=torch.bool),
+            torch.zeros((2, 2), device="meta"),
+            torch.zeros((2, 2), dtype=torch.float32),
+            "share one device",
+        ),
+        (
+            torch.zeros((2,), dtype=torch.bool),
+            torch.full((2, 2), float("nan"), dtype=torch.float32),
+            torch.zeros((2, 2), dtype=torch.float32),
+            "finite",
+        ),
+    ],
+)
+def test_mujoco_mask_tensor_reset_validates_public_payload(
+    tmp_path: Path, mask: torch.Tensor, qpos: torch.Tensor, qvel: torch.Tensor, message: str
+) -> None:
+    backend = _backend(tmp_path, num_envs=2)
+    with pytest.raises((TypeError, ValueError), match=message):
+        backend.set_state_tensor_mask(mask, qpos, qvel)
 
 
 def test_mujoco_packed_reset_commits_selected_mocap_poses(tmp_path: Path) -> None:
