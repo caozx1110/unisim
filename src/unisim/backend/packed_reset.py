@@ -68,6 +68,10 @@ _PACKED_RESET_CANONICAL_NDIMS: dict[str, int] = {
 }
 
 
+def _expand_mask(mask: Any, ndim: int) -> Any:
+    return mask if ndim == 1 else mask.reshape(mask.shape + (1,) * (ndim - 1))
+
+
 class TorchPackedResetComposer:
     """Compose device-resident model-field writes and commit them once."""
 
@@ -149,6 +153,38 @@ class TorchPackedResetComposer:
         target.index_copy_(0, rows, selected)
         self._staged[field] = target
 
+    def write_model_field_mask(
+        self,
+        field: str,
+        reset_mask: Any,
+        values: Any,
+        *,
+        columns: Any | None = None,
+    ) -> None:
+        """Merge full-width final values selected by a fixed-width bool mask."""
+        self._validate_field(field)
+        mask = self._validate_state_mask(reset_mask)
+        baseline = self.baseline(field)
+        if values.ndim < 1 or values.shape[0] != int(baseline.shape[0]):
+            raise ValueError(
+                f"packed reset {field} values must have environment width "
+                f"{int(baseline.shape[0])}; got {tuple(values.shape)}"
+            )
+        target = self._staged.get(field)
+        if target is None:
+            target = baseline.clone()
+        if columns is None:
+            target.copy_(self._torch.where(_expand_mask(mask, values.ndim), values, target))
+        else:
+            column_tensor = self._column_tensor(columns, target.shape[1], field)
+            selected = target[:, column_tensor]
+            target[:, column_tensor] = self._torch.where(
+                _expand_mask(mask, values.ndim),
+                values,
+                selected,
+            )
+        self._staged[field] = target
+
     def discard(self, field: str | None = None) -> None:
         """Discard staged writes before commit, or clear the whole transaction."""
         if field is None:
@@ -198,6 +234,31 @@ class TorchPackedResetComposer:
         self._qvel.index_copy_(0, rows, self._default_qvel.expand(count, -1))
         self._state_writes_staged = False
 
+    def begin_state_mask(self, reset_mask: Any) -> None:
+        """Restore default state staging for a fixed-width bool reset mask.
+
+        This is the graph-candidate counterpart to ``begin_state(rows)``. It
+        keeps the staging tensors full width and never materializes true-row
+        indices. Backends still own selected-row publication at commit.
+        """
+        mask = self._validate_state_mask(reset_mask)
+        if self._qpos is None or self._qvel is None:
+            raise RuntimeError("packed reset state defaults must be installed before begin_state")
+        assert self._default_qpos is not None and self._default_qvel is not None
+        self._torch.where(
+            mask[:, None],
+            self._default_qpos.to(device=self.device),
+            self._qpos,
+            out=self._qpos,
+        )
+        self._torch.where(
+            mask[:, None],
+            self._default_qvel.to(device=self.device),
+            self._qvel,
+            out=self._qvel,
+        )
+        self._state_writes_staged = False
+
     def state_views(self) -> tuple[Any, Any]:
         """Return the full-width device qpos/qvel staging tensors."""
         if self._qpos is None or self._qvel is None:
@@ -228,11 +289,57 @@ class TorchPackedResetComposer:
             )
         self._state_writes_staged = True
 
+    def write_state_mask(
+        self,
+        reset_mask: Any,
+        *,
+        qpos_columns: Any | None = None,
+        qpos_values: Any,
+        qvel_columns: Any | None = None,
+        qvel_values: Any,
+    ) -> None:
+        """Merge full-width selected-column state values using a bool mask.
+
+        Values have the full environment width. False rows preserve the staged
+        state, while true rows consume the supplied columns. No true-row tensor
+        is materialized by the composer.
+        """
+        mask = self._validate_state_mask(reset_mask)
+        qpos, qvel = self.state_views()
+        if qpos_values is not None:
+            self._write_state_columns_mask(
+                qpos,
+                mask,
+                qpos_columns,
+                qpos_values,
+                width=qpos.shape[1],
+                name="qpos",
+            )
+        if qvel_values is not None:
+            self._write_state_columns_mask(
+                qvel,
+                mask,
+                qvel_columns,
+                qvel_values,
+                width=qvel.shape[1],
+                name="qvel",
+            )
+        self._state_writes_staged = True
+
     def commit(self, rows: Any) -> dict:
         """Commit staged state and model-field writes through one boundary."""
         rows = self._validate_rows(rows)
         qpos, qvel = self.state_views()
         return self.commit_state(rows, qpos.index_select(0, rows), qvel.index_select(0, rows))
+
+    def commit_mask(self, reset_mask: Any) -> dict:
+        """Commit the full-width staged state selected by a bool mask."""
+        mask = self._validate_state_mask(reset_mask)
+        # begin_state_mask marks defaults on selected rows even before an owner
+        # issues a write; that is a valid state-only commit target.
+        self._state_writes_staged = True
+        qpos, qvel = self.state_views()
+        return self.commit_state_mask(mask, qpos, qvel)
 
     def commit_state(self, rows: Any, qpos: Any, qvel: Any) -> dict:
         """Commit state plus staged model-field writes for these rows.
@@ -259,6 +366,41 @@ class TorchPackedResetComposer:
         commit_ms = (time.perf_counter() - commit_started) * 1000.0
         for field, staged in self._staged.items():
             self.baseline(field).index_copy_(0, rows, staged.index_select(0, rows))
+        timing = dict((result or {}).get("timing", {}))
+        timing.update(
+            {
+                "packed_reset_compose_ms": compose_ms,
+                "packed_reset_commit_ms": commit_ms,
+                "packed_reset_total_ms": (time.perf_counter() - started) * 1000.0,
+            }
+        )
+        return {"timing": timing}
+
+    def commit_state_mask(self, reset_mask: Any, qpos: Any, qvel: Any) -> dict:
+        """Commit full-width state plus staged writes selected by a bool mask."""
+        mask = self._validate_state_mask(reset_mask)
+        started = time.perf_counter()
+        payload = (
+            None
+            if not self._staged
+            else TensorResetRandomizationPayload(
+                **{
+                    field: self._torch.where(
+                        _expand_mask(mask, tensor.ndim), tensor, self.baseline(field)
+                    ).contiguous()
+                    for field, tensor in self._staged.items()
+                }
+            )
+        )
+        compose_ms = (time.perf_counter() - started) * 1000.0
+        commit_started = time.perf_counter()
+        result = self.backend.set_state_tensor_mask(mask, qpos, qvel, payload, full_refresh=False)
+        self._apply_mocap_poses()
+        commit_ms = (time.perf_counter() - commit_started) * 1000.0
+        for field, staged in self._staged.items():
+            self.baseline(field).copy_(
+                self._torch.where(_expand_mask(mask, staged.ndim), staged, self.baseline(field))
+            )
         timing = dict((result or {}).get("timing", {}))
         timing.update(
             {
@@ -334,6 +476,48 @@ class TorchPackedResetComposer:
         if rows.device != self.device:
             raise ValueError(f"packed reset rows must live on {self.device}")
         return rows
+
+    def _validate_state_mask(self, reset_mask: Any) -> Any:
+        if not isinstance(reset_mask, self._torch.Tensor):
+            raise TypeError("packed reset mask must be a torch.Tensor")
+        if (
+            reset_mask.ndim != 1
+            or reset_mask.dtype != self._torch.bool
+            or not reset_mask.is_contiguous()
+        ):
+            raise TypeError("packed reset mask must be a contiguous 1-D bool tensor")
+        if tuple(reset_mask.shape) != (int(self.backend.num_envs),):
+            raise ValueError(f"packed reset mask must have shape {(int(self.backend.num_envs),)}")
+        if reset_mask.device != self.device:
+            raise ValueError(f"packed reset mask must live on {self.device}")
+        return reset_mask
+
+    def _write_state_columns_mask(
+        self,
+        state: Any,
+        reset_mask: Any,
+        columns: Any | None,
+        values: Any,
+        *,
+        width: int,
+        name: str,
+    ) -> None:
+        if not isinstance(values, self._torch.Tensor):
+            raise TypeError(f"packed reset {name} values must be a torch.Tensor")
+        if values.dtype != self._torch.float32 or not values.is_contiguous():
+            raise TypeError(f"packed reset {name} values must be contiguous float32")
+        if values.device != self.device:
+            raise ValueError(f"packed reset {name} values must live on {self.device}")
+        column_tensor = self._column_tensor(columns, width, name)
+        expected = (int(reset_mask.shape[0]), int(column_tensor.numel()))
+        if tuple(values.shape) != expected:
+            raise ValueError(f"packed reset {name} values must have shape {expected}")
+        if not bool(self._torch.isfinite(values).all()):
+            raise ValueError(f"packed reset {name} values must be finite")
+        expanded_mask = _expand_mask(reset_mask, state.ndim)
+        selected = state[:, column_tensor]
+        merged = self._torch.where(expanded_mask, values, selected)
+        state[:, column_tensor] = merged
 
     def _validate_values(
         self,

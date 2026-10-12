@@ -5,6 +5,8 @@ from dataclasses import replace
 import pytest
 
 from unisim import (
+    FakeBackend,
+    GraphCandidatePreflight,
     SupportLevel,
     TensorDataPlane,
     TensorExecution,
@@ -140,6 +142,48 @@ def test_tensor_feature_dependencies_fail_closed() -> None:
     for matrix, message in zip(invalid_matrices, messages, strict=True):
         with pytest.raises(ValueError, match=message):
             TensorLifecycleCapabilities(**matrix)
+
+
+def test_deferred_fused_validation_capability_dependencies_fail_closed() -> None:
+    with pytest.raises(ValueError, match="unsupported tensor lifecycle"):
+        TensorLifecycleCapabilities(
+            execution=TensorExecution.UNSUPPORTED,
+            deferred_fused_validation=True,
+        )
+    with pytest.raises(ValueError, match="deferred fused validation"):
+        TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="caller",
+            torch_devices=("cpu",),
+            deferred_fused_validation=True,
+        )
+
+
+def test_graph_candidate_preflight_state_is_fail_closed() -> None:
+    with pytest.raises(ValueError, match="preflight"):
+        GraphCandidatePreflight(requested=False, supported=None, disable_reason=None)
+    with pytest.raises(ValueError, match="preflight"):
+        GraphCandidatePreflight(
+            requested=True,
+            supported=True,
+            disable_reason="stale reason",
+            backend_stream_contract="caller",
+        )
+
+
+def test_graph_candidate_preflight_validates_stream_id_metadata() -> None:
+    for value in (True, -1, "0"):
+        with pytest.raises(TypeError, match="torch_stream_id"):
+            GraphCandidatePreflight(requested=True, torch_stream_id=value)
+
+
+def test_default_backend_graph_candidate_preflight_fails_closed() -> None:
+    request = GraphCandidatePreflight(requested=True)
+
+    with pytest.raises(NotImplementedError, match="graph-candidate preflight"):
+        FakeBackend().preflight_graph_candidate(request)
 
 
 def test_mask_selected_reset_accepts_in_process_host_bridge() -> None:

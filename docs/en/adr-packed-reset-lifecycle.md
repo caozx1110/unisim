@@ -19,6 +19,7 @@ UniSim owns a backend-neutral, staged packed reset transaction:
 - `SimBackend.begin_packed_reset(device=None)` returns a backend-owned `TorchPackedResetComposer`, or fails closed.
 - `TensorLifecycleCapabilities` adds `packed_reset`, `packed_reset_fields`, and `packed_reset_mocap`. Unsupported lifecycles must not declare them.
 - The composer owns full-width, device-resident committed baselines seeded from the backend's authoritative (fixed-variant aware) `get_reset_term_default()`.
+- The graph-candidate variant keeps the same staging width end to end: `begin_state_mask(mask)`, `write_state_mask(mask, ...)`, and `commit_state_mask(mask, ...)` consume a full-width bool mask, preserve false rows, and delegate selected-row semantics to the public backend mask boundary. This avoids owner-side `nonzero()` compaction without changing the staged-row contract above.
 - `write_model_field(field, rows, values, columns=None)` merges final absolute selected-row values, including disjoint selected-column merges for terms such as PD `kp`/`kd`.
 - `commit_state(rows, qpos, qvel)` performs exactly one public reset boundary by calling `set_state_tensor()` with the staged selected-row tables. Baselines are promoted only for the committed rows and only after that boundary returns successfully; staged writes for other rows remain until `discard()`.
 - `discard(field=None)` explicitly drops staged writes before commit.

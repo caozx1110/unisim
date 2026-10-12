@@ -11,7 +11,7 @@ pytest.importorskip("warp")
 
 import warp
 
-from unisim import MjwarpBackend, TensorExecution
+from unisim import GraphCandidatePreflight, MjwarpBackend, TensorExecution
 from unisim.dr.types import ResetRandomizationPayload
 from unisim.scene import SceneCfg
 
@@ -735,6 +735,45 @@ def test_mjwarp_mask_tensor_reset_rejects_randomization() -> None:
         backend.set_state_tensor_mask(
             mask, qpos, qvel, randomization=ResetRandomizationPayload(kp=np.ones((0, 1)))
         )
+
+
+def test_mjwarp_graph_candidate_preflight_requires_all_public_boundaries() -> None:
+    backend = _make_backend(Path("/tmp"), "unused-preflight.xml", num_envs=2)
+    request = GraphCandidatePreflight(requested=True)
+
+    unrequested = backend.preflight_graph_candidate(
+        GraphCandidatePreflight(
+            requested=False,
+            supported=False,
+            disable_reason="owner did not request capture",
+        )
+    )
+    eager = backend.preflight_graph_candidate(request)
+
+    assert unrequested.supported is False
+    assert unrequested.disable_reason == "graph candidate was not requested"
+    assert eager.supported is False
+    assert eager.disable_reason == "deferred fused validation was not enabled at construction"
+    assert eager.backend_stream_contract == (
+        "backend-completes-step-and-refresh; caller owns Torch stream"
+    )
+    assert eager.torch_stream_id is None
+    backend.close()
+
+
+def test_mjwarp_supported_graph_preflight_reports_current_torch_stream() -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(Path("/tmp"), "unused-supported-preflight.xml", num_envs=2)
+    backend.set_defer_torch_fused_validation(True)
+
+    verdict = backend.preflight_graph_candidate(GraphCandidatePreflight(requested=True))
+
+    assert verdict.supported is True
+    assert verdict.disable_reason is None
+    assert verdict.torch_stream_id == int(
+        torch.cuda.current_stream(backend.get_state_views(("qpos",))["qpos"].device).cuda_stream
+    )
+    backend.close()
 
 
 def test_mjwarp_tensor_reset_rejects_pending_wrench_and_mocap(tmp_path: Path) -> None:

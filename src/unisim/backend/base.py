@@ -217,6 +217,11 @@ class TensorLifecycleCapabilities:
     # ``set_state_tensor_mask`` semantics and authoritative selected-row views.
     mask_selected_reset: bool = False
     mask_selected_reset_full_refresh: bool = False
+    # Declares the backend's graph-candidate validation publication surface.
+    # It is separate from runtime diagnostics: capability negotiation proves
+    # the owner may request the boundary before graph construction, while the
+    # diagnostic reports the selected/fallback state after construction.
+    deferred_fused_validation: bool = False
 
     def __post_init__(self) -> None:
         if self.execution is TensorExecution.UNSUPPORTED:
@@ -240,6 +245,7 @@ class TensorLifecycleCapabilities:
                     self.tracked_body_views,
                     self.mask_selected_reset,
                     self.mask_selected_reset_full_refresh,
+                    self.deferred_fused_validation,
                 )
             ):
                 raise ValueError("unsupported tensor lifecycle must remain fail closed")
@@ -323,6 +329,14 @@ class TensorLifecycleCapabilities:
             )
         if self.mask_selected_reset_full_refresh and not self.mask_selected_reset:
             raise ValueError("mask-selected full refresh requires mask-selected reset")
+        if self.deferred_fused_validation and not (
+            self.execution is TensorExecution.DEVICE_RESIDENT
+            and self.process_topology is TensorProcessTopology.IN_PROCESS
+            and self.data_plane is TensorDataPlane.DIRECT
+        ):
+            raise ValueError(
+                "deferred fused validation requires in-process DEVICE_RESIDENT direct storage"
+            )
         if self.packed_reset_mocap and not self.packed_reset:
             raise ValueError("packed reset mocap requires packed reset")
         if self.selected_reset and not {"qpos", "qvel"}.issubset(self.state_fields):
@@ -389,6 +403,50 @@ class TensorRuntimeDiagnostic:
         if not self.enabled:
             if not isinstance(self.disable_reason, str) or not self.disable_reason.strip():
                 raise ValueError("a disabled runtime diagnostic must declare a disable reason")
+
+
+@dataclass(frozen=True)
+class GraphCandidatePreflight:
+    """A graph-candidate owner request and backend-owned preflight verdict.
+
+    ``requested`` describes integration-only owner intent (K=1 collector
+    capture). ``backend_stream_contract`` names declared execution-stream
+    ownership; it is manifest metadata and never replaces
+    ``TensorLifecycleCapabilities.stream_event_ownership``. The backend fills
+    the remaining fields after validating stable state views, fixed reset
+    boundaries, validation publication, and stream ordering.
+    """
+
+    requested: bool
+    backend_stream_contract: str | None = None
+    supported: bool | None = None
+    disable_reason: str | None = None
+    torch_stream_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.requested, bool):
+            raise TypeError(f"requested must be bool, got {type(self.requested).__name__}")
+        if self.backend_stream_contract is not None and (
+            not isinstance(self.backend_stream_contract, str)
+            or not self.backend_stream_contract.strip()
+        ):
+            raise TypeError("backend_stream_contract must be a non-empty string or None")
+        if self.supported is not None and not isinstance(self.supported, bool):
+            raise TypeError(f"supported must be bool or None, got {type(self.supported).__name__}")
+        if not self.requested and (self.supported is not False or self.disable_reason is None):
+            raise ValueError("an unrequested preflight must be unsupported with a reason")
+        if self.supported is True and self.disable_reason is not None:
+            raise ValueError("a supported preflight must not declare a disable reason")
+        if self.supported is False and (
+            not isinstance(self.disable_reason, str) or not self.disable_reason.strip()
+        ):
+            raise ValueError("an unsupported preflight must declare a disable reason")
+        if self.torch_stream_id is not None and (
+            isinstance(self.torch_stream_id, bool)
+            or not isinstance(self.torch_stream_id, int)
+            or self.torch_stream_id < 0
+        ):
+            raise TypeError("torch_stream_id must be a non-negative integer or None")
 
 
 @dataclass(frozen=True)
@@ -1213,6 +1271,19 @@ class SimBackend(abc.ABC):
         optional tensor-runtime optimization.
         """
         return {}
+
+    def preflight_graph_candidate(
+        self, request: GraphCandidatePreflight
+    ) -> GraphCandidatePreflight:
+        """Validate graph-candidate prerequisites without capturing a graph.
+
+        The default contract is fail closed: every backend must explicitly own
+        preflight and construct a supported verdict from its negotiated tensor
+        lifecycle, runtime fallback state, and stream ownership. This method
+        never starts capture, captures work, or mutates simulation state.
+        """
+        del request
+        raise NotImplementedError(f"{self.backend_type} does not support graph-candidate preflight")
 
     def get_public_state_widths(self) -> PublicStateWidths:
         """Return canonical qpos/qvel widths for packed tensor reset layout."""
