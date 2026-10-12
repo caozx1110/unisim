@@ -2770,7 +2770,7 @@ class MjwarpBackend(SimBackend):
         *,
         full_refresh: bool = False,
     ) -> dict[str, dict[str, float]]:
-        """Issue #2285 research-only fixed-width mask reset.
+        """Commit full-width tensors selected by a graph-published bool mask.
 
         The public full-width state payload stays fixed-shape. The backend owns
         mask validation and reset-graph publication, so the caller never probes
@@ -2781,9 +2781,8 @@ class MjwarpBackend(SimBackend):
         self._require_entity_healthy()
         if randomization is not None:
             raise NotImplementedError(
-                "the issue #2285 mask reset research slice does not support reset "
-                "randomization; the canonical MJWarp owners used by the experiment "
-                "are DR-free"
+                "MJWarp mask reset does not support reset randomization; use the packed "
+                "reset transaction"
             )
         if reset_mask is None:
             raise TypeError("mjwarp tensor reset_mask must be a torch.Tensor")
@@ -2843,9 +2842,10 @@ class MjwarpBackend(SimBackend):
                 current = self._stable_tensor_field_view(name)
                 current.masked_fill_(mask_tensor.reshape(-1, *([1] * (current.ndim - 1))), 0)
 
-            # Experimental B deliberately leaves full-width publication lazy. It
-            # must not materialize rows or use the selected-row scratch graphs.
-            # Experimental C is the mjlab-style full-batch forward upper bound.
+            # The default publication keeps derived tracked-body state lazy while
+            # qpos/qvel/time remain authoritative. It must not materialize rows
+            # or use selected-row scratch graphs. Full refresh eagerly forwards
+            # the complete batch instead.
             sensor_refresh_started = time.perf_counter()
             self._tracked_body_state_dirty = bool(self._tracked_body_names)
             if full_refresh:

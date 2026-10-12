@@ -213,8 +213,8 @@ class TensorLifecycleCapabilities:
     selected_reset_publication: SelectedResetPublication | None = None
     requires_post_construction_publication_barrier: bool = False
     tracked_body_views: bool = False
-    # Issue #2285 research-only declarations. They are deliberately not part of
-    # the production selected-row contract until the benchmark decision lands.
+    # Fixed-width mask reset declarations. They require the public
+    # ``set_state_tensor_mask`` semantics and authoritative selected-row views.
     mask_selected_reset: bool = False
     mask_selected_reset_full_refresh: bool = False
 
@@ -305,11 +305,21 @@ class TensorLifecycleCapabilities:
             self.selected_reset
             and self.selected_reset_publication is SelectedResetPublication.AUTHORITATIVE_VIEWS
             and {"qpos", "qvel"}.issubset(self.state_fields)
-            and self.execution is TensorExecution.DEVICE_RESIDENT
-            and self.data_plane is TensorDataPlane.DIRECT
+            and (
+                (
+                    self.execution is TensorExecution.DEVICE_RESIDENT
+                    and self.data_plane is TensorDataPlane.DIRECT
+                )
+                or (
+                    self.execution is TensorExecution.HOST_BRIDGE
+                    and self.process_topology is TensorProcessTopology.IN_PROCESS
+                    and self.data_plane is TensorDataPlane.HOST_BRIDGE
+                )
+            )
         ):
             raise ValueError(
-                "mask-selected reset requires authoritative direct device-resident reset"
+                "mask-selected reset requires authoritative direct device-resident or "
+                "in-process host-bridge reset"
             )
         if self.mask_selected_reset_full_refresh and not self.mask_selected_reset:
             raise ValueError("mask-selected full refresh requires mask-selected reset")
@@ -1327,25 +1337,20 @@ class SimBackend(abc.ABC):
     ) -> dict | None:
         """Set state selected by a fixed-width boolean mask.
 
-        This is the temporary research boundary for unilabsim/UniLab#2285. It
-        is intentionally separate from ``set_state_tensor`` while reset-row
-        compaction is being evaluated. ``reset_mask`` is a contiguous
-        one-dimensional boolean Torch tensor with shape ``(num_envs,)`` on the
-        adapter's declared device. ``qpos`` and ``qvel`` are full-width
-        contiguous float32 tensors with shapes ``(num_envs, nq)`` and
-        ``(num_envs, nv)``; adapters select only rows for which ``reset_mask``
-        is true. ``full_refresh`` requests a full-batch derived-state refresh
-        for the upper-bound experiment; adapters remain free to satisfy it with
-        an equivalent eager refresh and must fail closed if that publication is
-        unavailable.
+        ``reset_mask`` is a contiguous one-dimensional boolean Torch tensor with
+        shape ``(num_envs,)``. ``qpos`` and ``qvel`` are full-width contiguous
+        float32 tensors with shapes ``(num_envs, nq)`` and ``(num_envs, nv)``.
+        All three share one accepted Torch device and contain finite values.
+        The adapter changes qpos/qvel/time only for true rows and preserves
+        every false row. It publishes authoritative selected state before
+        returning; any row materialization required by the engine belongs
+        behind this backend boundary.
 
-        ``full_refresh`` selects Experimental C's full-batch derived-state
-        refresh. The current research slice does not accept reset
-        randomization; callers must use the existing selected-row API when DR
-        is required.
-
-        This method is not yet a production contract. Adapters that do not
-        implement it fail closed rather than compacting the mask on the host.
+        ``full_refresh=True`` requests an eager equivalent full-batch
+        derived-state/publication refresh. It is valid only where
+        ``TensorLifecycleCapabilities.mask_selected_reset_full_refresh`` is
+        declared. This state-only boundary rejects reset randomization;
+        randomized callers use the selected-row or packed reset contracts.
         """
         raise NotImplementedError(
             f"{self.backend_type} does not support mask-driven tensor state writes: "

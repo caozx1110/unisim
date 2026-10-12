@@ -91,6 +91,7 @@ from ..base import (
     TensorLifecycleCapabilities,
     TensorProcessTopology,
     normalize_play_render_mode,
+    validate_tensor_device,
 )
 from ..body_state import copy_selected_body_state
 from ..reset_impact import bind_reset_impacts
@@ -2262,6 +2263,8 @@ class MuJoCoBackend(SimBackend):
             ),
             torch_devices=("cpu", "cuda"),
             selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+            mask_selected_reset=True,
+            mask_selected_reset_full_refresh=True,
         )
 
     def get_public_state_widths(self) -> PublicStateWidths:
@@ -2372,9 +2375,7 @@ class MuJoCoBackend(SimBackend):
 
         self._require_entity_healthy()
         target = torch.device(device) if device is not None else torch.device("cpu")
-        value = np.array(
-            self._host_read_sensor(name), dtype=self._np_dtype, order="C", copy=True
-        )
+        value = np.array(self._host_read_sensor(name), dtype=self._np_dtype, order="C", copy=True)
         result = torch.from_numpy(value).to(target, non_blocking=bool(target.type == "cuda"))
         if target.type == "cuda":
             torch.cuda.current_stream(target).synchronize()
@@ -2912,6 +2913,91 @@ class MuJoCoBackend(SimBackend):
         positions = qpos.detach().cpu().numpy()
         velocities = qvel.detach().cpu().numpy()
         return self._host_set_state(rows, positions, velocities, host_randomization)
+
+    def set_state_tensor_mask(
+        self,
+        reset_mask: Any,
+        qpos: Any,
+        qvel: Any,
+        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        *,
+        full_refresh: bool = False,
+    ) -> dict | None:
+        """Commit full-width tensors selected by a backend-owned bool mask."""
+        import torch
+
+        self._require_entity_healthy()
+        if randomization is not None:
+            raise NotImplementedError(
+                "MuJoCo mask reset does not support reset randomization; use the packed "
+                "reset transaction"
+            )
+        if not isinstance(full_refresh, bool):
+            raise TypeError("full_refresh must be bool")
+
+        values = {"reset_mask": reset_mask, "qpos": qpos, "qvel": qvel}
+        for name, value in values.items():
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"MuJoCo tensor mask {name} must be a torch.Tensor")
+            if not bool(value.is_contiguous()):
+                raise ValueError(f"MuJoCo tensor mask {name} must be contiguous")
+        if reset_mask.ndim != 1 or reset_mask.dtype != torch.bool:
+            raise TypeError("MuJoCo tensor reset_mask must be a contiguous 1-D bool tensor")
+        if tuple(reset_mask.shape) != (self._num_envs,):
+            raise ValueError(f"MuJoCo tensor reset_mask must have shape {(self._num_envs,)}")
+        if tuple(qpos.shape) != (self._num_envs, self.nq):
+            raise ValueError(f"MuJoCo tensor qpos must have shape {(self._num_envs, self.nq)}")
+        if tuple(qvel.shape) != (self._num_envs, self.nv):
+            raise ValueError(f"MuJoCo tensor qvel must have shape {(self._num_envs, self.nv)}")
+        if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
+            raise TypeError("MuJoCo tensor qpos and qvel must be float32")
+        source_device = reset_mask.device
+        if qpos.device != source_device or qvel.device != source_device:
+            raise ValueError("MuJoCo tensor mask reset tensors must share one device")
+        if not bool(torch.isfinite(qpos).all()) or not bool(torch.isfinite(qvel).all()):
+            raise ValueError("MuJoCo tensor qpos and qvel must contain finite values")
+
+        capabilities = self.get_tensor_capabilities()
+        current_device = torch.cuda.current_device() if source_device.type == "cuda" else None
+        validate_tensor_device(
+            capabilities.torch_devices,
+            source_device,
+            current_device=current_device,
+            label="MuJoCo tensor mask reset",
+        )
+        started = time.perf_counter()
+        if source_device.type == "cuda":
+            torch.cuda.current_stream(source_device).synchronize()
+
+        # The public carrier remains a full-width mask. MuJoCo's CPU executor
+        # owns this bounded compaction and the explicit accelerator-to-host leg.
+        selected_rows_tensor = torch.nonzero(reset_mask, as_tuple=False).flatten()
+        rows = selected_rows_tensor.detach().cpu().numpy().astype(np.int64, copy=False)
+        timing: dict[str, float] = {
+            "set_state_tensor_mask_ms": (time.perf_counter() - started) * 1000.0,
+            "set_state_tensor_commit_forward_ms": 0.0,
+            "set_state_tensor_host_cache_refresh_ms": 0.0,
+            "set_state_tensor_model_update_ms": 0.0,
+        }
+        if rows.size:
+            positions = qpos.index_select(0, selected_rows_tensor).detach().cpu().numpy()
+            velocities = qvel.index_select(0, selected_rows_tensor).detach().cpu().numpy()
+            result = self._host_set_state(rows, positions, velocities)
+            if result is None:
+                result = {}
+            timing.update(result.get("timing", {}))
+            timing["set_state_tensor_mask_ms"] = (time.perf_counter() - started) * 1000.0
+        if full_refresh:
+            refresh_started = time.perf_counter()
+            pool = self._pool
+            if pool is None:
+                raise RuntimeError("full refresh requires a materialized MuJoCo backend")
+            pool.forward()
+            self._tracked_body_state_dirty.fill(False)
+            timing["set_state_tensor_commit_forward_ms"] = (
+                time.perf_counter() - refresh_started
+            ) * 1000.0
+        return {"timing": timing}
 
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
         return DomainRandomizationCapabilities(
