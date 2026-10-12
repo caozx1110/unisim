@@ -1,5 +1,4 @@
 """MuJoCo-owned playback execution helpers."""
-
 from __future__ import annotations
 
 import tempfile
@@ -63,9 +62,7 @@ def run_mujoco_playback(
         overlay_list.append(debug_overlay_getter() if debug_overlay_getter is not None else None)
 
     num_envs = int(state_list[0].shape[0])
-    validated_overlays = [
-        validate_debug_overlays(overlays, num_envs) for overlays in overlay_list
-    ]
+    validated_overlays = [validate_debug_overlays(overlays, num_envs) for overlays in overlay_list]
     debug_overlays_list = (
         validated_overlays if any(overlays is not None for overlays in validated_overlays) else None
     )
@@ -192,39 +189,3 @@ def resolve_render_play_model_files(
     output_path = Path(tmp_dir) / "playback_model.mjb"
     mujoco.mj_saveModel(playback_model, str(output_path))
     return str(output_path)
-
-
-def materialize_visual_playback_model(
-    *,
-    visual_model_file: str,
-    visual_base_model: Any,
-    playback_model: Any,
-    output_path: str | Path,
-) -> str:
-    """Compile a visual MuJoCo model using geom sizes from a playback model.
-
-    Kept as a public compat export after the mjbatch swap. Fixed-variant
-    playback resolution uses per-world source oracles instead; this helper
-    remains for legacy single-model visual overrides.
-    """
-    import mujoco as _mujoco
-
-    mujoco: Any = _mujoco
-
-    spec = mujoco.MjSpec.from_file(visual_model_file)
-    for geom_id in range(visual_base_model.ngeom):
-        geom_name = mujoco.mj_id2name(visual_base_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
-        if not geom_name:
-            continue
-        playback_geom_id = mujoco.mj_name2id(playback_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
-        if playback_geom_id < 0:
-            continue
-        geom = spec.geom(geom_name)
-        if geom is None:
-            continue
-        geom.size = list(np.asarray(playback_model.geom_size[playback_geom_id], dtype=np.float64))
-
-    visual_model = spec.compile()
-    output = Path(output_path)
-    mujoco.mj_saveModel(visual_model, str(output))
-    return str(output)

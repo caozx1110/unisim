@@ -94,9 +94,7 @@ def _apply_randomization(
                     for column, joint_name in zip(
                         entry["actuator_indices"], entry["actuator_joint_names"]
                     ):
-                        row_values[joint_names.index(joint_name)] = randomization[term][row][
-                            column
-                        ]
+                        row_values[joint_names.index(joint_name)] = randomization[term][row][column]
                     tables[field][env] = row_values
             for term, field in (
                 ("dof_armature", "dof_armature"),
@@ -159,8 +157,7 @@ def _meta_for_init(
                         entry["variants"][variant]["body_mass"] for variant in assignment
                     ],
                     "body_sphere_radii": [
-                        entry["variants"][variant]["body_sphere_radii"]
-                        for variant in assignment
+                        entry["variants"][variant]["body_sphere_radii"] for variant in assignment
                     ],
                 }
             )
@@ -212,6 +209,11 @@ def _meta_for_init(
     if "variant_model_files" in payload and not omit_variant_echo:
         meta["fixed_variant_count"] = len(payload["variant_model_files"])
         meta["fixed_variant_assignment"] = list(payload["variant_assignment"])
+    if "scene_entities" not in payload:
+        meta["configuration_report"] = {
+            "schema_version": 1,
+            "effective": {"dt": payload["sim_dt"], "gravity": [0.0, 0.0, -9.81], "solver": "mock"},
+        }
     return meta
 
 

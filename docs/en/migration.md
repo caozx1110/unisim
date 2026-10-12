@@ -8,7 +8,7 @@ MuJoCo is the first in-process adapter. It accepts a package-neutral `SceneCfg`,
 
 ## Portable MJCF scenes
 
-Explicit `SceneCfg.entity_assets`, mirrors and entity-bound variants use the cold portable MJCF profile described in the [ADR](adr-portable-mjcf.md). UniSim expands and compiles those declarations once, freezes the public entity layout, and records source provenance, source intent and content identity. Install `unisim-core[scene-compiler]` to use the compiler; it does not require the MuJoCo adapter's mjbatch executor. Legacy `model_file` and explicit native profiles remain supported as adapter paths and are not portable-profile claims.
+Explicit `SceneCfg.entity_assets`, mirrors and entity-bound variants use the cold portable MJCF profile described in the [ADR](adr-portable-mjcf.md). UniSim expands and compiles those declarations once, freezes the public entity layout, and records source provenance, source intent and content identity. Install `unisim-core[scene-compiler]` to use the compiler; it does not require the MuJoCo adapter's mjbatch executor. `model_file` and explicit native profiles remain supported adapter paths and are not portable-profile claims.
 
 For entity scenes, `fragment_files` is limited to sensor-only MJCF fragments. The portable compiler accepts ordered cross-entity `contact data="force" reduce="netforce"` and `contact data="found" num="1"` declarations with final `entity/local-name` geom addresses, includes their bytes in content identity, and rejects all other fragment authoring.
 
@@ -16,7 +16,23 @@ Motrix is the second in-process adapter. It uses Motrix's batched `SceneData` an
 
 The remaining UniLab identities are represented in UniSim as first-class adapters: Drake, MJWarp, Genesis, Newton, SuperDex, IsaacGym, and IsaacSim. The latter two reuse `unisim.backend.subprocess_ipc` and resolve their vendor workers without importing Kit or Python 3.8 modules into the host process. Missing SDKs are reported at construction time; no backend is silently downgraded to another engine.
 
-Runtime-owned caches and worker installations use `UNISIM_*` environment variables and `~/.cache/unisim` defaults. The previous `UNILAB_*` names are accepted only as migration fallbacks so existing installations can move without losing cached state.
+Runtime-owned caches and worker installations use `UNISIM_*` environment variables and `~/.cache/unisim` defaults. The former `UNILAB_*` fallback names are removed.
+
+## Legacy NumPy training lifecycle
+
+`unisim-core` 1.7.15 is the final release containing the public legacy NumPy lifecycle. Version 2.0.0 removes it without compatibility aliases. Training consumers must negotiate `get_tensor_capabilities()` and use the replacement boundary below; unsupported methods continue to fail closed.
+
+| Removed in 2.0.0 | Public replacement |
+| --- | --- |
+| `step()` | `step_tensor()` |
+| `reset()` and selected `set_state()` | `set_state_tensor()`, or `begin_packed_reset()` plus the packed transaction for declaring adapters |
+| `get_state()` | `get_state_views()` |
+| base and DoF getters | the applicable columns of `get_state_views()`, or `get_tracked_body_views()` for tracked root/body state |
+| body getters and `copy_body_state_w()` | `get_tracked_body_views()` |
+| named sensor getters | `get_sensor_view()` / `bind_sensor_data()` |
+| per-transfer host I/O | `compile_host_bridge_io()` |
+
+The old training lifecycle no longer exists on `SimBackend`, including on concrete CPU adapters. Adapter-private `_host_*`, `_wire_*`, `_model_file_*`, and `_playback_*` names describe owner boundaries and must not be called by UniLab. Cold metadata/layout/default tables, explicit `IntervalTermOp` sequences, mapped entity transactions, playback/rendering, and serialization retain their explicit NumPy contracts. See the [legacy NumPy removal ADR](adr-legacy-numpy-removal.md).
 
 ## Semantic requirements
 

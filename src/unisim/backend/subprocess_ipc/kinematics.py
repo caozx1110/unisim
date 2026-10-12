@@ -132,7 +132,7 @@ def forward_prepared_kinematics(
 ) -> np.ndarray:
     """Return ``(num_envs, nbody, 13)`` world body states for generalized states.
 
-    ``qpos``/``qvel`` follow the legacy MJCF layout: 7 free-root columns
+    ``qpos``/``qvel`` follow the model-file synthetic MJCF layout: 7 free-root columns
     (xyz + wxyz) plus one column per single-DoF joint in document order, and
     6 root velocity columns (world linear, body-local angular) plus one per
     joint.  Rows are computed in float64; callers cast to the slot dtype.
@@ -146,8 +146,7 @@ def forward_prepared_kinematics(
         )
     if qvel.shape != (qpos.shape[0], 6 + num_joints):
         raise ValueError(
-            f"kinematics qvel must have shape ({qpos.shape[0]}, {6 + num_joints}), "
-            f"got {qvel.shape}"
+            f"kinematics qvel must have shape ({qpos.shape[0]}, {6 + num_joints}), got {qvel.shape}"
         )
     if not np.isfinite(qpos).all() or not np.isfinite(qvel).all():
         raise ValueError("kinematics generalized state must be finite")
@@ -205,8 +204,8 @@ def forward_prepared_kinematics(
             ang[:, index] = ang[:, parent]
             lever = offset + axis_world * value[:, None]
             pos[:, index] = pos[:, parent] + lever
-            lin[:, index] = lin[:, parent] + np.cross(ang[:, parent], lever) + (
-                axis_world * rate[:, None]
+            lin[:, index] = (
+                lin[:, parent] + np.cross(ang[:, parent], lever) + (axis_world * rate[:, None])
             )
 
     state = np.zeros((num_envs, nbody, 13), dtype=np.float64)

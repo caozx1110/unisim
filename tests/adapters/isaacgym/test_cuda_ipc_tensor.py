@@ -79,9 +79,7 @@ def test_gpu_backend_declares_external_cuda_ipc_capability_matrix() -> None:
     assert capabilities.stream_event_ownership is not None
     assert capabilities.torch_devices == ("cuda",)
     assert capabilities.selected_reset
-    assert (
-        capabilities.selected_reset_publication is SelectedResetPublication.AUTHORITATIVE_VIEWS
-    )
+    assert capabilities.selected_reset_publication is SelectedResetPublication.AUTHORITATIVE_VIEWS
     assert capabilities.sensor_views
     assert not capabilities.reset_randomization
     assert not capabilities.fixed_variants
@@ -511,11 +509,11 @@ def test_numpy_hot_paths_fail_closed_while_cuda_ipc_plan_is_open() -> None:
     backend = _fake_gpu_backend()
     backend._cuda_ipc_plan = object()
     with pytest.raises(RuntimeError, match="NumPy step"):
-        backend.step(None)
+        backend._host_step(None)
     with pytest.raises(RuntimeError, match="NumPy reset"):
-        backend.reset()
+        backend._host_reset()
     with pytest.raises(RuntimeError, match="NumPy state writes"):
-        backend.set_state(None, None, None)
+        backend._host_set_state(None, None, None)
     with pytest.raises(RuntimeError, match="NumPy entity reset"):
         backend.reset_entities(None)
 
@@ -785,7 +783,7 @@ def test_cuda_ipc_control_state_with_native_isaacgym_worker(tmp_path: Path) -> N
     qvel: Any = None
     control: Any = None
     attached = False
-    legacy_slots = {
+    model_file_slots = {
         name: client.slots[name].copy() for name in ("qpos", "qvel", "ctrl", "entity_root_state")
     }
     body_state = torch_from_cuda_pointer(
@@ -897,7 +895,7 @@ def test_cuda_ipc_control_state_with_native_isaacgym_worker(tmp_path: Path) -> N
         assert bool(torch.isfinite(sensor_state.cpu()).all())
         assert body_state.data_ptr() == body_pointer
         assert sensor_state.data_ptr() == sensor_pointer
-        for name, before in legacy_slots.items():
+        for name, before in model_file_slots.items():
             np.testing.assert_array_equal(client.slots[name], before)
 
         # Issue #349: selected-reset publication must be authoritative before
@@ -908,15 +906,11 @@ def test_cuda_ipc_control_state_with_native_isaacgym_worker(tmp_path: Path) -> N
         selected_after_publication_qpos = selected_qpos.clone()
         selected_after_publication_qpos[8] = np.pi / 2.0
         reset_qpos[0].copy_(selected_after_publication_qpos)
-        reset_reply = client.request(
-            "ISAACGYM_CUDA_IPC_SET_STATE", {"count": 1, "sequence": 2}
-        )
+        reset_reply = client.request("ISAACGYM_CUDA_IPC_SET_STATE", {"count": 1, "sequence": 2})
         assert reset_reply["timing"]["reset_apply_ms"] >= 0.0
         assert reset_reply["timing"]["state_publish_ms"] >= 0.0
         state_event.wait_stream(torch.cuda.current_stream().cuda_stream)
-        torch.testing.assert_close(
-            qpos[1], selected_after_publication_qpos, atol=1e-5, rtol=1e-5
-        )
+        torch.testing.assert_close(qpos[1], selected_after_publication_qpos, atol=1e-5, rtol=1e-5)
         torch.testing.assert_close(
             body_state[1, 3, 0:3],
             torch.tensor((0.0, 0.0, 1.0), device=body_state.device),
@@ -949,15 +943,11 @@ def test_cuda_ipc_control_state_with_native_isaacgym_worker(tmp_path: Path) -> N
         full_reset_qvel = qvel.clone()
         full_reset_qpos[:, 0] = 0.2
         full_reset_qvel[:, 0] = 0.0
-        reset_rows.copy_(
-            torch.arange(layout.num_envs, dtype=torch.int64, device=reset_rows.device)
-        )
+        reset_rows.copy_(torch.arange(layout.num_envs, dtype=torch.int64, device=reset_rows.device))
         reset_qpos.copy_(full_reset_qpos)
         reset_qvel.copy_(full_reset_qvel)
         reset_event.record(torch.cuda.current_stream().cuda_stream)
-        client.request(
-            "ISAACGYM_CUDA_IPC_SET_STATE", {"count": layout.num_envs, "sequence": 3}
-        )
+        client.request("ISAACGYM_CUDA_IPC_SET_STATE", {"count": layout.num_envs, "sequence": 3})
         state_event.wait_stream(torch.cuda.current_stream().cuda_stream)
         torch.testing.assert_close(qpos, full_reset_qpos, atol=1e-5, rtol=1e-5)
 
