@@ -792,7 +792,8 @@ def test_mjwarp_step_publishes_public_completion_receipt() -> None:
         reason = backend._cuda_graph_disable_reason or "unknown reason"
         pytest.skip(f"test requires an mjwarp CUDA graph; graphs disabled: {reason}")
 
-    stream = torch.cuda.current_stream("cuda")
+    stable_device = backend.get_state_views(("qpos",))["qpos"].device
+    stream = backend._torch_execution_stream(stable_device)
     result = backend.step_tensor(
         torch.zeros((2, 1), dtype=torch.float32, device="cuda"),
         nsteps=1,

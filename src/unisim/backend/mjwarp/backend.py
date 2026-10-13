@@ -222,6 +222,13 @@ class MjwarpBackend(SimBackend):
     _dr_dof_damping: np.ndarray
     _dr_dof_frictionloss: np.ndarray
     _tracked_sensor_slots: dict[str, tuple[int, int]]
+    _cuda_graph_enabled: bool
+    _step_graph: Any | None
+    _forward_graph: Any | None
+    _reset_graph: Any | None
+    _reset_scratch_reset_graph: Any | None
+    _reset_scratch_forward_graph: Any | None
+    _cuda_graph_disable_reason: str | None
 
     def __init__(
         self,
@@ -1716,6 +1723,14 @@ class MjwarpBackend(SimBackend):
         )
         return _EventGraphCompletionToken(token, event)
 
+    def _torch_execution_stream(self, device: Any) -> Any:
+        """Return the backend-owned Torch view of Warp's current stream."""
+        import torch
+
+        index = torch.device(device).index
+        warp_device = self._warp.get_device(f"cuda:{index}" if index is not None else "cuda")
+        return torch.cuda.ExternalStream(int(warp_device.stream.cuda_stream), device=device)
+
     def _prepare_reset_scratch(self) -> None:
         """Materialize and warm the bounded reset-forward data on the cold path."""
         if self._reset_scratch_capacity == 0 or self._reset_scratch_data is not None:
@@ -2640,8 +2655,6 @@ class MjwarpBackend(SimBackend):
 
     def step_tensor(self, ctrl: Any, nsteps: int = 1) -> dict[str, Any]:
         """Advance MJWarp physics without a control or state host transfer."""
-        import torch
-
         self._require_entity_healthy()
         nsteps = self._validate_nsteps(nsteps)
         if self._pre_step_control_fn is not None:
@@ -2657,7 +2670,7 @@ class MjwarpBackend(SimBackend):
         # as physics and defer the device-wide Warp barrier until that ordered
         # stream completes; this removes one host barrier from every control
         # step on launch-latency-sensitive hosts.
-        ctrl_stream = torch.cuda.current_stream(ctrl_view.device)
+        ctrl_stream = self._torch_execution_stream(ctrl_view.device)
         ctrl_view.copy_(ctrl_tensor, non_blocking=True)
         control_upload_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -2861,7 +2874,7 @@ class MjwarpBackend(SimBackend):
             self._state_torch_views["__reset_mask"] = mask
         mask.zero_()
         mask.index_fill_(0, rows, True)
-        reset_stream = torch.cuda.current_stream(mask.device)
+        reset_stream = self._torch_execution_stream(mask.device)
         input_completion = self._graph_completion("selected_reset", stream=reset_stream)
         reset_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -2982,7 +2995,7 @@ class MjwarpBackend(SimBackend):
             graph_mask = self._torch_view(self._reset_mask_device)
             self._state_torch_views["__reset_mask"] = graph_mask
         graph_mask.copy_(mask_tensor)
-        reset_stream = torch.cuda.current_stream(mask_tensor.device)
+        reset_stream = self._torch_execution_stream(mask_tensor.device)
         input_completion = self._graph_completion("mask_reset", stream=reset_stream)
         reset_ms = (time.perf_counter() - mask_started) * 1000.0
         forward_started = time.perf_counter()
