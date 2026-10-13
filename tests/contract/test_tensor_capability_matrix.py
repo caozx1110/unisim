@@ -209,6 +209,9 @@ def test_graph_completion_token_is_fail_closed_public_metadata() -> None:
         GraphCompletionToken(**(valid | {"lifecycle_state": GraphLifecycleState.UNAVAILABLE}))
     with pytest.raises(ValueError, match="operation"):
         GraphCompletionToken(**(valid | {"operation": "learner-update"}))
+    assert GraphCompletionToken(**(valid | {"operation": "collector_tick"})).operation == (
+        "collector_tick"
+    )
     with pytest.raises(TypeError, match="sequence"):
         GraphCompletionToken(**(valid | {"sequence": True}))
     with pytest.raises(TypeError, match="capture_id"):
