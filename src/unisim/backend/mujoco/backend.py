@@ -2276,14 +2276,20 @@ class MuJoCoBackend(SimBackend):
 
     def _graph_completion(self, operation: str, *, stream_id: int) -> GraphCompletionToken:
         """Publish the already-complete HOST_BRIDGE boundary as a receipt."""
-        self._graph_completion_sequence += 1
+        sequence = getattr(self, "_graph_completion_sequence", 0) + 1
+        self._graph_completion_sequence = sequence
+        capture_id = getattr(
+            self,
+            "_graph_completion_capture_id",
+            "mujoco-host-bridge-eager",
+        )
         return ImmediateGraphCompletionToken(
             contract_version=1,
             lifecycle_state=GraphLifecycleState.READY,
             operation=operation,
             sequence=self._graph_completion_sequence,
             stream_id=stream_id,
-            capture_id=self._graph_completion_capture_id,
+            capture_id=capture_id,
         )
 
     def get_graph_lifecycle_snapshot(self) -> GraphLifecycleSnapshot:
