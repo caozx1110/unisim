@@ -106,6 +106,20 @@ class SelectedResetPublication(Enum):
     AUTHORITATIVE_VIEWS = "authoritative_views"
 
 
+class GraphLifecycleState(Enum):
+    """Public states of the integration-only K=1 graph lifecycle.
+
+    ``UNAVAILABLE`` is not a fallback mode: it means no capture candidate was
+    constructed, so graph-completion consumers must fail closed or use an
+    independently negotiated eager path. A completion token cannot exist in
+    either non-``READY`` state.
+    """
+
+    UNAVAILABLE = "unavailable"
+    READY = "ready"
+    INVALIDATED = "invalidated"
+
+
 _TENSOR_DEVICE_LABEL = re.compile(r"^(cpu|cuda)(?::([0-9]+))?$")
 
 
@@ -222,6 +236,10 @@ class TensorLifecycleCapabilities:
     # the owner may request the boundary before graph construction, while the
     # diagnostic reports the selected/fallback state after construction.
     deferred_fused_validation: bool = False
+    # Declares the public, ordered completion receipt carried by tensor step
+    # and reset results. It is intentionally separate from CUDA graph replay:
+    # eager execution may also publish a receipt on its ordered Torch stream.
+    graph_completion_publication: bool = False
 
     def __post_init__(self) -> None:
         if self.execution is TensorExecution.UNSUPPORTED:
@@ -246,6 +264,7 @@ class TensorLifecycleCapabilities:
                     self.mask_selected_reset,
                     self.mask_selected_reset_full_refresh,
                     self.deferred_fused_validation,
+                    self.graph_completion_publication,
                 )
             ):
                 raise ValueError("unsupported tensor lifecycle must remain fail closed")
@@ -336,6 +355,18 @@ class TensorLifecycleCapabilities:
         ):
             raise ValueError(
                 "deferred fused validation requires in-process DEVICE_RESIDENT direct storage"
+            )
+        if self.graph_completion_publication and not (
+            self.stepping
+            and self.selected_reset
+            and self.mask_selected_reset
+            and self.deferred_fused_validation
+            and self.execution is TensorExecution.DEVICE_RESIDENT
+            and self.process_topology is TensorProcessTopology.IN_PROCESS
+            and self.data_plane is TensorDataPlane.DIRECT
+        ):
+            raise ValueError(
+                "graph completion publication requires the in-process direct K=1 tensor lifecycle"
             )
         if self.packed_reset_mocap and not self.packed_reset:
             raise ValueError("packed reset mocap requires packed reset")
@@ -447,6 +478,59 @@ class GraphCandidatePreflight:
             or self.torch_stream_id < 0
         ):
             raise TypeError("torch_stream_id must be a non-negative integer or None")
+
+
+@dataclass(frozen=True)
+class GraphCompletionToken:
+    """Public receipt proving where ordered graph work was recorded.
+
+    This is a backend-owned value object, not a CUDA event handle. A producer
+    creates it only after enqueueing all graph outputs and Torch publications
+    on one ordered Torch stream. A consumer may make that stream prefix visible
+    on its own stream or wait at an explicit semantic boundary. Consumers never
+    inspect backend graph pointers or stream objects.
+    """
+
+    contract_version: int
+    lifecycle_state: GraphLifecycleState
+    operation: str
+    sequence: int
+    stream_id: int
+    capture_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.contract_version != 1:
+            raise ValueError(f"unsupported graph completion contract {self.contract_version}")
+        if self.lifecycle_state is not GraphLifecycleState.READY:
+            raise ValueError("a completion token requires the READY graph lifecycle state")
+        if self.operation not in ("step", "selected_reset", "mask_reset"):
+            raise ValueError(f"unsupported graph completion operation {self.operation!r}")
+        if (
+            isinstance(self.sequence, bool)
+            or not isinstance(self.sequence, int)
+            or self.sequence < 0
+        ):
+            raise TypeError("graph completion sequence must be a non-negative integer")
+        if (
+            isinstance(self.stream_id, bool)
+            or not isinstance(self.stream_id, int)
+            or self.stream_id < 0
+        ):
+            raise TypeError("graph completion stream_id must be a non-negative integer")
+        if self.capture_id is not None and (
+            not isinstance(self.capture_id, str) or not self.capture_id.strip()
+        ):
+            raise TypeError("graph completion capture_id must be a non-empty string or None")
+
+    def wait_before_read(self, stream: Any | None = None) -> None:
+        """Fail closed: metadata receipts do not own an event dependency.
+
+        A concrete backend returns a backend-owned token carrying an event or
+        uses a backend implementation of the protocol. The public base token
+        intentionally has no CUDA event to import or leak; callers cannot turn
+        stream-id metadata into implicit synchronization.
+        """
+        raise NotImplementedError("this graph completion receipt does not implement a read gate")
 
 
 @dataclass(frozen=True)
@@ -1284,6 +1368,10 @@ class SimBackend(abc.ABC):
         """
         del request
         raise NotImplementedError(f"{self.backend_type} does not support graph-candidate preflight")
+
+    def get_graph_lifecycle(self) -> GraphLifecycleState:
+        """Return the public lifecycle state without exposing graph handles."""
+        return GraphLifecycleState.UNAVAILABLE
 
     def get_public_state_widths(self) -> PublicStateWidths:
         """Return canonical qpos/qvel widths for packed tensor reset layout."""

@@ -7,12 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SOURCE = (
-    Path(__file__).resolve().parents[3]
-    / "src"
-    / "unisim"
-    / "backend"
-    / "mjwarp"
-    / "backend.py"
+    Path(__file__).resolve().parents[3] / "src" / "unisim" / "backend" / "mjwarp" / "backend.py"
 )
 
 AUDITED_METHODS = ("step_tensor", "set_state_tensor_mask")
@@ -80,20 +75,11 @@ def _static_violations(tree: ast.Module, synchronize_lines: set[int]) -> list[Vi
     return violations
 
 
-# These backend barriers are deliberate completion boundaries in the current
-# integration-only lifecycle. They remain explicit until the Phase C public
-# graph-completion event replaces ad hoc stream synchronization.
-STREAM_QUERY_LINES: frozenset[int] = frozenset({2569, 2889, 2920})
+# Completion is now represented by the public GraphCompletionToken metadata
+# receipt. The hot methods must not synchronize a Torch stream at all.
+STREAM_QUERY_LINES: frozenset[int] = frozenset({2594, 2624, 2827, 2948, 2961})
 
-DECLARED_COMPLETION_BARRIERS: frozenset[int] = frozenset(
-    {
-        2582,  # step_tensor: ordered control/physics completion publication
-        2771,  # selected tensor reset graph publication
-        2804,  # selected tensor reset Torch state commit
-        2889,  # mask reset publication into the reset graph carrier
-        2920,  # mask reset Torch state/default publication
-    }
-)
+DECLARED_COMPLETION_BARRIERS: frozenset[int] = frozenset()
 
 
 def test_mjwarp_candidate_methods_are_present() -> None:

@@ -7,6 +7,8 @@ import pytest
 from unisim import (
     FakeBackend,
     GraphCandidatePreflight,
+    GraphCompletionToken,
+    GraphLifecycleState,
     SupportLevel,
     TensorDataPlane,
     TensorExecution,
@@ -150,6 +152,66 @@ def test_deferred_fused_validation_capability_dependencies_fail_closed() -> None
             execution=TensorExecution.UNSUPPORTED,
             deferred_fused_validation=True,
         )
+
+
+def test_graph_completion_capability_dependencies_fail_closed() -> None:
+    base = {
+        "execution": TensorExecution.DEVICE_RESIDENT,
+        "process_topology": TensorProcessTopology.IN_PROCESS,
+        "data_plane": TensorDataPlane.DIRECT,
+        "stream_event_ownership": "backend records ordered Torch completion",
+        "torch_devices": ("cuda",),
+        "stepping": True,
+        "state_views": True,
+        "state_fields": frozenset({"qpos", "qvel", "ctrl"}),
+        "sensor_views": True,
+        "selected_reset": True,
+        "selected_reset_publication": SelectedResetPublication.AUTHORITATIVE_VIEWS,
+        "mask_selected_reset": True,
+        "deferred_fused_validation": True,
+    }
+
+    with pytest.raises(ValueError, match="unsupported tensor lifecycle"):
+        TensorLifecycleCapabilities(
+            execution=TensorExecution.UNSUPPORTED,
+            graph_completion_publication=True,
+        )
+    with pytest.raises(ValueError, match="graph completion publication"):
+        TensorLifecycleCapabilities(
+            **(
+                base
+                | {
+                    "mask_selected_reset": False,
+                    "graph_completion_publication": True,
+                }
+            )
+        )
+
+    supported = TensorLifecycleCapabilities(**(base | {"graph_completion_publication": True}))
+    assert supported.graph_completion_publication
+
+
+def test_graph_completion_token_is_fail_closed_public_metadata() -> None:
+    valid = {
+        "contract_version": 1,
+        "lifecycle_state": GraphLifecycleState.READY,
+        "operation": "step",
+        "sequence": 7,
+        "stream_id": 12,
+        "capture_id": "capture-a",
+    }
+
+    assert GraphCompletionToken(**valid).sequence == 7
+    with pytest.raises(ValueError, match="contract"):
+        GraphCompletionToken(**(valid | {"contract_version": 2}))
+    with pytest.raises(ValueError, match="READY"):
+        GraphCompletionToken(**(valid | {"lifecycle_state": GraphLifecycleState.UNAVAILABLE}))
+    with pytest.raises(ValueError, match="operation"):
+        GraphCompletionToken(**(valid | {"operation": "learner-update"}))
+    with pytest.raises(TypeError, match="sequence"):
+        GraphCompletionToken(**(valid | {"sequence": True}))
+    with pytest.raises(TypeError, match="capture_id"):
+        GraphCompletionToken(**(valid | {"capture_id": " "}))
     with pytest.raises(ValueError, match="deferred fused validation"):
         TensorLifecycleCapabilities(
             execution=TensorExecution.HOST_BRIDGE,
