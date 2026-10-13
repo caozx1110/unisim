@@ -535,6 +535,8 @@ class GraphCompletionToken:
             not isinstance(self.capture_id, str) or not self.capture_id.strip()
         ):
             raise TypeError("graph completion capture_id must be a non-empty string or None")
+        if self.lifecycle_state is GraphLifecycleState.READY and self.capture_id is None:
+            raise ValueError("a READY graph completion requires a capture_id")
 
     def wait_before_read(self, stream: Any | None = None) -> None:
         """Fail closed: metadata receipts do not own an event dependency.

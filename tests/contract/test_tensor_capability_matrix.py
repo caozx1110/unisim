@@ -213,6 +213,8 @@ def test_graph_completion_token_is_fail_closed_public_metadata() -> None:
         GraphCompletionToken(**(valid | {"sequence": True}))
     with pytest.raises(TypeError, match="capture_id"):
         GraphCompletionToken(**(valid | {"capture_id": " "}))
+    with pytest.raises(ValueError, match="capture_id"):
+        GraphCompletionToken(**(valid | {"capture_id": None}))
 
 
 def test_graph_lifecycle_snapshot_fails_closed() -> None:
