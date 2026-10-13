@@ -77,7 +77,7 @@ def _static_violations(tree: ast.Module, synchronize_lines: set[int]) -> list[Vi
 
 # Completion is now represented by the public GraphCompletionToken metadata
 # receipt. The hot methods must not synchronize a Torch stream at all.
-STREAM_QUERY_LINES: frozenset[int] = frozenset({2594, 2624, 2827, 2948, 2961})
+STREAM_QUERY_LINES: frozenset[int] = frozenset({2658, 2827, 2948, 2982})
 
 DECLARED_COMPLETION_BARRIERS: frozenset[int] = frozenset()
 

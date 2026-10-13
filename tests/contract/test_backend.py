@@ -6,6 +6,7 @@ from unisim import (
     BackendCapability,
     BenchmarkCase,
     FakeBackend,
+    GraphLifecycleSnapshot,
     GraphLifecycleState,
     TensorExecution,
     TensorIOSpec,
@@ -49,6 +50,13 @@ def test_tensor_lifecycle_fails_closed_by_default() -> None:
     with pytest.raises(NotImplementedError, match="does not support packed host-bridge"):
         backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos",)))
     assert backend.get_graph_lifecycle() is GraphLifecycleState.UNAVAILABLE
+    snapshot = backend.get_graph_lifecycle_snapshot()
+    assert isinstance(snapshot, GraphLifecycleSnapshot)
+    assert snapshot.state is GraphLifecycleState.UNAVAILABLE
+    with pytest.raises(NotImplementedError, match="graph invalidation"):
+        backend.invalidate_graph("model")
+    with pytest.raises(ValueError, match="unsupported graph invalidation"):
+        backend.invalidate_graph("learner")
 
 
 def test_benchmark_api_is_only_data() -> None:

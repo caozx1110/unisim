@@ -22,6 +22,7 @@ from typing import Any, NoReturn
 import numpy as np
 
 from unisim.backend.base import (
+    GRAPH_INVALIDATION_REASONS,
     BackendMocapPoseBinding,
     BackendPlayCapabilities,
     BackendPlayRenderPlan,
@@ -30,6 +31,8 @@ from unisim.backend.base import (
     DebugOverlayGetter,
     GraphCandidatePreflight,
     GraphCompletionToken,
+    GraphInvalidationReason,
+    GraphLifecycleSnapshot,
     GraphLifecycleState,
     PhysicsStateLayout,
     PublicStateWidths,
@@ -488,6 +491,9 @@ class MjwarpBackend(SimBackend):
         self._defer_torch_fused_validation = False
         self._graph_completion_sequence = 0
         self._graph_capture_id = f"mjwarp-{id(self):016x}"
+        self._graph_replay_count = 0
+        self._graph_fallback_count = 0
+        self._graph_invalidated = False
         # Tracked-body views are zero-copy slices of _sensor_cache; they must be
         # bound before the first forward barrier refreshes the cache below.
         self._body_id_to_tracked_idx: np.ndarray | None = None
@@ -1650,12 +1656,37 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_reset_graph = None
         self._reset_scratch_forward_graph = None
         self._cuda_graph_disable_reason: str | None = reason
+        self._graph_invalidated = True
+        self._graph_fallback_count += 1
+
+    def invalidate_graph(self, reason: GraphInvalidationReason) -> GraphLifecycleSnapshot:
+        """Invalidate fixed-address captures before an owner-visible mutation."""
+        if reason not in GRAPH_INVALIDATION_REASONS:
+            raise ValueError(f"unsupported graph invalidation reason {reason!r}")
+        if self._cuda_graph_enabled:
+            self._disable_cuda_graphs(f"graph invalidated: {reason}")
+        else:
+            self._graph_invalidated = True
+        return self.get_graph_lifecycle_snapshot()
 
     def get_graph_lifecycle(self) -> GraphLifecycleState:
         """Return the public fixed-address graph lifecycle state."""
+        if self._graph_invalidated:
+            return GraphLifecycleState.INVALIDATED
         if not self._cuda_graph_enabled:
             return GraphLifecycleState.UNAVAILABLE
         return GraphLifecycleState.READY
+
+    def get_graph_lifecycle_snapshot(self) -> GraphLifecycleSnapshot:
+        """Return graph lifecycle evidence for public manifests."""
+        return GraphLifecycleSnapshot(
+            contract_version=1,
+            state=self.get_graph_lifecycle(),
+            capture_id=self._graph_capture_id if self._cuda_graph_enabled else None,
+            replay_count=self._graph_replay_count,
+            fallback_count=self._graph_fallback_count,
+            disable_reason=self._cuda_graph_disable_reason,
+        )
 
     def _graph_completion(
         self,
@@ -1672,6 +1703,7 @@ class MjwarpBackend(SimBackend):
         event = torch.cuda.Event()
         event.record(stream)
         self._graph_completion_sequence += 1
+        self._graph_replay_count += 1
         token = GraphCompletionToken(
             contract_version=1,
             lifecycle_state=self.get_graph_lifecycle(),
@@ -1724,7 +1756,8 @@ class MjwarpBackend(SimBackend):
         owner-layer operation that replaces a model or data array must call this
         method afterward so captured pointers cannot become stale.
         """
-        self._disable_cuda_graphs("CUDA graph capture has not been initialized")
+        self._cuda_graph_enabled = False
+        self._cuda_graph_disable_reason = "CUDA graph capture has not been initialized"
         eligible, reason = _cuda_graph_eligibility(self._warp, device)
         if not eligible:
             assert reason is not None
@@ -1794,6 +1827,7 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_forward_graph = reset_scratch_forward_graph
         self._cuda_graph_enabled = True
         self._cuda_graph_disable_reason = None
+        self._graph_invalidated = False
 
     def _execute_device_steps(self, nsteps: int) -> None:
         """Advance fixed-shape device state through graph replay or eager calls."""

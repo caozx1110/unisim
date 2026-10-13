@@ -8,6 +8,7 @@ from unisim import (
     FakeBackend,
     GraphCandidatePreflight,
     GraphCompletionToken,
+    GraphLifecycleSnapshot,
     GraphLifecycleState,
     SupportLevel,
     TensorDataPlane,
@@ -212,6 +213,37 @@ def test_graph_completion_token_is_fail_closed_public_metadata() -> None:
         GraphCompletionToken(**(valid | {"sequence": True}))
     with pytest.raises(TypeError, match="capture_id"):
         GraphCompletionToken(**(valid | {"capture_id": " "}))
+
+
+def test_graph_lifecycle_snapshot_fails_closed() -> None:
+    valid = {
+        "contract_version": 1,
+        "state": GraphLifecycleState.READY,
+        "capture_id": "capture-a",
+        "replay_count": 4,
+        "fallback_count": 0,
+    }
+
+    assert GraphLifecycleSnapshot(**valid).replay_count == 4
+    with pytest.raises(ValueError, match="contract"):
+        GraphLifecycleSnapshot(**(valid | {"contract_version": 2}))
+    with pytest.raises(ValueError, match="capture_id"):
+        GraphLifecycleSnapshot(**(valid | {"capture_id": None}))
+    with pytest.raises(ValueError, match="disable reason"):
+        GraphLifecycleSnapshot(**(valid | {"disable_reason": "stale reason"}))
+    with pytest.raises(ValueError, match="disable reason"):
+        GraphLifecycleSnapshot(
+            **(
+                valid
+                | {
+                    "state": GraphLifecycleState.INVALIDATED,
+                    "capture_id": None,
+                    "disable_reason": " ",
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="fallback_count"):
+        GraphLifecycleSnapshot(**(valid | {"fallback_count": -1}))
     with pytest.raises(ValueError, match="deferred fused validation"):
         TensorLifecycleCapabilities(
             execution=TensorExecution.HOST_BRIDGE,

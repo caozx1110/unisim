@@ -120,6 +120,20 @@ class GraphLifecycleState(Enum):
     INVALIDATED = "invalidated"
 
 
+GraphInvalidationReason = Literal[
+    "model",
+    "data",
+    "view",
+    "capacity",
+    "policy_io",
+    "stream_event",
+    "capture_failed",
+]
+GRAPH_INVALIDATION_REASONS: frozenset[str] = frozenset(
+    {"model", "data", "view", "capacity", "policy_io", "stream_event", "capture_failed"}
+)
+
+
 _TENSOR_DEVICE_LABEL = re.compile(r"^(cpu|cuda)(?::([0-9]+))?$")
 
 
@@ -531,6 +545,38 @@ class GraphCompletionToken:
         stream-id metadata into implicit synchronization.
         """
         raise NotImplementedError("this graph completion receipt does not implement a read gate")
+
+
+@dataclass(frozen=True)
+class GraphLifecycleSnapshot:
+    """Public graph-capture state and counters for manifests.
+
+    A backend produces this only through its public lifecycle query. It never
+    exposes graph pointers, captured addresses, streams, or event handles.
+    """
+
+    contract_version: int
+    state: GraphLifecycleState
+    capture_id: str | None
+    replay_count: int
+    fallback_count: int
+    disable_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.contract_version != 1:
+            raise ValueError(f"unsupported graph lifecycle contract {self.contract_version}")
+        if self.state is GraphLifecycleState.READY:
+            if not isinstance(self.capture_id, str) or not self.capture_id.strip():
+                raise ValueError("a READY graph lifecycle requires a capture_id")
+            if self.disable_reason is not None:
+                raise ValueError("a READY graph lifecycle must not declare a disable reason")
+        else:
+            if self.disable_reason is None or not self.disable_reason.strip():
+                raise ValueError("a non-READY graph lifecycle requires a disable reason")
+        for name in ("replay_count", "fallback_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"graph lifecycle {name} must be a non-negative integer")
 
 
 @dataclass(frozen=True)
@@ -1372,6 +1418,25 @@ class SimBackend(abc.ABC):
     def get_graph_lifecycle(self) -> GraphLifecycleState:
         """Return the public lifecycle state without exposing graph handles."""
         return GraphLifecycleState.UNAVAILABLE
+
+    def get_graph_lifecycle_snapshot(self) -> GraphLifecycleSnapshot:
+        """Return public lifecycle counters for diagnostics and manifests."""
+        return GraphLifecycleSnapshot(
+            contract_version=1,
+            state=self.get_graph_lifecycle(),
+            capture_id=None,
+            replay_count=0,
+            fallback_count=0,
+            disable_reason="backend does not declare graph completion publication",
+        )
+
+    def invalidate_graph(self, reason: GraphInvalidationReason) -> GraphLifecycleSnapshot:
+        """Fail closed to an invalidated graph lifecycle before mutation."""
+        if reason not in GRAPH_INVALIDATION_REASONS:
+            raise ValueError(f"unsupported graph invalidation reason {reason!r}")
+        raise NotImplementedError(
+            f"{self.backend_type} does not support graph invalidation: {reason}"
+        )
 
     def get_public_state_widths(self) -> PublicStateWidths:
         """Return canonical qpos/qvel widths for packed tensor reset layout."""

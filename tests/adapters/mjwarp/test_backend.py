@@ -832,6 +832,30 @@ def test_mjwarp_mask_reset_publishes_ordered_completion_receipts() -> None:
     backend.close()
 
 
+def test_mjwarp_graph_invalidation_is_public_fail_closed() -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(Path("/tmp"), "unused-invalidation.xml", num_envs=2)
+    if not backend._cuda_graph_enabled:
+        reason = backend._cuda_graph_disable_reason or "unknown reason"
+        pytest.skip(f"test requires an mjwarp CUDA graph; graphs disabled: {reason}")
+
+    backend.step_tensor(torch.zeros((2, 1), dtype=torch.float32, device="cuda"), nsteps=1)
+    before = backend.get_graph_lifecycle_snapshot()
+
+    snapshot = backend.invalidate_graph("model")
+
+    assert before.state is GraphLifecycleState.READY
+    assert snapshot.state is GraphLifecycleState.INVALIDATED
+    assert snapshot.capture_id is None
+    assert snapshot.disable_reason == "graph invalidated: model"
+    assert snapshot.replay_count == before.replay_count
+    assert snapshot.fallback_count == before.fallback_count + 1
+    assert not backend._cuda_graph_enabled
+    with pytest.raises(ValueError, match="unsupported graph invalidation"):
+        backend.invalidate_graph("learner")
+    backend.close()
+
+
 def test_mjwarp_tensor_reset_rejects_pending_wrench_and_mocap(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
     pushed = _make_backend(tmp_path, "pushed.xml", base_name="base")
