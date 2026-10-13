@@ -835,3 +835,16 @@ def test_mjwarp_tensor_reset_valid_rows_do_not_scalar_sync(
         monkeypatch.undo()
 
     assert scalar_conversions == 0
+
+
+def test_mjwarp_graph_preflight_rejects_disabled_graph() -> None:
+    backend = _make_backend(Path("/tmp"), "unused-disabled-preflight.xml", num_envs=2)
+    backend.set_defer_torch_fused_validation(True)
+    backend._disable_cuda_graphs("test graph unavailable")
+
+    verdict = backend.preflight_graph_candidate(GraphCandidatePreflight(requested=True))
+
+    assert verdict.supported is False
+    assert verdict.disable_reason == "test graph unavailable"
+    assert verdict.torch_stream_id is None
+    backend.close()
