@@ -53,6 +53,7 @@ def test_tensor_lifecycle_fails_closed_by_default() -> None:
     snapshot = backend.get_graph_lifecycle_snapshot()
     assert isinstance(snapshot, GraphLifecycleSnapshot)
     assert snapshot.state is GraphLifecycleState.UNAVAILABLE
+    assert snapshot.disable_reason == "backend does not declare graph completion publication"
     with pytest.raises(NotImplementedError, match="graph invalidation"):
         backend.invalidate_graph("model")
     with pytest.raises(ValueError, match="unsupported graph invalidation"):
