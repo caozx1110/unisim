@@ -80,7 +80,11 @@ from ..base import (
     BackendTerrainSpawnData,
     CameraCfg,
     DebugOverlayGetter,
+    GraphCompletionToken,
+    GraphLifecycleSnapshot,
+    GraphLifecycleState,
     HostBridgeTransferPlan,
+    ImmediateGraphCompletionToken,
     PhysicsStateLayout,
     PublicStateWidths,
     SelectedResetPublication,
@@ -670,6 +674,8 @@ class MuJoCoBackend(SimBackend):
         self._composed_scene = None
         self._host_bridge_plans: weakref.WeakSet[Any] = weakref.WeakSet()
         self._mocap_pose_bindings: dict[str, BackendMocapPoseBinding] = {}
+        self._graph_completion_sequence = 0
+        self._graph_completion_capture_id = "mujoco-host-bridge-eager"
         self._entity_layout: CompiledSceneLayout | None = None
         self._entity_faulted = False
         self._entity_closed = False
@@ -2265,6 +2271,30 @@ class MuJoCoBackend(SimBackend):
             selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
             mask_selected_reset=True,
             mask_selected_reset_full_refresh=True,
+            graph_completion_publication=True,
+        )
+
+    def _graph_completion(self, operation: str, *, stream_id: int) -> GraphCompletionToken:
+        """Publish the already-complete HOST_BRIDGE boundary as a receipt."""
+        self._graph_completion_sequence += 1
+        return ImmediateGraphCompletionToken(
+            contract_version=1,
+            lifecycle_state=GraphLifecycleState.READY,
+            operation=operation,
+            sequence=self._graph_completion_sequence,
+            stream_id=stream_id,
+            capture_id=self._graph_completion_capture_id,
+        )
+
+    def get_graph_lifecycle_snapshot(self) -> GraphLifecycleSnapshot:
+        """Report the eager HOST_BRIDGE receipt lifecycle without capture state."""
+        return GraphLifecycleSnapshot(
+            contract_version=1,
+            state=GraphLifecycleState.UNAVAILABLE,
+            capture_id=None,
+            replay_count=0,
+            fallback_count=0,
+            disable_reason="eager HOST_BRIDGE completion publication; no capture lifecycle",
         )
 
     def get_public_state_widths(self) -> PublicStateWidths:
@@ -2664,7 +2694,13 @@ class MuJoCoBackend(SimBackend):
             result = {}
         timing = dict(result.get("timing", {}))
         timing["tensor_control_d2h_ms"] = d2h_ms
-        return {"timing": timing}
+        return {
+            "timing": timing,
+            "graph_completion": self._graph_completion(
+                "step",
+                stream_id=int(torch.cuda.current_stream(ctrl.device).cuda_stream),
+            ),
+        }
 
     def _step_native(self, ctrl: np.ndarray, nsteps: int = 1) -> dict | None:
         """Step all envs with a constant control (zero-order hold).
@@ -2973,9 +3009,7 @@ class MuJoCoBackend(SimBackend):
             for field in randomization.requested_terms():
                 value = getattr(randomization, field)
                 if not isinstance(value, torch.Tensor):
-                    raise TypeError(
-                        f"MuJoCo tensor mask reset {field} must be a torch.Tensor"
-                    )
+                    raise TypeError(f"MuJoCo tensor mask reset {field} must be a torch.Tensor")
                 if value.device != source_device:
                     raise ValueError("MuJoCo tensor mask reset values must share one device")
             host_randomization = ResetRandomizationPayload(
@@ -2992,8 +3026,7 @@ class MuJoCoBackend(SimBackend):
                     "ResetRandomizationPayload or TensorResetRandomizationPayload"
                 )
             raise NotImplementedError(
-                "MuJoCo mask reset requires a device-resident "
-                "TensorResetRandomizationPayload"
+                "MuJoCo mask reset requires a device-resident TensorResetRandomizationPayload"
             )
         timing: dict[str, float] = {
             "set_state_tensor_mask_ms": (time.perf_counter() - started) * 1000.0,
