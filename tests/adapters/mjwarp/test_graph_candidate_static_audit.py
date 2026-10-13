@@ -60,7 +60,7 @@ def _static_violations(tree: ast.Module, synchronize_lines: set[int]) -> list[Vi
                 continue
             called = _call_name(node)
             expression = _unparse(node)
-            if called == "synchronize" and node.lineno not in synchronize_lines:
+            if called in {"synchronize", "_synchronize"} and node.lineno not in synchronize_lines:
                 violations.append(Violation(name, node.lineno, "host-sync", expression))
             if called == "current_stream":
                 violations.append(Violation(name, node.lineno, "stream-query", expression))

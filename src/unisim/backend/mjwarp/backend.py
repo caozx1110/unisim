@@ -3026,7 +3026,6 @@ class MjwarpBackend(SimBackend):
                     defaults[name] = torch.zeros_like(self._stable_tensor_field_view(name))
                 self._tensor_reset_defaults = defaults
             self._execute_device_reset()
-            self._synchronize()
             stable_qpos = self._stable_tensor_field_view("qpos")
             stable_qvel = self._stable_tensor_field_view("qvel")
             stable_qpos.copy_(torch.where(mask_tensor[:, None], qpos_tensor, stable_qpos))
