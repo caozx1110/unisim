@@ -11,7 +11,12 @@ pytest.importorskip("warp")
 
 import warp
 
-from unisim import MjwarpBackend, TensorExecution
+from unisim import (
+    GraphCandidatePreflight,
+    GraphLifecycleState,
+    MjwarpBackend,
+    TensorExecution,
+)
 from unisim.dr.types import ResetRandomizationPayload
 from unisim.scene import SceneCfg
 
@@ -104,14 +109,16 @@ def test_mjwarp_pre_step_control_changes_trajectory(tmp_path: Path) -> None:
     nsteps = 4
     ctrl = np.zeros((2, 1), dtype=np.float32)
     for _ in range(8):
-        baseline.step(ctrl, nsteps=nsteps)
+        baseline._host_step(ctrl, nsteps=nsteps)
     driven.set_pre_step_control(
         lambda owner, c: (0.2 - owner.get_state_views("qpos")["qpos"].cpu().numpy()) * 20.0
     )
     for _ in range(8):
-        driven.step(ctrl, nsteps=nsteps)
-    np.testing.assert_allclose(baseline.get_dof_pos(), 0.0, atol=1e-6)
-    assert np.all(np.abs(driven.get_dof_pos() - baseline.get_dof_pos()) > 1e-2)
+        driven._host_step(ctrl, nsteps=nsteps)
+    baseline_qpos = baseline.get_state_views(("qpos",))["qpos"].cpu().numpy()
+    driven_qpos = driven.get_state_views(("qpos",))["qpos"].cpu().numpy()
+    np.testing.assert_allclose(baseline_qpos, 0.0, atol=1e-6)
+    assert np.all(np.abs(driven_qpos - baseline_qpos) > 1e-2)
 
 
 def test_mjwarp_pre_step_control_replays_captured_step_graph(tmp_path: Path) -> None:
@@ -188,8 +195,8 @@ def test_mjwarp_pre_step_control_graph_matches_eager_short_horizon(tmp_path: Pat
     rows = np.arange(2, dtype=np.int32)
     qpos = np.array([[0.1], [-0.1]], dtype=np.float32)
     qvel = np.array([[0.2], [-0.2]], dtype=np.float32)
-    graph_backend.set_state(rows, qpos, qvel)
-    eager_backend.set_state(rows, qpos, qvel)
+    graph_backend._host_set_state(rows, qpos, qvel)
+    eager_backend._host_set_state(rows, qpos, qvel)
 
     graph_observed: list[np.ndarray] = []
     eager_observed: list[np.ndarray] = []
@@ -206,19 +213,19 @@ def test_mjwarp_pre_step_control_graph_matches_eager_short_horizon(tmp_path: Pat
     eager_backend.set_pre_step_control(eager_controller)
     ctrl = np.zeros((2, 1), dtype=np.float32)
     for _ in range(2):
-        graph_backend.step(ctrl, nsteps=4)
-        eager_backend.step(ctrl, nsteps=4)
+        graph_backend._host_step(ctrl, nsteps=4)
+        eager_backend._host_step(ctrl, nsteps=4)
 
     np.testing.assert_array_equal(graph_observed[0], eager_observed[0])
     np.testing.assert_allclose(graph_observed, eager_observed, atol=2e-6)
     np.testing.assert_allclose(
-        graph_backend.get_state(("qpos", "qvel"))["qpos"],
-        eager_backend.get_state(("qpos", "qvel"))["qpos"],
+        graph_backend._host_get_state(("qpos", "qvel"))["qpos"],
+        eager_backend._host_get_state(("qpos", "qvel"))["qpos"],
         atol=2e-6,
     )
     np.testing.assert_allclose(
-        graph_backend.get_state(("qpos", "qvel"))["qvel"],
-        eager_backend.get_state(("qpos", "qvel"))["qvel"],
+        graph_backend._host_get_state(("qpos", "qvel"))["qvel"],
+        eager_backend._host_get_state(("qpos", "qvel"))["qvel"],
         atol=2e-5,
     )
 
@@ -429,8 +436,8 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     with pytest.raises(TypeError, match="nsteps must be a positive integer"):
         device.step_tensor(ctrl, nsteps=1.5)
     with pytest.raises(TypeError, match="nsteps must be a positive integer"):
-        host.step(ctrl.detach().cpu().numpy(), nsteps=1.5)
-    host.step(ctrl.detach().cpu().numpy(), nsteps=2)
+        host._host_step(ctrl.detach().cpu().numpy(), nsteps=1.5)
+    host._host_step(ctrl.detach().cpu().numpy(), nsteps=2)
     result = device.step_tensor(ctrl, nsteps=2)
     assert result is not None
     assert result["timing"]["host_cache_refresh_ms"] == 0.0
@@ -442,12 +449,12 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     assert device.get_sensor_view("base_pos").data_ptr() == sensor_view.data_ptr()
     np.testing.assert_allclose(
         sensor_view.detach().cpu().numpy(),
-        host.get_sensor_data("base_pos"),
+        host._host_read_sensor("base_pos"),
         atol=1e-6,
     )
     np.testing.assert_allclose(
         views["qpos"].detach().cpu().numpy(),
-        host.get_state(("qpos",))["qpos"],
+        host._host_get_state(("qpos",))["qpos"],
         atol=1e-6,
     )
 
@@ -458,12 +465,12 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     torch.testing.assert_close(views["qpos"], before_reject)
     np.testing.assert_allclose(
         views["qvel"].detach().cpu().numpy(),
-        host.get_state(("qvel",))["qvel"],
+        host._host_get_state(("qvel",))["qvel"],
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        device.get_state(("qpos",))["qpos"],
-        host.get_state(("qpos",))["qpos"],
+        device._host_get_state(("qpos",))["qpos"],
+        host._host_get_state(("qpos",))["qpos"],
         atol=1e-6,
     )
 
@@ -471,23 +478,23 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     qpos = torch.full((1, 1), 0.5, dtype=torch.float32, device=ctrl.device)
     qvel = torch.zeros_like(qpos)
     host_rows = rows.detach().cpu().numpy()
-    host.set_state(host_rows, qpos.cpu().numpy(), qvel.cpu().numpy())
+    host._host_set_state(host_rows, qpos.cpu().numpy(), qvel.cpu().numpy())
     reset_result = device.set_state_tensor(rows, qpos, qvel)
     assert reset_result is not None
     assert reset_result["timing"]["set_state_tensor_host_cache_refresh_ms"] == 0.0
     np.testing.assert_allclose(
         device.get_state_views(("qpos",))["qpos"].detach().cpu().numpy(),
-        host.get_state(("qpos",))["qpos"],
+        host._host_get_state(("qpos",))["qpos"],
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        device.get_state(("qpos",))["qpos"],
-        host.get_state(("qpos",))["qpos"],
+        device._host_get_state(("qpos",))["qpos"],
+        host._host_get_state(("qpos",))["qpos"],
         atol=1e-6,
     )
     np.testing.assert_array_equal(
-        device.get_state(("ctrl",))["ctrl"],
-        host.get_state(("ctrl",))["ctrl"],
+        device._host_get_state(("ctrl",))["ctrl"],
+        host._host_get_state(("ctrl",))["ctrl"],
     )
 
 
@@ -498,12 +505,12 @@ def test_mjwarp_tensor_step_then_host_reset_preserves_unselected_rows(tmp_path: 
     device.step_tensor(ctrl, nsteps=2)
     before_host_reset = device.get_state_views(("qpos",))["qpos"].detach().cpu().numpy().copy()
 
-    device.set_state(
+    device._host_set_state(
         np.array([0], dtype=np.int64),
         np.array([[0.25]], dtype=np.float32),
         np.zeros((1, 1), dtype=np.float32),
     )
-    after_host_reset = device.get_state(("qpos",))["qpos"]
+    after_host_reset = device._host_get_state(("qpos",))["qpos"]
     np.testing.assert_allclose(after_host_reset[0], 0.25, atol=1e-7)
     np.testing.assert_allclose(after_host_reset[1], before_host_reset[1], atol=1e-6)
 
@@ -701,6 +708,8 @@ def test_mjwarp_mask_tensor_reset_preserves_unselected_rows(tmp_path: Path) -> N
         "set_state_tensor_host_cache_refresh_ms",
         "set_state_tensor_model_update_ms",
         "set_state_tensor_sensor_refresh_ms",
+        "graph_completion",
+        "graph_input_completion",
     }
     # Experimental B leaves publication lazy; no eager full-batch forward runs.
     assert result["timing"]["set_state_tensor_sensor_refresh_ms"] < 0.01
@@ -731,10 +740,233 @@ def test_mjwarp_mask_tensor_reset_rejects_randomization() -> None:
     mask = torch.zeros((2,), dtype=torch.bool, device="cuda")
     qpos = backend.get_state_views(("qpos",))["qpos"].clone()
     qvel = backend.get_state_views(("qvel",))["qvel"].clone()
-    with pytest.raises(NotImplementedError, match="does not support reset randomization"):
+    with pytest.raises(NotImplementedError, match="device-resident"):
         backend.set_state_tensor_mask(
             mask, qpos, qvel, randomization=ResetRandomizationPayload(kp=np.ones((0, 1)))
         )
+
+
+def test_mjwarp_graph_candidate_preflight_requires_all_public_boundaries() -> None:
+    backend = _make_backend(Path("/tmp"), "unused-preflight.xml", num_envs=2)
+    request = GraphCandidatePreflight(requested=True)
+
+    unrequested = backend.preflight_graph_candidate(
+        GraphCandidatePreflight(
+            requested=False,
+            supported=False,
+            disable_reason="owner did not request capture",
+        )
+    )
+    eager = backend.preflight_graph_candidate(request)
+
+    assert unrequested.supported is False
+    assert unrequested.disable_reason == "graph candidate was not requested"
+    assert eager.supported is False
+    assert eager.disable_reason == "deferred fused validation was not enabled at construction"
+    assert eager.backend_stream_contract == (
+        "backend-completes-step-and-refresh; caller owns Torch stream"
+    )
+    assert eager.torch_stream_id is None
+    backend.close()
+
+
+def test_mjwarp_supported_graph_preflight_reports_current_torch_stream() -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(Path("/tmp"), "unused-supported-preflight.xml", num_envs=2)
+    backend.set_defer_torch_fused_validation(True)
+
+    verdict = backend.preflight_graph_candidate(GraphCandidatePreflight(requested=True))
+
+    assert verdict.supported is True
+    assert verdict.disable_reason is None
+    assert verdict.torch_stream_id == int(
+        torch.cuda.current_stream(backend.get_state_views(("qpos",))["qpos"].device).cuda_stream
+    )
+    backend.close()
+
+
+def test_mjwarp_step_publishes_public_completion_receipt() -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(Path("/tmp"), "unused-completion.xml", num_envs=2)
+    if not backend._cuda_graph_enabled:
+        reason = backend._cuda_graph_disable_reason or "unknown reason"
+        pytest.skip(f"test requires an mjwarp CUDA graph; graphs disabled: {reason}")
+
+    stable_device = backend.get_state_views(("qpos",))["qpos"].device
+    stream = backend._torch_execution_stream(stable_device)
+    result = backend.step_tensor(
+        torch.zeros((2, 1), dtype=torch.float32, device="cuda"),
+        nsteps=1,
+    )
+    completion = result["timing"]["graph_completion"]
+
+    assert backend.get_graph_lifecycle() is GraphLifecycleState.READY
+    assert completion.contract_version == 1
+    assert completion.lifecycle_state is GraphLifecycleState.READY
+    assert completion.operation == "step"
+    assert completion.sequence == 1
+    assert completion.stream_id == int(stream.cuda_stream)
+    assert completion.capture_id == backend._graph_capture_id
+    consumer_stream = torch.cuda.Stream()
+    completion.wait_before_read(consumer_stream)
+    assert isinstance(completion.ipc_handle(), bytes)
+    backend.close()
+
+
+def test_mjwarp_mask_reset_publishes_ordered_completion_receipts() -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(Path("/tmp"), "unused-mask-completion.xml", num_envs=2)
+    if not backend._cuda_graph_enabled:
+        reason = backend._cuda_graph_disable_reason or "unknown reason"
+        pytest.skip(f"test requires an mjwarp CUDA graph; graphs disabled: {reason}")
+
+    qpos = backend.get_state_views(("qpos",))["qpos"].clone()
+    qvel = backend.get_state_views(("qvel",))["qvel"].clone()
+    mask = torch.tensor([False, True], dtype=torch.bool, device=qpos.device)
+    result = backend.set_state_tensor_mask(mask, qpos, qvel, full_refresh=False)
+
+    input_completion = result["timing"]["graph_input_completion"]
+    completion = result["timing"]["graph_completion"]
+    assert input_completion.operation == completion.operation == "mask_reset"
+    assert input_completion.sequence < completion.sequence
+    assert input_completion.stream_id == completion.stream_id
+    assert backend.get_graph_lifecycle() is GraphLifecycleState.READY
+    backend.close()
+
+
+def test_mjwarp_capture_replay_trajectory_matches_eager_modes(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    replay = _make_backend(tmp_path, "parity-replay.xml")
+    if not replay._cuda_graph_enabled:
+        reason = replay._cuda_graph_disable_reason or "unknown reason"
+        pytest.skip(f"test requires an mjwarp CUDA graph; graphs disabled: {reason}")
+
+    eager = _make_backend(tmp_path, "parity-eager.xml")
+    eager._cuda_graph_enabled = False
+    rows = np.arange(2, dtype=np.int32)
+    initial_qpos = np.array([[0.1], [-0.1]], dtype=np.float32)
+    initial_qvel = np.array([[0.2], [-0.2]], dtype=np.float32)
+    replay._host_set_state(rows, initial_qpos, initial_qvel)
+    eager._host_set_state(rows, initial_qpos, initial_qvel)
+
+    # The first replay is capture warmup: CUDA graphs were captured on the cold
+    # construction path, while this call warms the public step/reset replay path
+    # and records the first completion receipt.
+    warmup_ctrl = torch.full((2, 1), 0.05, dtype=torch.float32, device="cuda")
+    replay.step_tensor(warmup_ctrl, nsteps=1)
+    eager._host_step(warmup_ctrl.detach().cpu().numpy(), nsteps=1)
+
+    for ctrl_value in (0.1, -0.2, 0.3):
+        ctrl = torch.full((2, 1), ctrl_value, dtype=torch.float32, device="cuda")
+        replay_result = replay.step_tensor(ctrl, nsteps=1)
+        eager._host_step(ctrl.detach().cpu().numpy(), nsteps=1)
+        replay_views = replay.get_state_views(("qpos", "qvel"))
+        eager_views = eager.get_state_views(("qpos", "qvel"))
+        torch.testing.assert_close(
+            replay_views["qpos"],
+            eager_views["qpos"],
+            rtol=2e-6,
+            atol=2e-6,
+        )
+        torch.testing.assert_close(
+            replay_views["qvel"],
+            eager_views["qvel"],
+            rtol=2e-6,
+            atol=2e-5,
+        )
+        assert replay_result["graph_completion"].capture_id == replay._graph_capture_id
+
+    for mask_values in ([False, False], [False, True], [True, True]):
+        mask = torch.tensor(mask_values, dtype=torch.bool, device="cuda")
+        replay_views = replay.get_state_views(("qpos", "qvel"))
+        eager_views = eager.get_state_views(("qpos", "qvel"))
+        replay_qpos = replay_views["qpos"].clone()
+        replay_qvel = replay_views["qvel"].clone()
+        eager_qpos = eager_views["qpos"].clone()
+        eager_qvel = eager_views["qvel"].clone()
+        replay_qpos[:, 0] += 0.11
+        replay_qvel[:, 0] += 0.07
+        eager_qpos[:, 0] += 0.11
+        eager_qvel[:, 0] += 0.07
+
+        replay.set_state_tensor_mask(mask, replay_qpos, replay_qvel, full_refresh=False)
+        selected_rows = np.flatnonzero(mask.detach().cpu().numpy()).astype(np.int32)
+        if selected_rows.size:
+            eager._host_set_state(
+                selected_rows,
+                eager_qpos.detach().cpu().numpy()[selected_rows],
+                eager_qvel.detach().cpu().numpy()[selected_rows],
+            )
+
+        replay_views = replay.get_state_views(("qpos", "qvel"))
+        eager_views = eager.get_state_views(("qpos", "qvel"))
+        torch.testing.assert_close(replay_views["qpos"], eager_views["qpos"], rtol=2e-6, atol=2e-6)
+        torch.testing.assert_close(replay_views["qvel"], eager_views["qvel"], rtol=2e-6, atol=2e-5)
+
+    snapshot = replay.get_graph_lifecycle_snapshot()
+    assert snapshot.state is GraphLifecycleState.READY
+    assert snapshot.capture_id == replay._graph_capture_id
+    assert snapshot.replay_count >= 4
+    assert snapshot.fallback_count == 0
+    replay.close()
+    eager.close()
+
+
+def test_mjwarp_invalidated_replay_does_not_publish_completion(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(tmp_path, "parity-invalidated.xml")
+    if not backend._cuda_graph_enabled:
+        reason = backend._cuda_graph_disable_reason or "unknown reason"
+        pytest.skip(f"test requires an mjwarp CUDA graph; graphs disabled: {reason}")
+
+    before = backend.get_graph_lifecycle_snapshot()
+    snapshot = backend.invalidate_graph("capture_failed")
+
+    assert before.state is GraphLifecycleState.READY
+    assert snapshot.state is GraphLifecycleState.INVALIDATED
+    assert snapshot.capture_id is None
+    assert snapshot.replay_count == before.replay_count
+    assert snapshot.fallback_count == before.fallback_count + 1
+    assert snapshot.disable_reason == "graph invalidated: capture_failed"
+
+    result = backend.step_tensor(
+        torch.zeros((2, 1), dtype=torch.float32, device="cuda"),
+        nsteps=1,
+    )
+    after = backend.get_graph_lifecycle_snapshot()
+    assert after.state is GraphLifecycleState.INVALIDATED
+    assert after.capture_id is None
+    assert result["graph_completion"] is None
+    assert result["timing"]["graph_completion"] is None
+    # No valid receipt escapes from eager execution after invalidation.
+    assert after.replay_count == before.replay_count
+    assert after.fallback_count == snapshot.fallback_count
+    assert after.disable_reason == snapshot.disable_reason
+    backend.close()
+
+
+def test_mjwarp_graph_invalidation_is_public_fail_closed() -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(Path("/tmp"), "unused-invalidation.xml", num_envs=2)
+    if not backend._cuda_graph_enabled:
+        reason = backend._cuda_graph_disable_reason or "unknown reason"
+        pytest.skip(f"test requires an mjwarp CUDA graph; graphs disabled: {reason}")
+
+    backend.step_tensor(torch.zeros((2, 1), dtype=torch.float32, device="cuda"), nsteps=1)
+    before = backend.get_graph_lifecycle_snapshot()
+
+    snapshot = backend.invalidate_graph("model")
+
+    assert before.state is GraphLifecycleState.READY
+    assert snapshot.state is GraphLifecycleState.INVALIDATED
+    assert snapshot.capture_id is None
+    assert snapshot.disable_reason == "graph invalidated: model"
+    assert snapshot.replay_count == before.replay_count
+    assert snapshot.fallback_count == before.fallback_count + 1
+    assert backend.get_graph_lifecycle() is GraphLifecycleState.INVALIDATED
+    with pytest.raises(ValueError, match="unsupported graph invalidation"):
+        backend.invalidate_graph("learner")
+    backend.close()
 
 
 def test_mjwarp_tensor_reset_rejects_pending_wrench_and_mocap(tmp_path: Path) -> None:
@@ -796,3 +1028,16 @@ def test_mjwarp_tensor_reset_valid_rows_do_not_scalar_sync(
         monkeypatch.undo()
 
     assert scalar_conversions == 0
+
+
+def test_mjwarp_graph_preflight_rejects_disabled_graph() -> None:
+    backend = _make_backend(Path("/tmp"), "unused-disabled-preflight.xml", num_envs=2)
+    backend.set_defer_torch_fused_validation(True)
+    backend._disable_cuda_graphs("test graph unavailable")
+
+    verdict = backend.preflight_graph_candidate(GraphCandidatePreflight(requested=True))
+
+    assert verdict.supported is False
+    assert verdict.disable_reason == "test graph unavailable"
+    assert verdict.torch_stream_id is None
+    backend.close()

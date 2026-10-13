@@ -83,6 +83,32 @@ def assert_packed_reset_conformance(backend: SimBackend) -> None:
     torch.testing.assert_close(views["qpos"][rows], written_qpos)
     torch.testing.assert_close(views["qvel"][rows], written_qvel)
 
+    reset_mask = torch.zeros(backend.num_envs, dtype=torch.bool, device=device)
+    reset_mask[rows] = True
+    transaction.begin_state_mask(reset_mask)
+    transaction.write_state_mask(
+        reset_mask,
+        qpos_values=written_qpos.expand(backend.num_envs, -1).contiguous(),
+        qvel_values=written_qvel.expand(backend.num_envs, -1).contiguous(),
+    )
+    result = transaction.commit_mask(reset_mask)
+    timing = result.get("timing", {})
+    assert {"packed_reset_compose_ms", "packed_reset_commit_ms", "packed_reset_total_ms"} <= set(
+        timing
+    )
+    views = backend.get_state_views(("qpos", "qvel"), device=device)
+    torch.testing.assert_close(views["qpos"][rows], written_qpos)
+    if backend.num_envs > 1:
+        false_rows = torch.ones(backend.num_envs, dtype=torch.bool, device=device)
+        false_rows[rows] = False
+        torch.testing.assert_close(
+            views["qpos"][false_rows],
+            torch.as_tensor(
+                np.asarray(state["qpos"])[false_rows.detach().cpu().numpy()],
+                device=device,
+            ),
+        )
+
 
 def assert_physics_state_playback_conformance(backend: SimBackend) -> None:
     """Validate the physics-state playback contract of a materialized backend."""

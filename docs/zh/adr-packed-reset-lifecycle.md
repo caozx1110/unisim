@@ -19,6 +19,7 @@ UniSim 拥有 backend-neutral 的 staged packed reset 事务：
 - `SimBackend.begin_packed_reset(device=None)` 返回 backend-owned `TorchPackedResetComposer`，否则快速失败。
 - `TensorLifecycleCapabilities` 新增 `packed_reset`、`packed_reset_fields` 与 `packed_reset_mocap`。不支持的生命周期不得声明它们。
 - 事务持有全宽、device-resident 的已提交 baseline，并由 backend 的权威（fixed-variant aware）`get_reset_term_default()` 初始化。
+- graph 候选路径保持同样的全宽 staging：`begin_state_mask(mask)`、`write_state_mask(mask, ...)` 与 `commit_state_mask(mask, ...)` 消费全宽 bool mask，保留 false rows，并把 selected-row 语义委托给公开 backend mask 边界。这样避免 owner 侧 `nonzero()` 压缩，同时不改变上述 staged-row 契约。
 - `write_model_field(field, rows, values, columns=None)` 合并最终绝对值的选中行写入，并支持 PD `kp`/`kd` 等不相交选中列合并。
 - `commit_state(rows, qpos, qvel)` 通过携带 staged 选中行表调用一次 `set_state_tensor()`，形成唯一公开 reset 边界；仅对本次提交行、且仅当该边界成功返回后才提升 baseline；其他行的 staged 写入保留到 `discard()`。
 - `discard(field=None)` 在提交前显式丢弃 staged 写入。
@@ -28,7 +29,7 @@ UniSim 拥有 backend-neutral 的 staged packed reset 事务：
 
 ### 适配器行为
 
-- MuJoCo（`HOST_BRIDGE`）在同一显式 tensor-to-host reset 边界内接受 `TensorResetRandomizationPayload`，先同步一次再物化 host payload。持久的 `HostBridgeTransferPlan.apply_reset()` 仍是单包快速路径。
+- MuJoCo（`HOST_BRIDGE`）在同一显式 tensor-to-host reset 边界内接受 selected-row 与 full-width mask 形态的 `TensorResetRandomizationPayload`，先同步一次再物化 host payload。持久的 `HostBridgeTransferPlan.apply_reset()` 仍是 selected-row ID 的单包快速路径。
 - MJWarp（`DEVICE_RESIDENT`）在 device 上组合，并通过既有 device-side scatter 提交，发布语义为 `AUTHORITATIVE_VIEWS`。`geom_size` 因派生 bounds 目前在 host 计算而继续排除。
 - MuJoCo 为 kinematic entity root 声明 packed reset mocap 支持；选中 Torch 行与 pose 只在提交时通过显式 host 边界。本阶段 MJWarp 的 mocap 写入保持快速失败。
 - 其余适配器保持快速失败；不进行 backend-private probing。

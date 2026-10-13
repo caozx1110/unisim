@@ -32,6 +32,7 @@ class _ComposerBackend:
     def __init__(self, *, packed_reset_mocap: bool = False) -> None:
         self.device = torch.device("cpu")
         self.commits: list[tuple[object, object, object, TensorResetRandomizationPayload]] = []
+        self.mask_commits: list[tuple[object, object, object, TensorResetRandomizationPayload]] = []
         self.mocap_writes: list[tuple[str, object, object]] = []
         self.packed_reset_mocap = packed_reset_mocap
 
@@ -64,6 +65,10 @@ class _ComposerBackend:
     def set_state_tensor(self, rows, qpos, qvel, randomization=None):
         self.commits.append((rows, qpos, qvel, randomization))
         return {"timing": {"set_state_tensor_commit_forward_ms": 1.0}}
+
+    def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None, **_kwargs):
+        self.mask_commits.append((reset_mask, qpos, qvel, randomization))
+        return {"timing": {"set_state_tensor_mask_ms": 1.0}}
 
     def set_mocap_pose_tensor(self, body_name, rows, poses):
         self.mocap_writes.append((body_name, rows, poses))
@@ -244,3 +249,57 @@ def test_composer_merges_tailed_columns_and_stages_state() -> None:
     torch.testing.assert_close(committed_qpos[:, 1], torch.tensor([20.0, 22.0]))
     torch.testing.assert_close(committed_qvel[:, 0], torch.tensor([30.0, 32.0]))
     torch.testing.assert_close(payload.body_ipos[0, 1], torch.full((3,), 0.25))
+
+
+def test_composer_mask_lifecycle_stays_full_width_and_preserves_false_rows() -> None:
+    backend = _ComposerBackend()
+    transaction = TorchPackedResetComposer(backend)
+    transaction.set_state_default(
+        torch.tensor([1.0, 2.0], dtype=torch.float32),
+        torch.tensor([3.0, 4.0], dtype=torch.float32),
+    )
+    reset_mask = torch.tensor([False, True, False, True])
+    original_qpos, original_qvel = transaction.state_views()
+    original_qpos.copy_(torch.arange(8, dtype=torch.float32).reshape(4, 2))
+    original_qvel.copy_(torch.arange(8, dtype=torch.float32).reshape(4, 2) + 10.0)
+    transaction.begin_state_mask(reset_mask)
+
+    qpos, qvel = transaction.state_views()
+    torch.testing.assert_close(qpos[reset_mask], torch.tensor([[1.0, 2.0], [1.0, 2.0]]))
+    torch.testing.assert_close(qvel[reset_mask], torch.tensor([[3.0, 4.0], [3.0, 4.0]]))
+    torch.testing.assert_close(qpos[~reset_mask], original_qpos[~reset_mask])
+    torch.testing.assert_close(qvel[~reset_mask], original_qvel[~reset_mask])
+
+    transaction.write_state_mask(
+        reset_mask,
+        qpos_columns=torch.tensor([1], dtype=torch.int64),
+        qpos_values=torch.tensor([[20.0], [21.0], [22.0], [23.0]], dtype=torch.float32),
+        qvel_columns=torch.tensor([0], dtype=torch.int64),
+        qvel_values=torch.tensor([[30.0], [31.0], [32.0], [33.0]], dtype=torch.float32),
+    )
+    result = transaction.commit_mask(reset_mask)
+    assert result["timing"]["packed_reset_total_ms"] >= 0.0
+    assert result["timing"]["set_state_tensor_mask_ms"] == 1.0
+
+    committed_mask, committed_qpos, committed_qvel, payload = backend.mask_commits[0]
+    assert committed_mask is reset_mask
+    assert tuple(committed_qpos.shape) == (4, 2)
+    assert tuple(committed_qvel.shape) == (4, 2)
+    assert payload is None
+    torch.testing.assert_close(committed_qpos[reset_mask, 1], torch.tensor([21.0, 23.0]))
+    torch.testing.assert_close(committed_qpos[~reset_mask, 1], original_qpos[~reset_mask, 1])
+    torch.testing.assert_close(committed_qvel[reset_mask, 0], torch.tensor([31.0, 33.0]))
+    torch.testing.assert_close(committed_qvel[~reset_mask, 0], original_qvel[~reset_mask, 0])
+
+
+def test_composer_mask_lifecycle_validates_layout() -> None:
+    backend = _ComposerBackend()
+    transaction = TorchPackedResetComposer(backend)
+    transaction.set_state_default(
+        torch.tensor([1.0, 2.0], dtype=torch.float32),
+        torch.tensor([3.0, 4.0], dtype=torch.float32),
+    )
+    with pytest.raises(TypeError, match="contiguous 1-D bool"):
+        transaction.begin_state_mask(torch.zeros(4, dtype=torch.float32))
+    with pytest.raises(ValueError, match="must have shape"):
+        transaction.begin_state_mask(torch.zeros(3, dtype=torch.bool))

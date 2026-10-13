@@ -5,6 +5,11 @@ from dataclasses import replace
 import pytest
 
 from unisim import (
+    FakeBackend,
+    GraphCandidatePreflight,
+    GraphCompletionToken,
+    GraphLifecycleSnapshot,
+    GraphLifecycleState,
     SupportLevel,
     TensorDataPlane,
     TensorExecution,
@@ -140,6 +145,143 @@ def test_tensor_feature_dependencies_fail_closed() -> None:
     for matrix, message in zip(invalid_matrices, messages, strict=True):
         with pytest.raises(ValueError, match=message):
             TensorLifecycleCapabilities(**matrix)
+
+
+def test_deferred_fused_validation_capability_dependencies_fail_closed() -> None:
+    with pytest.raises(ValueError, match="unsupported tensor lifecycle"):
+        TensorLifecycleCapabilities(
+            execution=TensorExecution.UNSUPPORTED,
+            deferred_fused_validation=True,
+        )
+
+
+def test_graph_completion_capability_dependencies_fail_closed() -> None:
+    base = {
+        "execution": TensorExecution.DEVICE_RESIDENT,
+        "process_topology": TensorProcessTopology.IN_PROCESS,
+        "data_plane": TensorDataPlane.DIRECT,
+        "stream_event_ownership": "backend records ordered Torch completion",
+        "torch_devices": ("cuda",),
+        "stepping": True,
+        "state_views": True,
+        "state_fields": frozenset({"qpos", "qvel", "ctrl"}),
+        "sensor_views": True,
+        "selected_reset": True,
+        "selected_reset_publication": SelectedResetPublication.AUTHORITATIVE_VIEWS,
+        "mask_selected_reset": True,
+        "deferred_fused_validation": True,
+    }
+
+    with pytest.raises(ValueError, match="unsupported tensor lifecycle"):
+        TensorLifecycleCapabilities(
+            execution=TensorExecution.UNSUPPORTED,
+            graph_completion_publication=True,
+        )
+    with pytest.raises(ValueError, match="graph completion publication"):
+        TensorLifecycleCapabilities(
+            **(
+                base
+                | {
+                    "mask_selected_reset": False,
+                    "graph_completion_publication": True,
+                }
+            )
+        )
+
+    supported = TensorLifecycleCapabilities(**(base | {"graph_completion_publication": True}))
+    assert supported.graph_completion_publication
+
+
+def test_graph_completion_token_is_fail_closed_public_metadata() -> None:
+    valid = {
+        "contract_version": 1,
+        "lifecycle_state": GraphLifecycleState.READY,
+        "operation": "step",
+        "sequence": 7,
+        "stream_id": 12,
+        "capture_id": "capture-a",
+    }
+
+    assert GraphCompletionToken(**valid).sequence == 7
+    with pytest.raises(ValueError, match="contract"):
+        GraphCompletionToken(**(valid | {"contract_version": 2}))
+    with pytest.raises(ValueError, match="READY"):
+        GraphCompletionToken(**(valid | {"lifecycle_state": GraphLifecycleState.UNAVAILABLE}))
+    with pytest.raises(ValueError, match="operation"):
+        GraphCompletionToken(**(valid | {"operation": "learner-update"}))
+    with pytest.raises(TypeError, match="sequence"):
+        GraphCompletionToken(**(valid | {"sequence": True}))
+    with pytest.raises(TypeError, match="capture_id"):
+        GraphCompletionToken(**(valid | {"capture_id": " "}))
+    with pytest.raises(ValueError, match="capture_id"):
+        GraphCompletionToken(**(valid | {"capture_id": None}))
+    with pytest.raises(NotImplementedError, match="IPC"):
+        GraphCompletionToken(**valid).ipc_handle()
+
+
+def test_graph_lifecycle_snapshot_fails_closed() -> None:
+    valid = {
+        "contract_version": 1,
+        "state": GraphLifecycleState.READY,
+        "capture_id": "capture-a",
+        "replay_count": 4,
+        "fallback_count": 0,
+    }
+
+    assert GraphLifecycleSnapshot(**valid).replay_count == 4
+    with pytest.raises(ValueError, match="contract"):
+        GraphLifecycleSnapshot(**(valid | {"contract_version": 2}))
+    with pytest.raises(ValueError, match="capture_id"):
+        GraphLifecycleSnapshot(**(valid | {"capture_id": None}))
+    with pytest.raises(ValueError, match="disable reason"):
+        GraphLifecycleSnapshot(**(valid | {"disable_reason": "stale reason"}))
+    with pytest.raises(ValueError, match="disable reason"):
+        GraphLifecycleSnapshot(
+            **(
+                valid
+                | {
+                    "state": GraphLifecycleState.INVALIDATED,
+                    "capture_id": None,
+                    "disable_reason": " ",
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="fallback_count"):
+        GraphLifecycleSnapshot(**(valid | {"fallback_count": -1}))
+    with pytest.raises(ValueError, match="deferred fused validation"):
+        TensorLifecycleCapabilities(
+            execution=TensorExecution.HOST_BRIDGE,
+            process_topology=TensorProcessTopology.IN_PROCESS,
+            data_plane=TensorDataPlane.HOST_BRIDGE,
+            stream_event_ownership="caller",
+            torch_devices=("cpu",),
+            deferred_fused_validation=True,
+        )
+
+
+def test_graph_candidate_preflight_state_is_fail_closed() -> None:
+    with pytest.raises(ValueError, match="preflight"):
+        GraphCandidatePreflight(requested=False, supported=None, disable_reason=None)
+    with pytest.raises(ValueError, match="preflight"):
+        GraphCandidatePreflight(
+            requested=True,
+            supported=True,
+            disable_reason="stale reason",
+            backend_stream_contract="caller",
+        )
+
+
+def test_graph_candidate_preflight_validates_stream_id_metadata() -> None:
+    for value in (True, -1, "0"):
+        with pytest.raises(TypeError, match="torch_stream_id"):
+            GraphCandidatePreflight(requested=True, torch_stream_id=value)
+
+
+def test_default_backend_graph_candidate_preflight_fails_closed() -> None:
+    request = GraphCandidatePreflight(requested=True)
+
+    with pytest.raises(NotImplementedError, match="graph-candidate preflight"):
+        FakeBackend().preflight_graph_candidate(request)
 
 
 def test_mask_selected_reset_accepts_in_process_host_bridge() -> None:

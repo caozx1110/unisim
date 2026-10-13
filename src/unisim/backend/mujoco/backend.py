@@ -2927,11 +2927,6 @@ class MuJoCoBackend(SimBackend):
         import torch
 
         self._require_entity_healthy()
-        if randomization is not None:
-            raise NotImplementedError(
-                "MuJoCo mask reset does not support reset randomization; use the packed "
-                "reset transaction"
-            )
         if not isinstance(full_refresh, bool):
             raise TypeError("full_refresh must be bool")
 
@@ -2973,6 +2968,33 @@ class MuJoCoBackend(SimBackend):
         # owns this bounded compaction and the explicit accelerator-to-host leg.
         selected_rows_tensor = torch.nonzero(reset_mask, as_tuple=False).flatten()
         rows = selected_rows_tensor.detach().cpu().numpy().astype(np.int64, copy=False)
+        host_randomization: ResetRandomizationPayload | None = None
+        if isinstance(randomization, TensorResetRandomizationPayload):
+            for field in randomization.requested_terms():
+                value = getattr(randomization, field)
+                if not isinstance(value, torch.Tensor):
+                    raise TypeError(
+                        f"MuJoCo tensor mask reset {field} must be a torch.Tensor"
+                    )
+                if value.device != source_device:
+                    raise ValueError("MuJoCo tensor mask reset values must share one device")
+            host_randomization = ResetRandomizationPayload(
+                **{
+                    field: value.index_select(0, selected_rows_tensor).detach().cpu().numpy()
+                    for field in randomization.requested_terms()
+                    if (value := getattr(randomization, field)) is not None
+                }
+            )
+        elif randomization is not None:
+            if not isinstance(randomization, ResetRandomizationPayload):
+                raise TypeError(
+                    "MuJoCo tensor mask reset randomization must be "
+                    "ResetRandomizationPayload or TensorResetRandomizationPayload"
+                )
+            raise NotImplementedError(
+                "MuJoCo mask reset requires a device-resident "
+                "TensorResetRandomizationPayload"
+            )
         timing: dict[str, float] = {
             "set_state_tensor_mask_ms": (time.perf_counter() - started) * 1000.0,
             "set_state_tensor_commit_forward_ms": 0.0,
@@ -2982,11 +3004,15 @@ class MuJoCoBackend(SimBackend):
         if rows.size:
             positions = qpos.index_select(0, selected_rows_tensor).detach().cpu().numpy()
             velocities = qvel.index_select(0, selected_rows_tensor).detach().cpu().numpy()
-            result = self._host_set_state(rows, positions, velocities)
+            result = self._host_set_state(rows, positions, velocities, host_randomization)
             if result is None:
                 result = {}
             timing.update(result.get("timing", {}))
             timing["set_state_tensor_mask_ms"] = (time.perf_counter() - started) * 1000.0
+            if host_randomization is not None:
+                timing["set_state_tensor_model_update_ms"] = timing.get(
+                    "set_state_reset_rand_ms", 0.0
+                )
         if full_refresh:
             refresh_started = time.perf_counter()
             pool = self._pool

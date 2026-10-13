@@ -1293,11 +1293,13 @@ def compose_scene(
         workers = _compose_workers(count)
         if workers > 1:
             # MuJoCo compilation holds the GIL, so independent realizations fan
-            # out to processes. Fork keeps unguarded/__main__-less entry points
-            # (pytest, python -c, REPL) working and shares the already-imported
-            # interpreter copy-on-write; pool workers only compile CPU MJCF.
+            # out to processes. Spawn deliberately avoids forking a process in
+            # which earlier native tests may have left MuJoCo/OpenMP worker
+            # threads: those native thread states are not fork-safe. The module
+            # has no required ``__main__`` guard and remains importable from
+            # pytest, ``python -c``, and the REPL under spawn.
             start_methods = multiprocessing.get_all_start_methods()
-            context = multiprocessing.get_context("fork" if "fork" in start_methods else "spawn")
+            context = multiprocessing.get_context("spawn" if "spawn" in start_methods else None)
             failures: dict[int, BaseException] = {}
             with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
                 futures = {

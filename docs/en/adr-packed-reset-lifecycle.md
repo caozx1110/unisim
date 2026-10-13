@@ -19,6 +19,7 @@ UniSim owns a backend-neutral, staged packed reset transaction:
 - `SimBackend.begin_packed_reset(device=None)` returns a backend-owned `TorchPackedResetComposer`, or fails closed.
 - `TensorLifecycleCapabilities` adds `packed_reset`, `packed_reset_fields`, and `packed_reset_mocap`. Unsupported lifecycles must not declare them.
 - The composer owns full-width, device-resident committed baselines seeded from the backend's authoritative (fixed-variant aware) `get_reset_term_default()`.
+- The graph-candidate variant keeps the same staging width end to end: `begin_state_mask(mask)`, `write_state_mask(mask, ...)`, and `commit_state_mask(mask, ...)` consume a full-width bool mask, preserve false rows, and delegate selected-row semantics to the public backend mask boundary. This avoids owner-side `nonzero()` compaction without changing the staged-row contract above.
 - `write_model_field(field, rows, values, columns=None)` merges final absolute selected-row values, including disjoint selected-column merges for terms such as PD `kp`/`kd`.
 - `commit_state(rows, qpos, qvel)` performs exactly one public reset boundary by calling `set_state_tensor()` with the staged selected-row tables. Baselines are promoted only for the committed rows and only after that boundary returns successfully; staged writes for other rows remain until `discard()`.
 - `discard(field=None)` explicitly drops staged writes before commit.
@@ -28,7 +29,7 @@ UniSim owns a backend-neutral, staged packed reset transaction:
 
 ### Adapter behavior
 
-- MuJoCo (`HOST_BRIDGE`) accepts `TensorResetRandomizationPayload` inside the same explicit tensor-to-host reset boundary, synchronizing once before materializing the host payload. The persistent `HostBridgeTransferPlan.apply_reset()` remains the single-packet fast path.
+- MuJoCo (`HOST_BRIDGE`) accepts selected-row and full-width mask `TensorResetRandomizationPayload` forms inside the same explicit tensor-to-host reset boundary, synchronizing once before materializing the host payload. The persistent `HostBridgeTransferPlan.apply_reset()` remains the single-packet fast path for selected-row IDs.
 - MJWarp (`DEVICE_RESIDENT`) composes on device and commits through existing device-side scatters with `AUTHORITATIVE_VIEWS` publication. `geom_size` stays excluded because its derived bounds are host-computed today.
 - MuJoCo declares packed reset mocap support for kinematic entity roots; the selected Torch rows and poses cross its explicit host boundary only at commit. MJWarp keeps mocap writes fail-closed in this slice.
 - Every other adapter remains fail-closed; there is no backend-private probing.

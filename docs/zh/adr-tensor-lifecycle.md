@@ -20,7 +20,7 @@ UniLab 的 Manager-Based 运行时与 collector 目前以 NumPy 为边界，而 
 
 声明支持的适配器可实现 `get_state_views()`、`get_sensor_view()`、`step_tensor()` 与 `set_state_tensor()`。host-bridge 适配器还可声明 `packed_host_bridge`，并把 `TensorIOSpec` 编译为 `HostBridgeTransferPlan`。`set_state_tensor()` 接受主机 NumPy `ResetRandomizationPayload`；仅当适配器声明 `device_reset_randomization` 时，还接受 `TensorResetRandomizationPayload`——其引擎原生设备数组持有选中行最终绝对值；device-resident 适配器原地 scatter，进程内 host bridge 则在同一显式 reset 边界内物化。其余适配器对设备 payload 快速失败。
 
-适配器可通过 `mask_selected_reset` 声明生产 `set_state_tensor_mask()` 边界。该边界接收 full-width boolean mask 与 full-width qpos/qvel tensor，保留所有 false row，仅在 true row 上重置 time 与 persistent channel，并在返回前发布 authoritative selected state。capability 依赖 authoritative direct device-resident selected reset，或 authoritative in-process host bridge。MJWarp 把 mask 发布到 reset graph；MuJoCo 在自身显式 tensor-to-host 边界内拥有有界的 true-row 压缩。此 state-only 边界拒绝 reset randomization。`mask_selected_reset_full_refresh` 另要求等价的 eager full-batch derived-state refresh。
+适配器可通过 `mask_selected_reset` 声明生产 `set_state_tensor_mask()` 边界。该边界接收 full-width boolean mask 与 full-width qpos/qvel tensor，保留所有 false row，仅在 true row 上重置 time 与 persistent channel，并在返回前发布 authoritative selected state。capability 依赖 authoritative direct device-resident selected reset，或 authoritative in-process host bridge。MJWarp 把 mask 发布到 reset graph；MuJoCo 在自身显式 tensor-to-host 边界内拥有有界的 true-row 压缩。声明支持的适配器可接受 full-width device-resident `TensorResetRandomizationPayload`，只在 true row 应用最终值并保留所有 false row；host NumPy reset payload 快速失败。`mask_selected_reset_full_refresh` 另要求等价的 eager full-batch derived-state refresh。
 
 基础包仍不依赖 Torch；适配器按需 lazy-import tensor 运行时，并拥有 stream、布局与传输语义。
 

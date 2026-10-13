@@ -136,6 +136,44 @@ def test_device_payload_scatter_selected_rows_only(
     backend.close()
 
 
+def test_mask_reset_randomization_applies_only_selected_full_width_rows(
+    tmp_path: Path,
+) -> None:
+    backend = _make_backend(tmp_path)
+    mask = torch.tensor([False, True, True], dtype=torch.bool, device="cuda")
+    qpos = backend.get_state_views(("qpos",))["qpos"].clone()
+    qvel = backend.get_state_views(("qvel",))["qvel"].clone()
+    full_mass = torch.zeros_like(backend._model_torch_view("body_mass"))
+    full_mass[mask] = torch.tensor([[5.0, 7.0], [6.0, 8.0]], device="cuda")
+    before_mass = backend._device_model.body_mass.numpy().copy()
+    payload = TensorResetRandomizationPayload(body_mass=full_mass)
+
+    backend.set_state_tensor_mask(mask, qpos, qvel, payload)
+
+    mass = backend._device_model.body_mass.numpy()
+    np.testing.assert_array_equal(mass[1], [5.0, 7.0])
+    np.testing.assert_array_equal(mass[2], [6.0, 8.0])
+    np.testing.assert_array_equal(mass[0], before_mass[0])
+    backend.close()
+
+
+def test_deferred_fused_backend_validation_fails_closed_at_boundary(
+    tmp_path: Path,
+) -> None:
+    backend = _make_backend(tmp_path)
+    rows, qpos, qvel = _rows_qpos_qvel(backend, [0])
+    invalid = qpos.clone()
+    invalid[0, 0] = torch.nan
+    backend.set_defer_torch_fused_validation(True)
+
+    backend.set_state_tensor(rows, invalid, qvel)
+    assert backend.torch_fused_valid is not None
+    assert backend.torch_fused_valid.item() is False
+    with pytest.raises(ValueError, match="mjwarp tensor validation failed"):
+        backend.publish_torch_fused_validation()
+    backend.close()
+
+
 def test_device_payload_mirrors_refresh_on_host_read(tmp_path: Path) -> None:
     backend = _make_backend(tmp_path)
     rows, qpos, qvel = _rows_qpos_qvel(backend, [2, 0])
@@ -276,14 +314,14 @@ def test_device_payload_tracked_refresh_matches_host_reference(tmp_path: Path) -
         body_mass=torch.as_tensor(mass, dtype=torch.float32, device="cuda")
     )
     backend.set_state_tensor(rows, qpos, qvel, payload)
-    host.set_state(
-        np.array([0]),
-        np.zeros((1, host._nq), dtype=np.float32),
-        np.zeros((1, host._nv), dtype=np.float32),
-        ResetRandomizationPayload(body_mass=mass),
+    host.set_state_tensor(
+        rows,
+        qpos,
+        qvel,
+        TensorResetRandomizationPayload(body_mass=payload.body_mass),
     )
     np.testing.assert_allclose(
-        backend._host_read_sensor("com"), host.get_sensor_data("com"), atol=1e-6
+        backend._host_read_sensor("com"), host._host_read_sensor("com"), atol=1e-6
     )
     backend.close()
     host.close()
