@@ -2694,11 +2694,12 @@ class MuJoCoBackend(SimBackend):
             result = {}
         timing = dict(result.get("timing", {}))
         timing["tensor_control_d2h_ms"] = d2h_ms
+        stream_id = int(torch.cuda.current_stream(ctrl.device).cuda_stream) if ctrl.is_cuda else 0
         return {
             "timing": timing,
             "graph_completion": self._graph_completion(
                 "step",
-                stream_id=int(torch.cuda.current_stream(ctrl.device).cuda_stream),
+                stream_id=stream_id,
             ),
         }
 
