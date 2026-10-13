@@ -697,6 +697,10 @@ def test_mjwarp_mask_tensor_reset_preserves_unselected_rows(tmp_path: Path) -> N
 
     result = backend.set_state_tensor_mask(mask, qpos, qvel)
 
+    reset_completion = result["timing"]["graph_completion"]
+    assert reset_completion is not None
+    reset_completion.wait_before_read()
+
     after = backend.get_state_views(("qpos", "qvel"))
     torch.testing.assert_close(after["qpos"][mask], qpos[mask])
     torch.testing.assert_close(after["qvel"][mask], qvel[mask])

@@ -101,6 +101,8 @@ def test_device_payload_scatter_selected_rows_only(
         "set_state_tensor_commit_forward_ms",
         "set_state_tensor_host_cache_refresh_ms",
         "set_state_tensor_model_update_ms",
+        "graph_completion",
+        "graph_input_completion",
     }
     assert result["timing"]["set_state_tensor_model_update_ms"] >= 0.0
 
@@ -148,7 +150,10 @@ def test_mask_reset_randomization_applies_only_selected_full_width_rows(
     before_mass = backend._device_model.body_mass.numpy().copy()
     payload = TensorResetRandomizationPayload(body_mass=full_mass)
 
-    backend.set_state_tensor_mask(mask, qpos, qvel, payload)
+    result = backend.set_state_tensor_mask(mask, qpos, qvel, payload)
+    completion = result["timing"]["graph_completion"]
+    assert completion is not None
+    completion.wait_before_read()
 
     mass = backend._device_model.body_mass.numpy()
     np.testing.assert_array_equal(mass[1], [5.0, 7.0])

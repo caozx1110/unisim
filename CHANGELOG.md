@@ -2,6 +2,7 @@
 
 ## 1.7.18 - 2026-10-13
 
+- Removed the residual device-wide host synchronization from MJWarp's fixed-width mask reset after the reset graph replay. All mask-reset work remains ordered on the backend execution stream and visibility is expressed by the ordered graph completion receipts (UniLab issue #2311).
 - Added the public graph-completion lifecycle for the integration-only K=1 collector graph (UniLab issues #2307 and #2309): `GraphLifecycleState`, `GraphCompletionToken`, `GraphLifecycleSnapshot`, graph invalidation reasons, capability negotiation, backend preflight, manifest evidence, and READY capture identity. MJWarp records ordered interprocess CUDA completion receipts on its backend-owned Warp execution stream for tensor steps and mask resets, publishes only READY receipts, invalidates captures explicitly, and reports replay/fallback counters without exposing graph pointers or private stream state.
 - Made parallel MJCF variant composition spawn worker processes instead of forking after earlier native MuJoCo/OpenMP tests; inherited native thread state is not fork-safe.
 - Added the graph-candidate mask lifecycle to `TorchPackedResetComposer`: `begin_state_mask`, full-width `write_state_mask`, and `commit_state_mask` preserve every false row while avoiding owner-side true-row compaction. MJWarp's public mask reset now accepts a full-width `TensorResetRandomizationPayload` through the existing device-resident model scatter and validation boundary (UniLab issue #2307).
