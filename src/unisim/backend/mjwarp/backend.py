@@ -463,6 +463,7 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_sensor_cache: np.ndarray | None = None
         self._tensor_reset_defaults: dict[str, Any] | None = None
         self._torch_fused_valid: Any | None = None
+        self._torch_true_verdict: Any | None = None
         self._defer_torch_fused_validation = False
         # Tracked-body views are zero-copy slices of _sensor_cache; they must be
         # bound before the first forward barrier refreshes the cache below.
@@ -1536,6 +1537,14 @@ class MjwarpBackend(SimBackend):
         if rule == "unit_quat":
             return torch.isfinite(value).all() & ((value.norm(dim=-1) - 1.0).abs() <= 1e-5).all()
         raise ValueError(f"unknown mjwarp tensor value rule {rule!r}")
+
+    def _torch_true_flag_value(self, device: Any) -> Any:
+        """Return the persistent device-true verdict for structural rules."""
+        import torch
+
+        if self._torch_true_verdict is None or self._torch_true_verdict.device != device:
+            self._torch_true_verdict = torch.ones((), dtype=torch.bool, device=device)
+        return self._torch_true_verdict
 
     def _torch_rule_error(self, name: str, rule: str) -> str:
         if rule == "rows":
@@ -2850,7 +2859,7 @@ class MjwarpBackend(SimBackend):
                 "reset_mask",
                 "bool",
                 mask_tensor,
-                torch.ones((), dtype=torch.bool, device=mask_tensor.device),
+                self._torch_true_flag_value(mask_tensor.device),
             ),
             ("qpos", "finite", qpos_tensor, self._torch_value_flag("finite", qpos_tensor)),
             ("qvel", "finite", qvel_tensor, self._torch_value_flag("finite", qvel_tensor)),
