@@ -2684,7 +2684,7 @@ class MjwarpBackend(SimBackend):
                 "host_cache_refresh_ms": 0.0,
                 "tensor_step_async": 0.0,
                 "graph_completion": completion,
-            }
+            },
         }
 
     # All backends report the same set_state key set for column stability;
