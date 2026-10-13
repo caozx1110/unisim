@@ -2677,6 +2677,7 @@ class MjwarpBackend(SimBackend):
         self._host_cache_stale = True
         physics_ms = (time.perf_counter() - t0) * 1000.0
         return {
+            "graph_completion": completion,
             "timing": {
                 "control_upload_ms": control_upload_ms,
                 "physics_ms": physics_ms,
