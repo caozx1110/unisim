@@ -144,9 +144,7 @@ def test_apply_body_force_torque_only_and_consumption(tmp_path: Path) -> None:
     zero_force, torque = _torque_wrench(backend, 1e-3)
     backend.apply_body_force(bodies, zero_force, torque=torque)
     backend._host_step(_zero_ctrl(backend), nsteps=2)
-    np.testing.assert_allclose(
-        backend._host_get_state(("qvel",))["qvel"][:, 5], 2 * DT, atol=1e-5
-    )
+    np.testing.assert_allclose(backend._host_get_state(("qvel",))["qvel"][:, 5], 2 * DT, atol=1e-5)
 
     # The staged wrench is consumed by the step and must not affect the next one.
     omega = backend._host_get_state(("qvel",))["qvel"][:, 5].copy()
@@ -176,9 +174,7 @@ def test_interval_body_torque_term_matches_direct_call(tmp_path: Path) -> None:
     )
     backend.apply_interval_randomization(plan)
     backend._host_step(_zero_ctrl(backend), nsteps=2)
-    np.testing.assert_allclose(
-        backend._host_get_state(("qvel",))["qvel"][:, 5], 2 * DT, atol=1e-5
-    )
+    np.testing.assert_allclose(backend._host_get_state(("qvel",))["qvel"][:, 5], 2 * DT, atol=1e-5)
 
 
 def test_interval_plan_replaces_previous_unconsumed_wrench(tmp_path: Path) -> None:
@@ -195,9 +191,7 @@ def test_interval_plan_replaces_previous_unconsumed_wrench(tmp_path: Path) -> No
         )
     )
     backend._host_step(_zero_ctrl(backend), nsteps=1)
-    np.testing.assert_allclose(
-        backend._host_get_state(("qvel",))["qvel"][:, 5], 2 * DT, atol=1e-5
-    )
+    np.testing.assert_allclose(backend._host_get_state(("qvel",))["qvel"][:, 5], 2 * DT, atol=1e-5)
 
 
 # --------------------------------------------------------------------- #
@@ -225,9 +219,7 @@ def test_pre_step_wrench_recomputed_per_substep_and_cleared(tmp_path: Path) -> N
     # Unit mass, zero gravity: dv = sum_k F_k * dt.  The per-substep forces
     # 0,1,2,3 N must not accumulate (persisting the last value would give
     # 4*3 instead of 0+1+2+3).
-    np.testing.assert_allclose(
-        backend._host_get_state(("qvel",))["qvel"][:, 0], 6 * DT, atol=1e-5
-    )
+    np.testing.assert_allclose(backend._host_get_state(("qvel",))["qvel"][:, 0], 6 * DT, atol=1e-5)
 
     # A later substep with zero dynamic wrench must not see the previous
     # substep's value persist; the channel is cleared between control steps.
@@ -414,10 +406,11 @@ def test_body_state_refresh_preserves_authored_force_sensor(tmp_path: Path) -> N
     completed_substep_force = backend._host_read_sensor("root_force").copy()
     assert np.linalg.norm(completed_substep_force) > 0.0
     bodies = backend.get_body_ids(["root"])
-    backend._host_get_body_state_w(bodies)
-    np.testing.assert_array_equal(
-        backend._host_read_sensor("root_force"), completed_substep_force
-    )
+    backend._host_get_body_pos_w(bodies)
+    backend._host_get_body_quat_w(bodies)
+    backend._host_get_body_lin_vel_w(bodies)
+    backend._host_get_body_ang_vel_w(bodies)
+    np.testing.assert_array_equal(backend._host_read_sensor("root_force"), completed_substep_force)
 
 
 def test_ctrl_only_callback_skips_body_kinematics_refresh(tmp_path: Path) -> None:
@@ -433,7 +426,7 @@ def test_ctrl_only_callback_skips_body_kinematics_refresh(tmp_path: Path) -> Non
 
     backend._refresh_tracked_body_state_device = counting
     backend.set_pre_step_control(
-        lambda owner, c: owner.get_state_views("qpos")["qpos"].cpu().numpy() * 0.0
+        lambda owner, c: owner._host_get_state("qpos")["qpos"][:, :1] * 0.0
     )
     backend._host_step(_zero_ctrl(backend), nsteps=4)
     # Neither the ctrl-only callback nor an unread post-step body view pays
@@ -503,12 +496,8 @@ def test_pre_step_wrench_cleared_after_midstep_callback_exception(
     np.testing.assert_allclose(velocity_before, completed_steps * DT, atol=1e-6)
     np.testing.assert_allclose(backend.get_physics_state()[:, 0], completed_steps * DT)
     expected_x = DT * DT * completed_steps * (completed_steps + 1) / 2
-    np.testing.assert_allclose(
-        backend._host_get_state("qpos")["qpos"][:, 0], expected_x, atol=1e-6
-    )
-    np.testing.assert_allclose(
-        backend._host_get_body_pos_w(bodies)[:, 0, 0], expected_x, atol=1e-6
-    )
+    np.testing.assert_allclose(backend._host_get_state("qpos")["qpos"][:, 0], expected_x, atol=1e-6)
+    np.testing.assert_allclose(backend._host_get_body_pos_w(bodies)[:, 0, 0], expected_x, atol=1e-6)
 
     # No staged or residual device wrench may continue into a later direct step.
     backend.set_pre_step_control(None)
