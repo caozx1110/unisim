@@ -375,15 +375,27 @@ class TensorLifecycleCapabilities:
             )
         if self.graph_completion_publication and not (
             self.stepping
-            and self.selected_reset
-            and self.mask_selected_reset
-            and self.deferred_fused_validation
-            and self.execution is TensorExecution.DEVICE_RESIDENT
+            and (
+                (
+                    self.execution is TensorExecution.DEVICE_RESIDENT
+                    and self.process_topology is TensorProcessTopology.IN_PROCESS
+                    and self.data_plane is TensorDataPlane.DIRECT
+                    and self.selected_reset
+                    and self.mask_selected_reset
+                    and self.deferred_fused_validation
+                )
+                or (
+                    self.execution is TensorExecution.HOST_BRIDGE
+                    and self.process_topology is TensorProcessTopology.IN_PROCESS
+                    and self.data_plane is TensorDataPlane.HOST_BRIDGE
+                    and self.packed_host_bridge
+                )
+            )
             and self.process_topology is TensorProcessTopology.IN_PROCESS
-            and self.data_plane is TensorDataPlane.DIRECT
         ):
             raise ValueError(
-                "graph completion publication requires the in-process direct K=1 tensor lifecycle"
+                "graph completion publication requires an in-process direct K=1 or "
+                "packed HOST_BRIDGE tensor lifecycle"
             )
         if self.packed_reset_mocap and not self.packed_reset:
             raise ValueError("packed reset mocap requires packed reset")
@@ -554,6 +566,26 @@ class GraphCompletionToken:
     def ipc_handle(self) -> bytes:
         """Return an optional cross-process descriptor for this receipt."""
         raise NotImplementedError("this graph completion receipt has no IPC transport")
+
+
+@dataclass(frozen=True)
+class ImmediateGraphCompletionToken(GraphCompletionToken):
+    """Receipt for work already complete when a public boundary returns.
+
+    This is the HOST_BRIDGE counterpart to a device event receipt. The CPU
+    executor synchronizes before a packed boundary returns, so there is no
+    producer stream prefix left to gate. Later public Torch writes remain the
+    consumer's responsibility; replay ingress records its own ordered CUDA
+    publication event after copying a transition slot.
+    """
+
+    def wait_before_read(self, stream: Any | None = None) -> None:
+        """No-op because the authoritative host prefix completed before return."""
+        del stream
+
+    def ipc_handle(self) -> bytes:
+        """Fail closed because an immediate host receipt owns no CUDA IPC event."""
+        raise NotImplementedError("immediate host completion has no IPC event")
 
 
 @dataclass(frozen=True)

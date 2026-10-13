@@ -10,6 +10,7 @@ from unisim import (
     GraphCompletionToken,
     GraphLifecycleSnapshot,
     GraphLifecycleState,
+    ImmediateGraphCompletionToken,
     SupportLevel,
     TensorDataPlane,
     TensorExecution,
@@ -192,6 +193,31 @@ def test_graph_completion_capability_dependencies_fail_closed() -> None:
     assert supported.graph_completion_publication
 
 
+def test_graph_completion_supports_packed_host_bridge_without_event_receipt() -> None:
+    supported = TensorLifecycleCapabilities(
+        execution=TensorExecution.HOST_BRIDGE,
+        process_topology=TensorProcessTopology.IN_PROCESS,
+        data_plane=TensorDataPlane.HOST_BRIDGE,
+        stream_event_ownership=(
+            "caller-stream-per-packed-boundary; stream synchronized at CPU bridge"
+        ),
+        torch_devices=("cpu", "cuda"),
+        state_views=True,
+        state_fields=frozenset({"qpos", "qvel", "ctrl"}),
+        sensor_views=True,
+        stepping=True,
+        selected_reset=True,
+        selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+        mask_selected_reset=True,
+        packed_host_bridge=True,
+        graph_completion_publication=True,
+    )
+    assert supported.graph_completion_publication
+
+    with pytest.raises(ValueError, match="HOST_BRIDGE"):
+        replace(supported, packed_host_bridge=False)
+
+
 def test_graph_completion_token_is_fail_closed_public_metadata() -> None:
     valid = {
         "contract_version": 1,
@@ -220,6 +246,21 @@ def test_graph_completion_token_is_fail_closed_public_metadata() -> None:
         GraphCompletionToken(**(valid | {"capture_id": None}))
     with pytest.raises(NotImplementedError, match="IPC"):
         GraphCompletionToken(**valid).ipc_handle()
+
+
+def test_immediate_host_completion_token_is_public_and_complete() -> None:
+    valid = {
+        "contract_version": 1,
+        "lifecycle_state": GraphLifecycleState.READY,
+        "operation": "step",
+        "sequence": 1,
+        "stream_id": 7,
+        "capture_id": "mujoco-host-bridge-eager",
+    }
+    receipt = ImmediateGraphCompletionToken(**valid)
+    assert receipt.wait_before_read(None) is None
+    with pytest.raises(NotImplementedError, match="IPC"):
+        receipt.ipc_handle()
 
 
 def test_graph_lifecycle_snapshot_fails_closed() -> None:
