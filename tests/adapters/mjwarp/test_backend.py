@@ -929,17 +929,17 @@ def test_mjwarp_invalidated_replay_does_not_publish_completion(tmp_path: Path) -
     assert snapshot.fallback_count == before.fallback_count + 1
     assert snapshot.disable_reason == "graph invalidated: capture_failed"
 
-    with pytest.raises(ValueError, match="completion token requires the READY"):
-        backend.step_tensor(
-            torch.zeros((2, 1), dtype=torch.float32, device="cuda"),
-            nsteps=1,
-        )
+    result = backend.step_tensor(
+        torch.zeros((2, 1), dtype=torch.float32, device="cuda"),
+        nsteps=1,
+    )
     after = backend.get_graph_lifecycle_snapshot()
     assert after.state is GraphLifecycleState.INVALIDATED
     assert after.capture_id is None
-    # No valid receipt escapes: the attempted step reaches completion construction
-    # only after physics, then fails closed because the lifecycle is INVALIDATED.
-    assert after.replay_count == before.replay_count + 1
+    assert result["graph_completion"] is None
+    assert result["timing"]["graph_completion"] is None
+    # No valid receipt escapes from eager execution after invalidation.
+    assert after.replay_count == before.replay_count
     assert after.fallback_count == snapshot.fallback_count
     assert after.disable_reason == snapshot.disable_reason
     backend.close()

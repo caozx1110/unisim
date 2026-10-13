@@ -1720,10 +1720,12 @@ class MjwarpBackend(SimBackend):
         operation: str,
         *,
         stream: Any,
-    ) -> GraphCompletionToken:
+    ) -> GraphCompletionToken | None:
         """Publish one ordered completion receipt on the public Torch stream."""
         import torch
 
+        if self.get_graph_lifecycle() is not GraphLifecycleState.READY:
+            return None
         device = getattr(stream, "device", None)
         if device is None:
             raise ValueError("graph completion requires the ordered Torch stream device")
@@ -2701,10 +2703,10 @@ class MjwarpBackend(SimBackend):
                 self._xfrc_staging.fill(0.0)
                 self._upload(self._device_data.xfrc_applied, self._xfrc_staging)
                 self._xfrc_pending = False
-            completion = self._graph_completion("step", stream=ctrl_stream)
         except BaseException:
             self._entity_faulted = True
             raise
+        completion = self._graph_completion("step", stream=ctrl_stream)
         self._time_cache += np.float32(int(nsteps) * self._sim_dt)
         self._tracked_body_state_dirty = bool(self._tracked_body_names)
         self._host_cache_stale = True
