@@ -192,6 +192,24 @@ class _EventGraphCompletionToken(GraphCompletionToken):
             return
         self.event.wait(stream)
 
+    def ipc_handle(self) -> bytes:
+        """Return the public CUDA IPC descriptor for this ordered receipt."""
+        return bytes(self.event.ipc_handle())
+
+    @classmethod
+    def from_ipc_handle(
+        cls,
+        token: GraphCompletionToken,
+        handle: bytes,
+        *,
+        device: Any,
+    ) -> "_EventGraphCompletionToken":
+        """Reconstruct a consumer-owned receipt from its public descriptor."""
+        import torch
+
+        event = torch.cuda.Event.from_ipc_handle(device, handle)
+        return cls(token, event)
+
 
 class MjwarpBackend(SimBackend):
     """Independent CUDA backend exposed through the host NumPy profile.
@@ -1709,7 +1727,7 @@ class MjwarpBackend(SimBackend):
         device = getattr(stream, "device", None)
         if device is None:
             raise ValueError("graph completion requires the ordered Torch stream device")
-        event = torch.cuda.Event()
+        event = torch.cuda.Event(interprocess=True)
         event.record(stream)
         self._graph_completion_sequence += 1
         self._graph_replay_count += 1

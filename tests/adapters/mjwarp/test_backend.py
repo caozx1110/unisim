@@ -809,6 +809,7 @@ def test_mjwarp_step_publishes_public_completion_receipt() -> None:
     assert completion.capture_id == backend._graph_capture_id
     consumer_stream = torch.cuda.Stream()
     completion.wait_before_read(consumer_stream)
+    assert isinstance(completion.ipc_handle(), bytes)
     backend.close()
 
 

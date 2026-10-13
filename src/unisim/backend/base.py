@@ -548,6 +548,10 @@ class GraphCompletionToken:
         """
         raise NotImplementedError("this graph completion receipt does not implement a read gate")
 
+    def ipc_handle(self) -> bytes:
+        """Return an optional cross-process descriptor for this receipt."""
+        raise NotImplementedError("this graph completion receipt has no IPC transport")
+
 
 @dataclass(frozen=True)
 class GraphLifecycleSnapshot:
