@@ -2636,7 +2636,7 @@ class MjwarpBackend(SimBackend):
             raise
         return {"timing": timings}
 
-    def step_tensor(self, ctrl: Any, nsteps: int = 1) -> dict[str, dict[str, Any]]:
+    def step_tensor(self, ctrl: Any, nsteps: int = 1) -> dict[str, Any]:
         """Advance MJWarp physics without a control or state host transfer."""
         import torch
 
