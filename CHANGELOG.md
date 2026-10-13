@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added the graph-candidate mask lifecycle to `TorchPackedResetComposer`: `begin_state_mask`, full-width `write_state_mask`, and `commit_state_mask` preserve every false row while avoiding owner-side true-row compaction. MJWarp's public mask reset now accepts a full-width `TensorResetRandomizationPayload` through the existing device-resident model scatter and validation boundary (UniLab issue #2307).
+- MuJoCo's public mask reset now accepts the same full-width `TensorResetRandomizationPayload` contract. It compacts selected state and model-field rows inside its explicit tensor-to-host boundary, applies reset randomization only on true rows, and rejects host NumPy payloads (UniLab issue #2307).
 
 ## 1.7.17 - 2026-10-12
 

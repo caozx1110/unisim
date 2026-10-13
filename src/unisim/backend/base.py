@@ -1420,8 +1420,9 @@ class SimBackend(abc.ABC):
         ``full_refresh=True`` requests an eager equivalent full-batch
         derived-state/publication refresh. It is valid only where
         ``TensorLifecycleCapabilities.mask_selected_reset_full_refresh`` is
-        declared. This state-only boundary rejects reset randomization;
-        randomized callers use the selected-row or packed reset contracts.
+        declared. A declaring adapter may accept a full-width device-resident
+        ``TensorResetRandomizationPayload`` and must preserve every false row;
+        host NumPy reset payloads fail closed.
         """
         raise NotImplementedError(
             f"{self.backend_type} does not support mask-driven tensor state writes: "

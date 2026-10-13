@@ -731,7 +731,7 @@ def test_mjwarp_mask_tensor_reset_rejects_randomization() -> None:
     mask = torch.zeros((2,), dtype=torch.bool, device="cuda")
     qpos = backend.get_state_views(("qpos",))["qpos"].clone()
     qvel = backend.get_state_views(("qvel",))["qvel"].clone()
-    with pytest.raises(NotImplementedError, match="does not support reset randomization"):
+    with pytest.raises(NotImplementedError, match="device-resident"):
         backend.set_state_tensor_mask(
             mask, qpos, qvel, randomization=ResetRandomizationPayload(kp=np.ones((0, 1)))
         )

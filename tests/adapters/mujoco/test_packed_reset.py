@@ -7,7 +7,11 @@ pytest.importorskip("mujoco")
 torch = pytest.importorskip("torch")
 
 from unisim import MuJoCoBackend  # noqa: E402
-from unisim.dr.types import RESET_TERM_KP, ResetRandomizationPayload  # noqa: E402
+from unisim.dr.types import (  # noqa: E402
+    RESET_TERM_KP,
+    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
+)
 from unisim.entities import ModelSourceDescriptor, SceneEntitySpec  # noqa: E402
 from unisim.scene import SceneCfg  # noqa: E402
 
@@ -188,13 +192,34 @@ def test_mujoco_mask_tensor_reset_full_refresh_covers_empty_mask(tmp_path: Path)
     assert result["timing"]["set_state_tensor_commit_forward_ms"] >= 0.0
 
 
-def test_mujoco_mask_tensor_reset_rejects_randomization(tmp_path: Path) -> None:
+def test_mujoco_mask_tensor_reset_applies_selected_full_width_randomization(
+    tmp_path: Path,
+) -> None:
+    backend = _backend(tmp_path, num_envs=3)
+    mask = torch.tensor([False, True, True], dtype=torch.bool)
+    qpos = backend.get_state_views(("qpos",))["qpos"].clone()
+    qvel = backend.get_state_views(("qvel",))["qvel"].clone()
+    full_kp = torch.zeros((3, backend.num_actuators), dtype=torch.float32)
+    full_kp[mask] = torch.tensor([[55.0, 56.0], [57.0, 58.0]])
+    before = np.asarray(backend._pool.expand("actuator_gainprm"))[:, :, 0].copy()
+    payload = TensorResetRandomizationPayload(kp=full_kp)
+
+    result = backend.set_state_tensor_mask(mask, qpos, qvel, payload)
+
+    gains = np.asarray(backend._pool.expand("actuator_gainprm"))[:, :, 0]
+    np.testing.assert_allclose(gains[mask], full_kp.numpy()[mask], rtol=0.0)
+    np.testing.assert_allclose(gains[~mask], before[~mask], rtol=0.0)
+    assert result is not None
+    assert result["timing"]["set_state_tensor_mask_ms"] >= 0.0
+
+
+def test_mujoco_mask_tensor_reset_rejects_host_randomization(tmp_path: Path) -> None:
     backend = _backend(tmp_path, num_envs=2)
     mask = torch.zeros((2,), dtype=torch.bool)
     qpos = torch.zeros((2, backend.nq), dtype=torch.float32)
     qvel = torch.zeros((2, backend.nv), dtype=torch.float32)
 
-    with pytest.raises(NotImplementedError, match="does not support reset randomization"):
+    with pytest.raises(NotImplementedError, match="device-resident"):
         backend.set_state_tensor_mask(
             mask,
             qpos,
