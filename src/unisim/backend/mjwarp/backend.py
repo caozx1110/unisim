@@ -1649,6 +1649,7 @@ class MjwarpBackend(SimBackend):
 
     def _disable_cuda_graphs(self, reason: str) -> None:
         """Atomically select the eager path and release any captured graphs."""
+        was_ready = bool(self._cuda_graph_enabled)
         self._cuda_graph_enabled = False
         self._step_graph = None
         self._forward_graph = None
@@ -1657,7 +1658,8 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_forward_graph = None
         self._cuda_graph_disable_reason: str | None = reason
         self._graph_invalidated = True
-        self._graph_fallback_count += 1
+        if was_ready:
+            self._graph_fallback_count += 1
 
     def invalidate_graph(self, reason: GraphInvalidationReason) -> GraphLifecycleSnapshot:
         """Invalidate fixed-address captures before an owner-visible mutation."""

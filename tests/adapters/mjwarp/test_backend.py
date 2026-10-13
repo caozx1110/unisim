@@ -850,7 +850,7 @@ def test_mjwarp_graph_invalidation_is_public_fail_closed() -> None:
     assert snapshot.disable_reason == "graph invalidated: model"
     assert snapshot.replay_count == before.replay_count
     assert snapshot.fallback_count == before.fallback_count + 1
-    assert not backend._cuda_graph_enabled
+    assert backend.get_graph_lifecycle() is GraphLifecycleState.INVALIDATED
     with pytest.raises(ValueError, match="unsupported graph invalidation"):
         backend.invalidate_graph("learner")
     backend.close()
