@@ -132,6 +132,9 @@ GraphInvalidationReason = Literal[
 GRAPH_INVALIDATION_REASONS: frozenset[str] = frozenset(
     {"model", "data", "view", "capacity", "policy_io", "stream_event", "capture_failed"}
 )
+GRAPH_COMPLETION_OPERATIONS: frozenset[str] = frozenset(
+    {"step", "selected_reset", "mask_reset", "collector_tick"}
+)
 
 
 _TENSOR_DEVICE_LABEL = re.compile(r"^(cpu|cuda)(?::([0-9]+))?$")
@@ -517,7 +520,7 @@ class GraphCompletionToken:
             raise ValueError(f"unsupported graph completion contract {self.contract_version}")
         if self.lifecycle_state is not GraphLifecycleState.READY:
             raise ValueError("a completion token requires the READY graph lifecycle state")
-        if self.operation not in ("step", "selected_reset", "mask_reset"):
+        if self.operation not in GRAPH_COMPLETION_OPERATIONS:
             raise ValueError(f"unsupported graph completion operation {self.operation!r}")
         if (
             isinstance(self.sequence, bool)
