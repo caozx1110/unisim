@@ -512,6 +512,8 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_sensor_cache: np.ndarray | None = None
         self._tensor_reset_defaults: dict[str, Any] | None = None
         self._torch_fused_valid: Any | None = None
+        self._torch_step_finite_abs: Any | None = None
+        self._torch_step_finite: Any | None = None
         self._torch_true_verdict: Any | None = None
         self._defer_torch_fused_validation = False
         self._graph_completion_sequence = 0
@@ -1661,9 +1663,24 @@ class MjwarpBackend(SimBackend):
         return self._defer_torch_fused_validation
 
     def set_defer_torch_fused_validation(self, enabled: bool) -> None:
-        """Opt in to completion-boundary fused operand publication."""
+        """Opt in to completion-boundary fused operand publication on a cold path."""
         if not isinstance(enabled, bool):
             raise TypeError(f"defer torch fused validation must be bool, got {type(enabled)}")
+        if enabled and self._torch_step_finite is None:
+            import torch
+
+            reference = self._stable_tensor_field_view("qpos")
+            self._torch_step_finite_abs = torch.empty(
+                (self._num_envs, self._nu), dtype=torch.float32, device=reference.device
+            )
+            self._torch_step_finite = torch.empty(
+                (self._num_envs, self._nu), dtype=torch.bool, device=reference.device
+            )
+            if (
+                self._torch_fused_valid is None
+                or self._torch_fused_valid.device != reference.device
+            ):
+                self._torch_fused_valid = torch.empty((), dtype=torch.bool, device=reference.device)
         self._defer_torch_fused_validation = enabled
 
     def publish_torch_fused_validation(self) -> None:
@@ -2681,8 +2698,24 @@ class MjwarpBackend(SimBackend):
             raise NotImplementedError(
                 "mjwarp tensor stepping does not support host pre-step control callbacks"
             )
+        import torch
+
         ctrl_view = self._stable_tensor_field_view("ctrl")
-        ctrl_tensor = self._validate_torch_operand("ctrl", ctrl, shape=(self._num_envs, self._nu))
+        ctrl_tensor = self._validate_torch_operand(
+            "ctrl",
+            ctrl,
+            shape=(self._num_envs, self._nu),
+            check_finite=not self._defer_torch_fused_validation,
+        )
+        if self._defer_torch_fused_validation:
+            assert (
+                self._torch_step_finite_abs is not None
+                and self._torch_step_finite is not None
+                and self._torch_fused_valid is not None
+            )
+            torch.abs(ctrl_tensor, out=self._torch_step_finite_abs)
+            torch.lt(self._torch_step_finite_abs, float("inf"), out=self._torch_step_finite)
+            torch.all(self._torch_step_finite, out=self._torch_fused_valid)
 
         t0 = time.perf_counter()
         # The caller owns the public action tensor and cannot mutate it until
