@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed MJWarp's state-update graph preflight to report the backend execution stream rather than the caller's current Torch stream. Caller-owned CUDA update capture uses the returned stream ID for its capture and replay stream, preventing CUDA's `stream does not match` error while keeping the preflight contract public and non-probing (UniLab issue #2338).
+
 ## 1.7.20 - 2026-10-14
 
 - Added the public state-update-only graph preflight contract for a caller-owned Manager update boundary (UniLab issue #2338). `EnvUpdateGraphPreflight` is deliberately separate from complete-collector `GraphCandidatePreflight`, so MJWarp physics-graph readiness cannot be relabelled as update-graph readiness. `SimBackend.preflight_env_update_graph()` fails closed by default and requires stable full-width state views, sensor views, tensor stepping, ordered step-completion publication, deferred fused validation, and public CUDA allocator statistics. MJWarp implements the boundary without inspecting caller-private state and reports the ordered Torch stream plus a non-negative allocator-stat snapshot; `GraphCompletionToken` now recognizes the separate `env_update` operation for future update completion receipts. This adds negotiation evidence only, not capture/replay or a graph support claim.

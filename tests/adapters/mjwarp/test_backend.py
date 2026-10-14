@@ -835,7 +835,10 @@ def test_mjwarp_supported_env_update_preflight_reports_stream_and_allocator() ->
     assert verdict.supported is True
     assert verdict.disable_reason is None
     device = backend.get_state_views(("qpos",))["qpos"].device
-    assert verdict.torch_stream_id == int(torch.cuda.current_stream(device).cuda_stream)
+    assert verdict.torch_stream_id != 0
+    assert verdict.torch_stream_id == int(
+        torch.cuda.ExternalStream(verdict.torch_stream_id, device=device).cuda_stream
+    )
     assert verdict.allocator_stats is not None
     assert "allocation.all.allocated" in verdict.allocator_stats
     assert verdict.allocator_stats["allocation.all.allocated"] == int(

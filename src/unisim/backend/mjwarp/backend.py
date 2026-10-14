@@ -3685,7 +3685,7 @@ class MjwarpBackend(SimBackend):
 
         torch_stream_id: int | None = None
         if supported:
-            torch_stream_id = int(torch.cuda.current_stream(stable_device).cuda_stream)
+            torch_stream_id = int(self._torch_execution_stream(stable_device).cuda_stream)
         return replace(
             request,
             backend_stream_contract=capabilities.stream_event_ownership,
