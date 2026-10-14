@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from unisim.backend.base import (
+    COMPLETION_CONTRACT_VERSION,
     HostBridgeTransferPlan,
+    ImmediateCompletionToken,
     TensorDataPlane,
     TensorExecution,
     TensorIOSpec,
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
     from .backend import SuperDexBackend
 
 _STREAM_OWNERSHIP = "caller-stream-per-packed-boundary; stream synchronized at CPU bridge"
+_RECEIPT_PRODUCER_ID = "superdex-host-bridge-eager"
 _SUPPORTED_STATE_FIELDS = frozenset({"qpos", "qvel", "ctrl"})
 
 
@@ -45,6 +48,25 @@ def superdex_tensor_capabilities(backend: SuperDexBackend) -> TensorLifecycleCap
         data_plane=TensorDataPlane.HOST_BRIDGE,
         stream_event_ownership=_STREAM_OWNERSHIP,
         torch_devices=("cpu", "cuda"),
+        ordered_completion_publication=True,
+    )
+
+
+def _completion(backend: SuperDexBackend, operation: str, stream: Any) -> Any:
+    """Publish one already-complete packed HOST_BRIDGE boundary receipt."""
+    import torch
+
+    stream_id = 0
+    if stream.device.type == "cuda":
+        stream_id = int(torch.cuda.current_stream(stream.device).cuda_stream)
+    sequence = int(getattr(backend, "_completion_sequence", 0)) + 1
+    backend._completion_sequence = sequence
+    return ImmediateCompletionToken(
+        contract_version=COMPLETION_CONTRACT_VERSION,
+        operation=operation,
+        sequence=sequence,
+        stream_id=stream_id,
+        producer_id=_RECEIPT_PRODUCER_ID,
     )
 
 
@@ -331,10 +353,12 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
         if not self._control_ready:
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
-        self._backend._host_step(
-            self._buffers().host_ctrl.numpy(), nsteps, _producer_owns_finite=True
-        )
-        return {"timing": dict(self.last_timing)}
+        buffers = self._buffers()
+        self._backend._host_step(buffers.host_ctrl.numpy(), nsteps, _producer_owns_finite=True)
+        return {
+            "timing": dict(self.last_timing),
+            "completion": _completion(self._backend, "step", buffers.host_ctrl),
+        }
 
     def read_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()
@@ -438,7 +462,10 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
             elapsed,
             self._pin,
         )
-        return {"timing": dict(self.last_timing)}
+        return {
+            "timing": dict(self.last_timing),
+            "completion": _completion(self._backend, "selected_reset", env_indices),
+        }
 
     def read_selected_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()

@@ -22,19 +22,14 @@ from typing import Any, NoReturn
 import numpy as np
 
 from unisim.backend.base import (
-    GRAPH_INVALIDATION_REASONS,
+    COMPLETION_CONTRACT_VERSION,
     BackendMocapPoseBinding,
     BackendPlayCapabilities,
     BackendPlayRenderPlan,
     BackendRootStateLayout,
     CameraCfg,
+    CompletionToken,
     DebugOverlayGetter,
-    EnvUpdateGraphPreflight,
-    GraphCandidatePreflight,
-    GraphCompletionToken,
-    GraphInvalidationReason,
-    GraphLifecycleSnapshot,
-    GraphLifecycleState,
     PhysicsStateLayout,
     PublicStateWidths,
     SelectedResetPublication,
@@ -175,16 +170,15 @@ def _cuda_graph_eligibility(warp: Any, device: Any) -> tuple[bool, str | None]:
     return True, None
 
 
-class _EventGraphCompletionToken(GraphCompletionToken):
+class _EventCompletionToken(CompletionToken):
     """Backend-owned completion receipt with its ordered CUDA event."""
 
-    def __init__(self, token: GraphCompletionToken, event: Any) -> None:
+    def __init__(self, token: CompletionToken, event: Any) -> None:
         object.__setattr__(self, "contract_version", token.contract_version)
-        object.__setattr__(self, "lifecycle_state", token.lifecycle_state)
         object.__setattr__(self, "operation", token.operation)
         object.__setattr__(self, "sequence", token.sequence)
         object.__setattr__(self, "stream_id", token.stream_id)
-        object.__setattr__(self, "capture_id", token.capture_id)
+        object.__setattr__(self, "producer_id", token.producer_id)
         self.event = event
 
     def wait_before_read(self, stream: Any | None = None) -> None:
@@ -200,11 +194,11 @@ class _EventGraphCompletionToken(GraphCompletionToken):
     @classmethod
     def from_ipc_handle(
         cls,
-        token: GraphCompletionToken,
+        token: CompletionToken,
         handle: bytes,
         *,
         device: Any,
-    ) -> "_EventGraphCompletionToken":
+    ) -> "_EventCompletionToken":
         """Reconstruct a consumer-owned receipt from its public descriptor."""
         import torch
 
@@ -517,11 +511,8 @@ class MjwarpBackend(SimBackend):
         self._torch_step_finite: Any | None = None
         self._torch_true_verdict: Any | None = None
         self._defer_torch_fused_validation = False
-        self._graph_completion_sequence = 0
-        self._graph_capture_id = f"mjwarp-{id(self):016x}"
-        self._graph_replay_count = 0
-        self._graph_fallback_count = 0
-        self._graph_invalidated = False
+        self._completion_sequence = 0
+        self._completion_producer_id = f"mjwarp-{id(self):016x}"
         # Tracked-body views are zero-copy slices of _sensor_cache; they must be
         # bound before the first forward barrier refreshes the cache below.
         self._body_id_to_tracked_idx: np.ndarray | None = None
@@ -1692,7 +1683,6 @@ class MjwarpBackend(SimBackend):
 
     def _disable_cuda_graphs(self, reason: str) -> None:
         """Atomically select the eager path and release any captured graphs."""
-        was_ready = bool(self._cuda_graph_enabled)
         self._cuda_graph_enabled = False
         self._step_graph = None
         self._forward_graph = None
@@ -1700,66 +1690,30 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_reset_graph = None
         self._reset_scratch_forward_graph = None
         self._cuda_graph_disable_reason: str | None = reason
-        self._graph_invalidated = True
-        if was_ready:
-            self._graph_fallback_count += 1
 
-    def invalidate_graph(self, reason: GraphInvalidationReason) -> GraphLifecycleSnapshot:
-        """Invalidate fixed-address captures before an owner-visible mutation."""
-        if reason not in GRAPH_INVALIDATION_REASONS:
-            raise ValueError(f"unsupported graph invalidation reason {reason!r}")
-        if self._cuda_graph_enabled:
-            self._disable_cuda_graphs(f"graph invalidated: {reason}")
-        else:
-            self._graph_invalidated = True
-        return self.get_graph_lifecycle_snapshot()
-
-    def get_graph_lifecycle(self) -> GraphLifecycleState:
-        """Return the public fixed-address graph lifecycle state."""
-        if self._graph_invalidated:
-            return GraphLifecycleState.INVALIDATED
-        if not self._cuda_graph_enabled:
-            return GraphLifecycleState.UNAVAILABLE
-        return GraphLifecycleState.READY
-
-    def get_graph_lifecycle_snapshot(self) -> GraphLifecycleSnapshot:
-        """Return graph lifecycle evidence for public manifests."""
-        return GraphLifecycleSnapshot(
-            contract_version=1,
-            state=self.get_graph_lifecycle(),
-            capture_id=self._graph_capture_id if self._cuda_graph_enabled else None,
-            replay_count=self._graph_replay_count,
-            fallback_count=self._graph_fallback_count,
-            disable_reason=self._cuda_graph_disable_reason,
-        )
-
-    def _graph_completion(
+    def _completion(
         self,
         operation: str,
         *,
         stream: Any,
-    ) -> GraphCompletionToken | None:
+    ) -> CompletionToken:
         """Publish one ordered completion receipt on the public Torch stream."""
         import torch
 
-        if self.get_graph_lifecycle() is not GraphLifecycleState.READY:
-            return None
         device = getattr(stream, "device", None)
         if device is None:
-            raise ValueError("graph completion requires the ordered Torch stream device")
+            raise ValueError("completion requires the ordered Torch stream device")
         event = torch.cuda.Event(interprocess=True)
         event.record(stream)
-        self._graph_completion_sequence += 1
-        self._graph_replay_count += 1
-        token = GraphCompletionToken(
-            contract_version=1,
-            lifecycle_state=self.get_graph_lifecycle(),
+        self._completion_sequence += 1
+        token = CompletionToken(
+            contract_version=COMPLETION_CONTRACT_VERSION,
             operation=operation,
-            sequence=self._graph_completion_sequence,
+            sequence=self._completion_sequence,
             stream_id=int(stream.cuda_stream),
-            capture_id=self._graph_capture_id,
+            producer_id=self._completion_producer_id,
         )
-        return _EventGraphCompletionToken(token, event)
+        return _EventCompletionToken(token, event)
 
     def _torch_execution_stream(self, device: Any) -> Any:
         """Return the backend-owned Torch view of Warp's current stream."""
@@ -1882,7 +1836,6 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_forward_graph = reset_scratch_forward_graph
         self._cuda_graph_enabled = True
         self._cuda_graph_disable_reason = None
-        self._graph_invalidated = False
 
     def _execute_device_steps(self, nsteps: int) -> None:
         """Advance fixed-shape device state through graph replay or eager calls."""
@@ -2107,7 +2060,7 @@ class MjwarpBackend(SimBackend):
             mask_selected_reset=True,
             mask_selected_reset_full_refresh=True,
             deferred_fused_validation=True,
-            graph_completion_publication=True,
+            ordered_completion_publication=True,
         )
 
     def begin_packed_reset(self, *, device: Any | None = None) -> Any:
@@ -2740,19 +2693,18 @@ class MjwarpBackend(SimBackend):
         except BaseException:
             self._entity_faulted = True
             raise
-        completion = self._graph_completion("step", stream=ctrl_stream)
+        completion = self._completion("step", stream=ctrl_stream)
         self._time_cache += np.float32(int(nsteps) * self._sim_dt)
         self._tracked_body_state_dirty = bool(self._tracked_body_names)
         self._host_cache_stale = True
         physics_ms = (time.perf_counter() - t0) * 1000.0
         return {
-            "graph_completion": completion,
+            "completion": completion,
             "timing": {
                 "control_upload_ms": control_upload_ms,
                 "physics_ms": physics_ms,
                 "host_cache_refresh_ms": 0.0,
                 "tensor_step_async": 0.0,
-                "graph_completion": completion,
             },
         }
 
@@ -2782,7 +2734,7 @@ class MjwarpBackend(SimBackend):
         qpos: np.ndarray,
         qvel: np.ndarray,
         randomization: ResetRandomizationPayload | None = None,
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, Any]:
         self._require_entity_healthy()
         self._sync_host_cache()
         rows = self._validate_rows(env_indices)
@@ -2847,7 +2799,7 @@ class MjwarpBackend(SimBackend):
         qpos: Any,
         qvel: Any,
         randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Commit selected generalized state with device-resident scatter kernels."""
         import torch
 
@@ -2929,7 +2881,6 @@ class MjwarpBackend(SimBackend):
         mask.zero_()
         mask.index_fill_(0, rows, True)
         reset_stream = self._torch_execution_stream(mask.device)
-        input_completion = self._graph_completion("selected_reset", stream=reset_stream)
         reset_ms = (time.perf_counter() - t0) * 1000.0
 
         t0 = time.perf_counter()
@@ -2962,21 +2913,20 @@ class MjwarpBackend(SimBackend):
             # refresh, as documented on _publish_selected_tensor_reset_sensors.
             if model_randomized or not self._publish_selected_tensor_reset_sensors(rows):
                 self._tracked_body_state_dirty = bool(self._tracked_body_names)
-            completion = self._graph_completion("selected_reset", stream=reset_stream)
+            completion = self._completion("selected_reset", stream=reset_stream)
         except BaseException:
             self._entity_faulted = True
             raise
         forward_ms = (time.perf_counter() - t0) * 1000.0
         self._host_cache_stale = True
         return {
+            "completion": completion,
             "timing": {
                 "set_state_tensor_mask_ms": reset_ms,
                 "set_state_tensor_commit_forward_ms": forward_ms,
                 "set_state_tensor_host_cache_refresh_ms": 0.0,
                 "set_state_tensor_model_update_ms": model_update_ms,
-                "graph_completion": completion,
-                "graph_input_completion": input_completion,
-            }
+            },
         }
 
     def set_state_tensor_mask(
@@ -2987,8 +2937,8 @@ class MjwarpBackend(SimBackend):
         randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
         *,
         full_refresh: bool = False,
-    ) -> dict[str, dict[str, Any]]:
-        """Commit full-width tensors selected by a graph-published bool mask.
+    ) -> dict[str, Any]:
+        """Commit full-width tensors selected by a backend-published bool mask.
 
         The public full-width state payload stays fixed-shape. The backend owns
         mask validation and reset-graph publication, so the caller never probes
@@ -3050,7 +3000,6 @@ class MjwarpBackend(SimBackend):
             self._state_torch_views["__reset_mask"] = graph_mask
         graph_mask.copy_(mask_tensor)
         reset_stream = self._torch_execution_stream(mask_tensor.device)
-        input_completion = self._graph_completion("mask_reset", stream=reset_stream)
         reset_ms = (time.perf_counter() - mask_started) * 1000.0
         forward_started = time.perf_counter()
         try:
@@ -3080,11 +3029,12 @@ class MjwarpBackend(SimBackend):
                 self._execute_device_forward()
                 self._tracked_body_state_dirty = False
             sensor_refresh_ms = (time.perf_counter() - sensor_refresh_started) * 1000.0
-            completion = self._graph_completion("mask_reset", stream=reset_stream)
+            completion = self._completion("mask_reset", stream=reset_stream)
         except BaseException:
             self._entity_faulted = True
             raise
-        timing = {
+        return {
+            "completion": completion,
             "timing": {
                 "set_state_tensor_mask_ms": reset_ms,
                 "set_state_tensor_commit_forward_ms": (time.perf_counter() - forward_started)
@@ -3092,11 +3042,8 @@ class MjwarpBackend(SimBackend):
                 "set_state_tensor_host_cache_refresh_ms": 0.0,
                 "set_state_tensor_model_update_ms": model_update_ms,
                 "set_state_tensor_sensor_refresh_ms": sensor_refresh_ms,
-                "graph_completion": completion,
-                "graph_input_completion": input_completion,
             },
         }
-        return timing
 
     def get_reset_term_default(self, term: str) -> np.ndarray:
         """Return canonical or fixed-variant authoritative reset defaults."""
@@ -3578,122 +3525,6 @@ class MjwarpBackend(SimBackend):
                 ),
             }
         return self._interval_term_handler_cache
-
-    def preflight_graph_candidate(
-        self, request: GraphCandidatePreflight
-    ) -> GraphCandidatePreflight:
-        """Validate MJWarp graph-candidate prerequisites without capture."""
-        capabilities = self.get_tensor_capabilities()
-        diagnostics = self.get_tensor_runtime_diagnostics()
-        supported = bool(
-            request.requested
-            and capabilities.state_views
-            and capabilities.stepping
-            and capabilities.mask_selected_reset
-            and capabilities.deferred_fused_validation
-            and self._cuda_graph_enabled
-            and diagnostics.get("cuda_graph") is not None
-            and diagnostics["cuda_graph"].enabled
-            and diagnostics.get("deferred_fused_validation") is not None
-            and diagnostics["deferred_fused_validation"].enabled
-        )
-        reason = None
-        if not request.requested:
-            reason = "graph candidate was not requested"
-        elif not self._cuda_graph_enabled:
-            reason = self._cuda_graph_disable_reason or "MJWarp CUDA graph replay is disabled"
-        elif not capabilities.deferred_fused_validation:
-            reason = "backend does not negotiate deferred fused validation"
-        elif (
-            diagnostics.get("deferred_fused_validation") is None
-            or not diagnostics["deferred_fused_validation"].enabled
-        ):
-            reason = "deferred fused validation was not enabled at construction"
-        elif not capabilities.mask_selected_reset:
-            reason = "backend does not negotiate fixed-width mask reset"
-        elif not capabilities.state_views or not capabilities.stepping:
-            reason = "backend does not expose stable stepping state views"
-        torch_stream_id = None
-        if supported:
-            import torch
-
-            stable_view = self._stable_tensor_field_view("qpos")
-            torch_stream_id = int(torch.cuda.current_stream(stable_view.device).cuda_stream)
-        return replace(
-            request,
-            backend_stream_contract=capabilities.stream_event_ownership,
-            supported=supported,
-            disable_reason=reason,
-            torch_stream_id=torch_stream_id,
-        )
-
-    def preflight_env_update_graph(
-        self, request: EnvUpdateGraphPreflight
-    ) -> EnvUpdateGraphPreflight:
-        """Validate MJWarp prerequisites for the caller-owned update graph."""
-        import torch
-
-        capabilities = self.get_tensor_capabilities()
-        diagnostics = self.get_tensor_runtime_diagnostics()
-        stable_views = capabilities.state_views and {"qpos", "qvel"}.issubset(
-            capabilities.state_fields
-        )
-        deferred = bool(
-            capabilities.deferred_fused_validation
-            and diagnostics.get("deferred_fused_validation") is not None
-            and diagnostics["deferred_fused_validation"].enabled
-        )
-        stable_device = self._stable_tensor_field_view("qpos").device
-        allocator_available = stable_device.type == "cuda"
-        allocator_stats: dict[str, int] | None = None
-        if allocator_available:
-            raw_stats = torch.cuda.memory_stats(stable_device)
-            allocator_stats = {
-                str(name): int(value)
-                for name, value in raw_stats.items()
-                if value is not None
-                and not isinstance(value, bool)
-                and isinstance(value, (int, np.integer))
-                and int(value) >= 0
-            }
-
-        supported = bool(
-            request.requested
-            and stable_views
-            and capabilities.sensor_views
-            and capabilities.stepping
-            and capabilities.graph_completion_publication
-            and deferred
-            and allocator_available
-            and allocator_stats is not None
-        )
-        reason: str | None = None
-        if not request.requested:
-            reason = "env update graph was not requested"
-        elif not capabilities.state_views or not stable_views:
-            reason = "backend does not expose stable full-width qpos/qvel views"
-        elif not capabilities.sensor_views:
-            reason = "backend does not expose stable sensor views"
-        elif not capabilities.stepping or not capabilities.graph_completion_publication:
-            reason = "backend does not publish ordered tensor step receipts"
-        elif not capabilities.deferred_fused_validation:
-            reason = "backend does not negotiate deferred fused validation"
-        elif not deferred:
-            reason = "deferred fused validation was not enabled at construction"
-        elif not allocator_available or allocator_stats is None:
-            reason = "selected Torch device does not expose CUDA allocator statistics"
-
-        torch_stream_id: int | None = None
-        if supported:
-            torch_stream_id = int(self._torch_execution_stream(stable_device).cuda_stream)
-        return replace(
-            request,
-            backend_stream_contract=capabilities.stream_event_ownership,
-            supported=supported,
-            disable_reason=reason,
-            torch_stream_id=torch_stream_id,
-            allocator_stats=allocator_stats,
-        )
 
     def push_robots(self, force_range: Sequence[float] | np.ndarray) -> None:
         """Sample one world-frame push force per env and stage it for the next step."""

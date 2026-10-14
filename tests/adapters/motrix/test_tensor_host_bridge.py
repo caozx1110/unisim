@@ -73,6 +73,7 @@ def test_tensor_capability_matrix_is_narrow_and_fail_closed(backend: MotrixBacke
     assert capabilities.data_plane is TensorDataPlane.HOST_BRIDGE
     assert capabilities.torch_devices == ("cpu", "cuda")
     assert capabilities.stream_event_ownership
+    assert capabilities.ordered_completion_publication
     assert not capabilities.reset_randomization
     assert not capabilities.fixed_variants
     assert not capabilities.host_pre_step_control
@@ -293,8 +294,8 @@ def test_selected_body_read_matches_full_world_views(backend: MotrixBackend) -> 
     plan.step(2)
     full = plan.read_state_sensors()
     body_ids = backend.get_body_ids(("base", "link"))
-    positions, quaternions, linear_velocities, angular_velocities = (
-        backend._host_get_body_state_w(body_ids)
+    positions, quaternions, linear_velocities, angular_velocities = backend._host_get_body_state_w(
+        body_ids
     )
     link_index = 1
     expected = {
@@ -395,6 +396,9 @@ def test_direct_tensor_apis_use_public_contract(backend: MotrixBackend) -> None:
     step_result = backend.step_tensor(torch.zeros((3, 1), dtype=torch.float32))
     assert step_result is not None
     assert step_result["timing"]["tensor_control_packed_d2h_ms"] >= 0
+    step_completion = step_result["completion"]
+    step_completion.wait_before_read()
+    assert step_completion.operation == "step"
     direct_plan = backend._direct_host_bridge_plan
     assert direct_plan is not None
     assert backend.step_tensor(torch.full((3, 1), 0.1, dtype=torch.float32)) is not None
@@ -412,6 +416,9 @@ def test_direct_tensor_apis_use_public_contract(backend: MotrixBackend) -> None:
     )
     assert reset_result is not None
     assert reset_result["timing"]["tensor_reset_packed_d2h_ms"] >= 0
+    reset_completion = reset_result["completion"]
+    reset_completion.wait_before_read()
+    assert reset_completion.operation == "selected_reset"
     assert backend._direct_host_bridge_plan is direct_plan
     assert direct_plan.transfer_stats == {
         "d2h_count": 3,
@@ -557,8 +564,8 @@ def test_packed_reset_validation_is_bounded_timed_and_producer_owned(
 
 def test_body_state_sensor_aliases_use_public_world_views(backend: MotrixBackend) -> None:
     body_ids = backend.get_body_ids(("base", "link"))
-    positions, quaternions, linear_velocities, angular_velocities = (
-        backend._host_get_body_state_w(body_ids)
+    positions, quaternions, linear_velocities, angular_velocities = backend._host_get_body_state_w(
+        body_ids
     )
     link_index = int(np.flatnonzero(body_ids == backend.get_body_ids(("link",))[0])[0])
 
@@ -599,8 +606,8 @@ def test_body_state_sensor_aliases_use_public_world_views(backend: MotrixBackend
         )
     )
     views = plan.read_state_sensors()
-    positions, quaternions, linear_velocities, angular_velocities = (
-        backend._host_get_body_state_w(body_ids)
+    positions, quaternions, linear_velocities, angular_velocities = backend._host_get_body_state_w(
+        body_ids
     )
     np.testing.assert_allclose(
         views["track_pos_w_base"].detach().numpy(), positions[:, 0], atol=1e-6

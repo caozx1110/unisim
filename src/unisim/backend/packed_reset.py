@@ -237,8 +237,7 @@ class TorchPackedResetComposer:
     def begin_state_mask(self, reset_mask: Any) -> None:
         """Restore default state staging for a fixed-width bool reset mask.
 
-        This is the graph-candidate counterpart to ``begin_state(rows)``. It
-        keeps the staging tensors full width and never materializes true-row
+        It keeps the staging tensors full width and never materializes true-row
         indices. Backends still own selected-row publication at commit.
         """
         mask = self._validate_state_mask(reset_mask)
@@ -409,7 +408,11 @@ class TorchPackedResetComposer:
                 "packed_reset_total_ms": (time.perf_counter() - started) * 1000.0,
             }
         )
-        return {"timing": timing}
+        completion = (result or {}).get("completion")
+        result_payload = {"timing": timing}
+        if completion is not None:
+            result_payload["completion"] = completion
+        return result_payload
 
     def write_mocap_pose(self, body_name: str, rows: Any, poses: Any) -> None:
         """Stage selected-row world-space poses for one mocap body."""

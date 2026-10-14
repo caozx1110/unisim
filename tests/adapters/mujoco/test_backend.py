@@ -6,8 +6,7 @@ import pytest
 pytest.importorskip("mujoco")
 
 from unisim import (
-    GraphLifecycleState,
-    ImmediateGraphCompletionToken,
+    ImmediateCompletionToken,
     MuJoCoBackend,
     TensorExecution,
     assert_backend_conformance,
@@ -244,7 +243,7 @@ def test_mujoco_host_bridge_tensor_lifecycle(tmp_path: Path) -> None:
     assert capabilities.stepping
     assert capabilities.selected_reset
     assert capabilities.packed_host_bridge
-    assert capabilities.graph_completion_publication
+    assert capabilities.ordered_completion_publication
     assert not capabilities.host_pre_step_control
     packed_plan = backend.compile_host_bridge_io(
         TensorIOSpec(
@@ -267,17 +266,12 @@ def test_mujoco_host_bridge_tensor_lifecycle(tmp_path: Path) -> None:
     result = backend.step_tensor(ctrl, nsteps=2)
     assert result is not None
     assert result["timing"]["tensor_control_d2h_ms"] >= 0.0
-    completion = result["graph_completion"]
-    assert isinstance(completion, ImmediateGraphCompletionToken)
+    completion = result["completion"]
+    assert isinstance(completion, ImmediateCompletionToken)
     assert completion.operation == "step"
-    assert completion.capture_id == "mujoco-host-bridge-eager"
+    assert completion.producer_id == "mujoco-host-bridge-eager"
     assert completion.sequence == 1
     completion.wait_before_read()
-    lifecycle = backend.get_graph_lifecycle_snapshot()
-    assert lifecycle.state is GraphLifecycleState.UNAVAILABLE
-    assert lifecycle.disable_reason == (
-        "eager HOST_BRIDGE completion publication; no capture lifecycle"
-    )
     state = backend.get_state_views(("qpos", "qvel"), device="cuda")
     assert state["qpos"].is_cuda
     sensor = backend.get_sensor_view("base_pos", device="cuda")

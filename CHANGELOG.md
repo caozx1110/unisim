@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.0 - 2026-10-15
+
+- **Breaking (tensor contract):** removed the caller-owned collector and state-update graph contracts added for UniLab issues Motphys/UniLab#2311, Motphys/UniLab#2338, and Motphys/UniLab#2359: graph preflights, public graph lifecycle/invalidation surfaces, `graph_completion` result keys, capture identity, whole-collector `collector_tick` receipts, and the `env_update` receipt operation. No aliases, deprecation wrappers, preflight allocator evidence, or graph receipt fallback remain. Eager ordered visibility is preserved through `CompletionToken`, `ImmediateCompletionToken`, `COMPLETION_OPERATIONS`, and the top-level `completion` result using `producer_id`; backend-owned physics graphs, deferred fused validation, and the fail-closed tensor capability matrix remain. MJWarp publishes actual step and reset receipts even when its backend-owned physics graphs are disabled, and the MJWarp hot-path static audit is retained under neutral ownership.
+
 ## 1.7.21 - 2026-10-14
 
 - Fixed MJWarp's state-update graph preflight to report the backend execution stream rather than the caller's current Torch stream. Caller-owned CUDA update capture uses the returned stream ID for its capture and replay stream, preventing CUDA's `stream does not match` error while keeping the preflight contract public and non-probing (UniLab issue #2338).

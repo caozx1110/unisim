@@ -101,8 +101,6 @@ def test_device_payload_scatter_selected_rows_only(
         "set_state_tensor_commit_forward_ms",
         "set_state_tensor_host_cache_refresh_ms",
         "set_state_tensor_model_update_ms",
-        "graph_completion",
-        "graph_input_completion",
     }
     assert result["timing"]["set_state_tensor_model_update_ms"] >= 0.0
 
@@ -151,7 +149,7 @@ def test_mask_reset_randomization_applies_only_selected_full_width_rows(
     payload = TensorResetRandomizationPayload(body_mass=full_mass)
 
     result = backend.set_state_tensor_mask(mask, qpos, qvel, payload)
-    completion = result["timing"]["graph_completion"]
+    completion = result["completion"]
     assert completion is not None
     completion.wait_before_read()
 

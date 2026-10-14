@@ -34,6 +34,7 @@ class _ComposerBackend:
         self.commits: list[tuple[object, object, object, TensorResetRandomizationPayload]] = []
         self.mask_commits: list[tuple[object, object, object, TensorResetRandomizationPayload]] = []
         self.mocap_writes: list[tuple[str, object, object]] = []
+        self.mask_completions: list[object] = []
         self.packed_reset_mocap = packed_reset_mocap
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
@@ -68,7 +69,12 @@ class _ComposerBackend:
 
     def set_state_tensor_mask(self, reset_mask, qpos, qvel, randomization=None, **_kwargs):
         self.mask_commits.append((reset_mask, qpos, qvel, randomization))
-        return {"timing": {"set_state_tensor_mask_ms": 1.0}}
+        completion = object()
+        self.mask_completions.append(completion)
+        return {
+            "timing": {"set_state_tensor_mask_ms": 1.0},
+            "completion": completion,
+        }
 
     def set_mocap_pose_tensor(self, body_name, rows, poses):
         self.mocap_writes.append((body_name, rows, poses))
@@ -149,6 +155,19 @@ def test_composer_discard_and_host_only_fail_closed() -> None:
     assert PACKED_RESET_PERSISTENT_CHANNELS == frozenset(
         {"ctrl", "act", "qfrc_applied", "xfrc_applied", "qacc_warmstart"}
     )
+
+
+def test_composer_mask_commit_forwards_public_completion_receipt() -> None:
+    backend = _ComposerBackend()
+    transaction = TorchPackedResetComposer(backend)
+    mask = torch.tensor([False, True, False, True])
+    qpos = torch.zeros((4, 2), dtype=torch.float32)
+    qvel = torch.zeros((4, 2), dtype=torch.float32)
+
+    result = transaction.commit_state_mask(mask, qpos, qvel)
+
+    assert result["completion"] is backend.mask_completions[0]
+    assert "completion" not in result["timing"]
 
 
 def test_composer_stages_merges_and_commits_mocap_poses() -> None:

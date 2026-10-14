@@ -26,7 +26,9 @@ UniLab 的 Manager-Based 运行时与 collector 目前以 NumPy 为边界，而 
 
 外部 GPU worker 保持 SDK 解释器与依赖隔离。pipe 只携带控制消息和错误；bulk tensor 通过稳定的 CUDA IPC arena 交叉。共享的 SDK-free transport 导出 opaque memory/event driver handle，并携带 ABI 版本、物理设备 UUID、大小与对齐。它绝不序列化 Torch-private storage、不在 host 进程 import Isaac SDK，也不把引擎原生 buffer 当作公开稳定指针。transport primitive 本身不代表 IsaacGym 或 IsaacSim 已具备 tensor 生命周期，其既有 CPU shared-memory subprocess 路径也不构成 tensor 支持声明。
 
-Tensor 输入必须是连续 Torch tensor。control 是 float32 `(num_envs, num_actuators)`；reset row ID 是 `[0, num_envs)` 内唯一的 int64，qpos/qvel 是同一 accepted device 上的 float32 `(rows, nq/nv)`。生产方负责有限性检查，避免适配器在热路径强制标量同步；row 校验允许一次有界同步。完成的 step/reset 会消费输入。device-resident 工作按 backend 执行流排序，并通过 graph completion receipt 公开可见性，而不要求设备级 host 同步。
+Tensor 输入必须是连续 Torch tensor。control 是 float32 `(num_envs, num_actuators)`；reset row ID 是 `[0, num_envs)` 内唯一的 int64，qpos/qvel 是同一 accepted device 上的 float32 `(rows, nq/nv)`。生产方负责有限性检查，避免适配器在热路径强制标量同步；row 校验允许一次有界同步。完成的 step/reset 会消费输入。device-resident 工作按 backend 执行流排序，并通过 ordered completion receipt 公开可见性，而不要求设备级 host 同步。中性 `ordered_completion_publication` capability 同时保护 eager HOST_BRIDGE 执行与 backend 自有 physics graph；它不授权 caller 自有 collector 或环境更新 graph。
+
+有序 completion publication 是 eager step、reset 与 collector publication 的 backend 边界契约。它不协商、也不授权 caller-owned graph capture；graph capture 只在后端内部声明时保持为适配器自有的 physics 实现细节。
 
 `DEVICE_RESIDENT` 中 `device=None` 表示后端的精确 CUDA 设备，返回的活跃 view 逻辑上只读。`HOST_BRIDGE` 中 `device=None` 表示 CPU；显式传入设备会请求 H2D 复制，返回值是 detached 快照。`TensorLifecycleCapabilities.state_fields` 是可机读的广义状态字段集合（`qpos`、`qvel`、`ctrl`、`time`，以及可用时的 `sensordata`）。body pose/velocity 消费方使用命名 sensor view，而不是引擎私有 body 数组约定。
 

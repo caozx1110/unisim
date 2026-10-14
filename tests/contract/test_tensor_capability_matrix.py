@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
 from unisim import (
-    EnvUpdateGraphPreflight,
-    FakeBackend,
-    GraphCandidatePreflight,
-    GraphCompletionToken,
-    GraphLifecycleSnapshot,
-    GraphLifecycleState,
-    ImmediateGraphCompletionToken,
+    COMPLETION_CONTRACT_VERSION,
+    CompletionToken,
+    ImmediateCompletionToken,
     SupportLevel,
     TensorDataPlane,
     TensorExecution,
@@ -157,7 +153,7 @@ def test_deferred_fused_validation_capability_dependencies_fail_closed() -> None
         )
 
 
-def test_graph_completion_capability_dependencies_fail_closed() -> None:
+def test_ordered_completion_capability_dependencies_fail_closed() -> None:
     base = {
         "execution": TensorExecution.DEVICE_RESIDENT,
         "process_topology": TensorProcessTopology.IN_PROCESS,
@@ -177,24 +173,24 @@ def test_graph_completion_capability_dependencies_fail_closed() -> None:
     with pytest.raises(ValueError, match="unsupported tensor lifecycle"):
         TensorLifecycleCapabilities(
             execution=TensorExecution.UNSUPPORTED,
-            graph_completion_publication=True,
+            ordered_completion_publication=True,
         )
-    with pytest.raises(ValueError, match="graph completion publication"):
+    with pytest.raises(ValueError, match="ordered completion publication"):
         TensorLifecycleCapabilities(
             **(
                 base
                 | {
                     "mask_selected_reset": False,
-                    "graph_completion_publication": True,
+                    "ordered_completion_publication": True,
                 }
             )
         )
 
-    supported = TensorLifecycleCapabilities(**(base | {"graph_completion_publication": True}))
-    assert supported.graph_completion_publication
+    supported = TensorLifecycleCapabilities(**(base | {"ordered_completion_publication": True}))
+    assert supported.ordered_completion_publication
 
 
-def test_graph_completion_supports_packed_host_bridge_without_event_receipt() -> None:
+def test_ordered_completion_supports_packed_host_bridge_without_event_receipt() -> None:
     supported = TensorLifecycleCapabilities(
         execution=TensorExecution.HOST_BRIDGE,
         process_topology=TensorProcessTopology.IN_PROCESS,
@@ -211,88 +207,61 @@ def test_graph_completion_supports_packed_host_bridge_without_event_receipt() ->
         selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
         mask_selected_reset=True,
         packed_host_bridge=True,
-        graph_completion_publication=True,
+        ordered_completion_publication=True,
     )
-    assert supported.graph_completion_publication
+    assert supported.ordered_completion_publication
 
     with pytest.raises(ValueError, match="HOST_BRIDGE"):
         replace(supported, packed_host_bridge=False)
 
 
-def test_graph_completion_token_is_fail_closed_public_metadata() -> None:
+def test_completion_token_is_fail_closed_public_metadata() -> None:
     valid = {
-        "contract_version": 1,
-        "lifecycle_state": GraphLifecycleState.READY,
+        "contract_version": COMPLETION_CONTRACT_VERSION,
         "operation": "step",
         "sequence": 7,
         "stream_id": 12,
-        "capture_id": "capture-a",
+        "producer_id": "producer-a",
     }
 
-    assert GraphCompletionToken(**valid).sequence == 7
+    assert CompletionToken(**valid).sequence == 7
     with pytest.raises(ValueError, match="contract"):
-        GraphCompletionToken(**(valid | {"contract_version": 2}))
-    with pytest.raises(ValueError, match="READY"):
-        GraphCompletionToken(**(valid | {"lifecycle_state": GraphLifecycleState.UNAVAILABLE}))
+        CompletionToken(**(valid | {"contract_version": 1}))
     with pytest.raises(ValueError, match="operation"):
-        GraphCompletionToken(**(valid | {"operation": "learner-update"}))
-    assert GraphCompletionToken(**(valid | {"operation": "collector_tick"})).operation == (
-        "collector_tick"
-    )
+        CompletionToken(**(valid | {"operation": "learner-update"}))
     with pytest.raises(TypeError, match="sequence"):
-        GraphCompletionToken(**(valid | {"sequence": True}))
-    with pytest.raises(TypeError, match="capture_id"):
-        GraphCompletionToken(**(valid | {"capture_id": " "}))
-    with pytest.raises(ValueError, match="capture_id"):
-        GraphCompletionToken(**(valid | {"capture_id": None}))
+        CompletionToken(**(valid | {"sequence": True}))
+    with pytest.raises(TypeError, match="producer_id"):
+        CompletionToken(**(valid | {"producer_id": " "}))
+    with pytest.raises(TypeError, match="producer_id"):
+        CompletionToken(**(valid | {"producer_id": None}))
     with pytest.raises(NotImplementedError, match="IPC"):
-        GraphCompletionToken(**valid).ipc_handle()
+        CompletionToken(**valid).ipc_handle()
 
 
 def test_immediate_host_completion_token_is_public_and_complete() -> None:
     valid = {
-        "contract_version": 1,
-        "lifecycle_state": GraphLifecycleState.READY,
+        "contract_version": COMPLETION_CONTRACT_VERSION,
         "operation": "step",
         "sequence": 1,
         "stream_id": 7,
-        "capture_id": "mujoco-host-bridge-eager",
+        "producer_id": "mujoco-host-bridge-eager",
     }
-    receipt = ImmediateGraphCompletionToken(**valid)
+    receipt = ImmediateCompletionToken(**valid)
     assert receipt.wait_before_read(None) is None
     with pytest.raises(NotImplementedError, match="IPC"):
         receipt.ipc_handle()
 
 
-def test_graph_lifecycle_snapshot_fails_closed() -> None:
-    valid = {
-        "contract_version": 1,
-        "state": GraphLifecycleState.READY,
-        "capture_id": "capture-a",
-        "replay_count": 4,
-        "fallback_count": 0,
+def test_completion_contract_has_only_public_operation_metadata() -> None:
+    public_fields = {field.name for field in fields(CompletionToken)}
+    assert public_fields == {
+        "contract_version",
+        "operation",
+        "sequence",
+        "stream_id",
+        "producer_id",
     }
-
-    assert GraphLifecycleSnapshot(**valid).replay_count == 4
-    with pytest.raises(ValueError, match="contract"):
-        GraphLifecycleSnapshot(**(valid | {"contract_version": 2}))
-    with pytest.raises(ValueError, match="capture_id"):
-        GraphLifecycleSnapshot(**(valid | {"capture_id": None}))
-    with pytest.raises(ValueError, match="disable reason"):
-        GraphLifecycleSnapshot(**(valid | {"disable_reason": "stale reason"}))
-    with pytest.raises(ValueError, match="disable reason"):
-        GraphLifecycleSnapshot(
-            **(
-                valid
-                | {
-                    "state": GraphLifecycleState.INVALIDATED,
-                    "capture_id": None,
-                    "disable_reason": " ",
-                }
-            )
-        )
-    with pytest.raises(ValueError, match="fallback_count"):
-        GraphLifecycleSnapshot(**(valid | {"fallback_count": -1}))
     with pytest.raises(ValueError, match="deferred fused validation"):
         TensorLifecycleCapabilities(
             execution=TensorExecution.HOST_BRIDGE,
@@ -302,84 +271,6 @@ def test_graph_lifecycle_snapshot_fails_closed() -> None:
             torch_devices=("cpu",),
             deferred_fused_validation=True,
         )
-
-
-def test_graph_candidate_preflight_state_is_fail_closed() -> None:
-    with pytest.raises(ValueError, match="preflight"):
-        GraphCandidatePreflight(requested=False, supported=None, disable_reason=None)
-    with pytest.raises(ValueError, match="preflight"):
-        GraphCandidatePreflight(
-            requested=True,
-            supported=True,
-            disable_reason="stale reason",
-            backend_stream_contract="caller",
-        )
-
-
-def test_graph_candidate_preflight_validates_stream_id_metadata() -> None:
-    for value in (True, -1, "0"):
-        with pytest.raises(TypeError, match="torch_stream_id"):
-            GraphCandidatePreflight(requested=True, torch_stream_id=value)
-
-
-def test_default_backend_graph_candidate_preflight_fails_closed() -> None:
-    request = GraphCandidatePreflight(requested=True)
-
-    with pytest.raises(NotImplementedError, match="graph-candidate preflight"):
-        FakeBackend().preflight_graph_candidate(request)
-
-
-def test_env_update_graph_preflight_state_is_fail_closed() -> None:
-    with pytest.raises(ValueError, match="update preflight"):
-        EnvUpdateGraphPreflight(requested=False, supported=None, disable_reason=None)
-    with pytest.raises(ValueError, match="update preflight"):
-        EnvUpdateGraphPreflight(
-            requested=True,
-            supported=True,
-            disable_reason="stale reason",
-            backend_stream_contract="caller",
-        )
-    with pytest.raises(ValueError, match="allocator evidence"):
-        EnvUpdateGraphPreflight(
-            requested=True,
-            supported=True,
-            backend_stream_contract="caller",
-        )
-
-
-def test_env_update_graph_preflight_validates_stream_and_allocator_evidence() -> None:
-    for value in (True, -1, "0"):
-        with pytest.raises(TypeError, match="torch_stream_id"):
-            EnvUpdateGraphPreflight(requested=True, torch_stream_id=value)
-    with pytest.raises(TypeError, match="allocator_stats"):
-        EnvUpdateGraphPreflight(requested=True, allocator_stats=[])
-    with pytest.raises(TypeError, match="allocator_stats"):
-        EnvUpdateGraphPreflight(
-            requested=True,
-            supported=False,
-            disable_reason="unavailable",
-            allocator_stats={"allocation.all.allocated": -1},
-        )
-    with pytest.raises(TypeError, match="allocator_stats"):
-        EnvUpdateGraphPreflight(
-            requested=True,
-            supported=False,
-            disable_reason="unavailable",
-            allocator_stats={"max_split_size": None},
-        )
-    assert EnvUpdateGraphPreflight(
-        requested=True,
-        supported=False,
-        disable_reason="unavailable",
-        allocator_stats={"allocation.all.allocated": 0},
-    ).allocator_stats == {"allocation.all.allocated": 0}
-
-
-def test_default_backend_env_update_preflight_fails_closed() -> None:
-    request = EnvUpdateGraphPreflight(requested=True)
-
-    with pytest.raises(NotImplementedError, match="env-update graph preflight"):
-        FakeBackend().preflight_env_update_graph(request)
 
 
 def test_mask_selected_reset_accepts_in_process_host_bridge() -> None:
