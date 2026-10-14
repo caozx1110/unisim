@@ -12,6 +12,7 @@ pytest.importorskip("warp")
 import warp
 
 from unisim import (
+    EnvUpdateGraphPreflight,
     GraphCandidatePreflight,
     GraphLifecycleState,
     MjwarpBackend,
@@ -795,6 +796,51 @@ def test_mjwarp_graph_candidate_preflight_requires_all_public_boundaries() -> No
         "backend-completes-step-and-refresh; caller owns Torch stream"
     )
     assert eager.torch_stream_id is None
+    backend.close()
+
+
+def test_mjwarp_env_update_preflight_requires_public_update_boundaries() -> None:
+    backend = _make_backend(Path("/tmp"), "unused-update-preflight.xml", num_envs=2)
+    request = EnvUpdateGraphPreflight(requested=True)
+
+    unrequested = backend.preflight_env_update_graph(
+        EnvUpdateGraphPreflight(
+            requested=False,
+            supported=False,
+            disable_reason="owner did not request update capture",
+        )
+    )
+    eager = backend.preflight_env_update_graph(request)
+
+    assert unrequested.supported is False
+    assert unrequested.disable_reason == "env update graph was not requested"
+    assert eager.supported is False
+    assert eager.disable_reason == "deferred fused validation was not enabled at construction"
+    assert eager.backend_stream_contract == (
+        "backend-completes-step-and-refresh; caller owns Torch stream"
+    )
+    assert eager.torch_stream_id is None
+    assert eager.allocator_stats is not None
+    assert all(value >= 0 for value in eager.allocator_stats.values())
+    backend.close()
+
+
+def test_mjwarp_supported_env_update_preflight_reports_stream_and_allocator() -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(Path("/tmp"), "unused-supported-update.xml", num_envs=2)
+    backend.set_defer_torch_fused_validation(True)
+
+    verdict = backend.preflight_env_update_graph(EnvUpdateGraphPreflight(requested=True))
+
+    assert verdict.supported is True
+    assert verdict.disable_reason is None
+    device = backend.get_state_views(("qpos",))["qpos"].device
+    assert verdict.torch_stream_id == int(torch.cuda.current_stream(device).cuda_stream)
+    assert verdict.allocator_stats is not None
+    assert "allocation.all.allocated" in verdict.allocator_stats
+    assert verdict.allocator_stats["allocation.all.allocated"] == int(
+        torch.cuda.memory_stats(device)["allocation.all.allocated"]
+    )
     backend.close()
 
 

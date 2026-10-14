@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added the public state-update-only graph preflight contract for a caller-owned Manager update boundary (UniLab issue #2338). `EnvUpdateGraphPreflight` is deliberately separate from complete-collector `GraphCandidatePreflight`, so MJWarp physics-graph readiness cannot be relabelled as update-graph readiness. `SimBackend.preflight_env_update_graph()` fails closed by default and requires stable full-width state views, sensor views, tensor stepping, ordered step-completion publication, deferred fused validation, and public CUDA allocator statistics. MJWarp implements the boundary without inspecting caller-private state and reports the ordered Torch stream plus a non-negative allocator-stat snapshot; `GraphCompletionToken` now recognizes the separate `env_update` operation for future update completion receipts. This adds negotiation evidence only, not capture/replay or a graph support claim.
+
 ## 1.7.19 - 2026-10-14
 
 - Added eager public completion receipts to the MuJoCo packed HOST_BRIDGE tensor lifecycle (UniLab issue #2312). CUDA and CPU tensor steps now publish monotonic `step` receipts before returning; the CPU-authoritative prefix uses a neutral stream and an in-process completion token whose read wait is a no-op and whose IPC handle fails closed. `TensorLifecycleCapabilities.graph_completion_publication` now accepts in-process direct-data-plane and packed HOST_BRIDGE carriers, while the tensor lifecycle manifest records that no capture lifecycle is exposed. Partial test-double constructions also receive a safe default receipt state.
