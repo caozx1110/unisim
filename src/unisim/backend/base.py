@@ -133,7 +133,7 @@ GRAPH_INVALIDATION_REASONS: frozenset[str] = frozenset(
     {"model", "data", "view", "capacity", "policy_io", "stream_event", "capture_failed"}
 )
 GRAPH_COMPLETION_OPERATIONS: frozenset[str] = frozenset(
-    {"step", "selected_reset", "mask_reset", "collector_tick"}
+    {"step", "selected_reset", "mask_reset", "collector_tick", "env_update"}
 )
 
 
@@ -507,6 +507,71 @@ class GraphCandidatePreflight:
             or self.torch_stream_id < 0
         ):
             raise TypeError("torch_stream_id must be a non-negative integer or None")
+
+
+@dataclass(frozen=True)
+class EnvUpdateGraphPreflight:
+    """A state-update-only graph request and backend-owned preflight verdict.
+
+    This boundary is intentionally distinct from :class:`GraphCandidatePreflight`:
+    MJWarp physics-graph readiness never proves that a caller-owned Manager
+    state-update body can be captured after the public step receipt. A backend
+    may support this verdict even while refusing complete-collector capture; it
+    must still keep ``supported=False`` until every prerequisite below is
+    publicly observable:
+
+    - stable full-width qpos/qvel and requested sensor views;
+    - ordered public step-completion publication;
+    - deferred validation and persistent finite verdicts;
+    - a selected CUDA Torch device with allocator statistics available;
+    - an execution stream contract that permits ordered work after the backend
+      step receipt.
+
+    ``allocator_stats`` is public evidence for #2338 Gate U. It is a snapshot,
+    not an authorization to skip runtime capture/replay allocation checks.
+    """
+
+    requested: bool
+    backend_stream_contract: str | None = None
+    supported: bool | None = None
+    disable_reason: str | None = None
+    torch_stream_id: int | None = None
+    allocator_stats: Mapping[str, int] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.requested, bool):
+            raise TypeError(f"requested must be bool, got {type(self.requested).__name__}")
+        if self.backend_stream_contract is not None and (
+            not isinstance(self.backend_stream_contract, str)
+            or not self.backend_stream_contract.strip()
+        ):
+            raise TypeError("backend_stream_contract must be a non-empty string or None")
+        if self.supported is not None and not isinstance(self.supported, bool):
+            raise TypeError(f"supported must be bool or None, got {type(self.supported).__name__}")
+        if not self.requested and (self.supported is not False or self.disable_reason is None):
+            raise ValueError("an unrequested update preflight must be unsupported with a reason")
+        if self.supported is True and self.disable_reason is not None:
+            raise ValueError("a supported update preflight must not declare a disable reason")
+        if self.supported is False and (
+            not isinstance(self.disable_reason, str) or not self.disable_reason.strip()
+        ):
+            raise ValueError("an unsupported update preflight must declare a disable reason")
+        if self.torch_stream_id is not None and (
+            isinstance(self.torch_stream_id, bool)
+            or not isinstance(self.torch_stream_id, int)
+            or self.torch_stream_id < 0
+        ):
+            raise TypeError("torch_stream_id must be a non-negative integer or None")
+        if self.allocator_stats is not None:
+            if not isinstance(self.allocator_stats, Mapping):
+                raise TypeError("allocator_stats must be a mapping of non-negative integers")
+            for key, value in self.allocator_stats.items():
+                if not isinstance(key, str) or not key:
+                    raise TypeError("allocator_stats keys must be non-empty strings")
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise TypeError(f"allocator_stats[{key!r}] must be a non-negative integer")
+        if self.supported is True and self.allocator_stats is None:
+            raise ValueError("a supported update preflight requires allocator evidence")
 
 
 @dataclass(frozen=True)
@@ -1455,6 +1520,21 @@ class SimBackend(abc.ABC):
         """
         del request
         raise NotImplementedError(f"{self.backend_type} does not support graph-candidate preflight")
+
+    def preflight_env_update_graph(
+        self, request: EnvUpdateGraphPreflight
+    ) -> EnvUpdateGraphPreflight:
+        """Validate state-update-only graph prerequisites without capture.
+
+        This default is deliberately fail closed. Supporting a physics graph is
+        not evidence that a caller-owned update body can be captured; each
+        backend must explicitly publish stable views, ordered step receipts,
+        deferred validation, stream ownership, and allocator evidence.
+        """
+        del request
+        raise NotImplementedError(
+            f"{self.backend_type} does not support env-update graph preflight"
+        )
 
     def get_graph_lifecycle(self) -> GraphLifecycleState:
         """Return the public lifecycle state without exposing graph handles."""

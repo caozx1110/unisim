@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from unisim import (
+    EnvUpdateGraphPreflight,
     FakeBackend,
     GraphCandidatePreflight,
     GraphCompletionToken,
@@ -326,6 +327,59 @@ def test_default_backend_graph_candidate_preflight_fails_closed() -> None:
 
     with pytest.raises(NotImplementedError, match="graph-candidate preflight"):
         FakeBackend().preflight_graph_candidate(request)
+
+
+def test_env_update_graph_preflight_state_is_fail_closed() -> None:
+    with pytest.raises(ValueError, match="update preflight"):
+        EnvUpdateGraphPreflight(requested=False, supported=None, disable_reason=None)
+    with pytest.raises(ValueError, match="update preflight"):
+        EnvUpdateGraphPreflight(
+            requested=True,
+            supported=True,
+            disable_reason="stale reason",
+            backend_stream_contract="caller",
+        )
+    with pytest.raises(ValueError, match="allocator evidence"):
+        EnvUpdateGraphPreflight(
+            requested=True,
+            supported=True,
+            backend_stream_contract="caller",
+        )
+
+
+def test_env_update_graph_preflight_validates_stream_and_allocator_evidence() -> None:
+    for value in (True, -1, "0"):
+        with pytest.raises(TypeError, match="torch_stream_id"):
+            EnvUpdateGraphPreflight(requested=True, torch_stream_id=value)
+    with pytest.raises(TypeError, match="allocator_stats"):
+        EnvUpdateGraphPreflight(requested=True, allocator_stats=[])
+    with pytest.raises(TypeError, match="allocator_stats"):
+        EnvUpdateGraphPreflight(
+            requested=True,
+            supported=False,
+            disable_reason="unavailable",
+            allocator_stats={"allocation.all.allocated": -1},
+        )
+    with pytest.raises(TypeError, match="allocator_stats"):
+        EnvUpdateGraphPreflight(
+            requested=True,
+            supported=False,
+            disable_reason="unavailable",
+            allocator_stats={"max_split_size": None},
+        )
+    assert EnvUpdateGraphPreflight(
+        requested=True,
+        supported=False,
+        disable_reason="unavailable",
+        allocator_stats={"allocation.all.allocated": 0},
+    ).allocator_stats == {"allocation.all.allocated": 0}
+
+
+def test_default_backend_env_update_preflight_fails_closed() -> None:
+    request = EnvUpdateGraphPreflight(requested=True)
+
+    with pytest.raises(NotImplementedError, match="env-update graph preflight"):
+        FakeBackend().preflight_env_update_graph(request)
 
 
 def test_mask_selected_reset_accepts_in_process_host_bridge() -> None:

@@ -29,6 +29,7 @@ from unisim.backend.base import (
     BackendRootStateLayout,
     CameraCfg,
     DebugOverlayGetter,
+    EnvUpdateGraphPreflight,
     GraphCandidatePreflight,
     GraphCompletionToken,
     GraphInvalidationReason,
@@ -1504,13 +1505,13 @@ class MjwarpBackend(SimBackend):
     def _torch_view(self, device_array: Any, *, require_contiguous: bool = True) -> Any:
         """Return one live DLPack view of a stable Warp state array."""
         try:
-            import torch
+            from torch.utils.dlpack import from_dlpack
         except ImportError as exc:
             raise RuntimeError(
                 "mjwarp tensor state requires Torch; install a Torch build compatible "
                 "with the active Warp CUDA device"
             ) from exc
-        view = torch.from_dlpack(device_array)
+        view = from_dlpack(device_array)
         if require_contiguous and not bool(view.is_contiguous()):
             raise NotImplementedError("mjwarp tensor state requires contiguous Warp fields")
         return view
@@ -3624,6 +3625,74 @@ class MjwarpBackend(SimBackend):
             supported=supported,
             disable_reason=reason,
             torch_stream_id=torch_stream_id,
+        )
+
+    def preflight_env_update_graph(
+        self, request: EnvUpdateGraphPreflight
+    ) -> EnvUpdateGraphPreflight:
+        """Validate MJWarp prerequisites for the caller-owned update graph."""
+        import torch
+
+        capabilities = self.get_tensor_capabilities()
+        diagnostics = self.get_tensor_runtime_diagnostics()
+        stable_views = capabilities.state_views and {"qpos", "qvel"}.issubset(
+            capabilities.state_fields
+        )
+        deferred = bool(
+            capabilities.deferred_fused_validation
+            and diagnostics.get("deferred_fused_validation") is not None
+            and diagnostics["deferred_fused_validation"].enabled
+        )
+        stable_device = self._stable_tensor_field_view("qpos").device
+        allocator_available = stable_device.type == "cuda"
+        allocator_stats: dict[str, int] | None = None
+        if allocator_available:
+            raw_stats = torch.cuda.memory_stats(stable_device)
+            allocator_stats = {
+                str(name): int(value)
+                for name, value in raw_stats.items()
+                if value is not None
+                and not isinstance(value, bool)
+                and isinstance(value, (int, np.integer))
+                and int(value) >= 0
+            }
+
+        supported = bool(
+            request.requested
+            and stable_views
+            and capabilities.sensor_views
+            and capabilities.stepping
+            and capabilities.graph_completion_publication
+            and deferred
+            and allocator_available
+            and allocator_stats is not None
+        )
+        reason: str | None = None
+        if not request.requested:
+            reason = "env update graph was not requested"
+        elif not capabilities.state_views or not stable_views:
+            reason = "backend does not expose stable full-width qpos/qvel views"
+        elif not capabilities.sensor_views:
+            reason = "backend does not expose stable sensor views"
+        elif not capabilities.stepping or not capabilities.graph_completion_publication:
+            reason = "backend does not publish ordered tensor step receipts"
+        elif not capabilities.deferred_fused_validation:
+            reason = "backend does not negotiate deferred fused validation"
+        elif not deferred:
+            reason = "deferred fused validation was not enabled at construction"
+        elif not allocator_available or allocator_stats is None:
+            reason = "selected Torch device does not expose CUDA allocator statistics"
+
+        torch_stream_id: int | None = None
+        if supported:
+            torch_stream_id = int(torch.cuda.current_stream(stable_device).cuda_stream)
+        return replace(
+            request,
+            backend_stream_contract=capabilities.stream_event_ownership,
+            supported=supported,
+            disable_reason=reason,
+            torch_stream_id=torch_stream_id,
+            allocator_stats=allocator_stats,
         )
         return self._interval_term_handler_cache
 
