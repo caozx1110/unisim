@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.21 - 2026-10-14
 
 - Fixed MJWarp's state-update graph preflight to report the backend execution stream rather than the caller's current Torch stream. Caller-owned CUDA update capture uses the returned stream ID for its capture and replay stream, preventing CUDA's `stream does not match` error while keeping the preflight contract public and non-probing (UniLab issue #2338).
 
