@@ -3694,7 +3694,6 @@ class MjwarpBackend(SimBackend):
             torch_stream_id=torch_stream_id,
             allocator_stats=allocator_stats,
         )
-        return self._interval_term_handler_cache
 
     def push_robots(self, force_range: Sequence[float] | np.ndarray) -> None:
         """Sample one world-frame push force per env and stage it for the next step."""
