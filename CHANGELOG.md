@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.19 - 2026-10-14
+
+- Added eager public completion receipts to the MuJoCo packed HOST_BRIDGE tensor lifecycle (UniLab issue #2312). CUDA and CPU tensor steps now publish monotonic `step` receipts before returning; the CPU-authoritative prefix uses a neutral stream and an in-process completion token whose read wait is a no-op and whose IPC handle fails closed. `TensorLifecycleCapabilities.graph_completion_publication` now accepts in-process direct-data-plane and packed HOST_BRIDGE carriers, while the tensor lifecycle manifest records that no capture lifecycle is exposed. Partial test-double constructions also receive a safe default receipt state.
+- Deferred MJWarp tensor-step control-finiteness validation to the completion boundary. Validation now writes absolute values and element/aggregate verdicts into persistent device carriers without synchronizing the producer stream, and the receipt boundary fails closed on NaN/Inf controls (UniLab issue #2311).
+- Removed the residual device-wide host synchronization from MJWarp's fixed-width mask reset after reset-graph replay. Mask-reset work remains ordered on the backend execution stream, with visibility expressed by ordered graph-completion receipts (UniLab issue #2311).
+
 ## 1.7.18 - 2026-10-13
 
 - MJWarp's deferred tensor-step validation now records control finiteness in persistent device carriers (`abs`, element verdict, and aggregate verdict) using explicit `out=` operations. A deferred step no longer synchronizes to publish control validity; the existing completion-boundary publication fails closed on NaN/Inf controls (UniLab issue #2311).
