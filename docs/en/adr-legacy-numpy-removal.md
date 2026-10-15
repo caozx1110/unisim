@@ -4,7 +4,7 @@
 
 ## Status
 
-Accepted for `unisim-core` 2.0.0 (UniLab issue #2280).
+Accepted for `unisim-core` 1.7.16 (UniLab issue #2280).
 
 ## Context
 
@@ -14,7 +14,7 @@ Keeping both surfaces makes unsupported adapters look like host fallbacks and fo
 
 ## Decision
 
-Version 2.0.0 removes the legacy public training lifecycle without aliases. Version 1.7.15 is the final release that contains it. Private implementation names describe their owner instead of using `legacy`:
+Version 1.7.16 removed the legacy public training lifecycle without aliases. Version 1.7.15 is the final release that contains it. Private implementation names describe their owner instead of using `legacy`:
 
 - `_host_*` names adapter-private CPU-authoritative state, control, reset, sensor, and body operations.
 - `_wire_*` names a versioned external-worker protocol projection.
@@ -23,7 +23,7 @@ Version 2.0.0 removes the legacy public training lifecycle without aliases. Vers
 
 Test-only private hooks and compatibility aliases are deleted rather than renamed. The repository blocks the `_legacy_*` prefix in runtime and test source.
 
-| Removed 1.x surface | 2.0.0 replacement |
+| Removed 1.x surface | 1.7.16 replacement |
 | --- | --- |
 | `step(np.ndarray)` | `step_tensor(torch.Tensor, nsteps=...)` |
 | `set_state(...)`, NumPy reset composition | `set_state_tensor(...)`, or `begin_packed_reset(...)` for staging, selected-column merges, baselines, model fields, and mocap |

@@ -4,7 +4,7 @@
 
 ## 状态
 
-已在 `unisim-core` 2.0.0 接受（UniLab issue #2280）。
+已在 `unisim-core` 1.7.16 接受（UniLab issue #2280）。
 
 ## 背景
 
@@ -14,7 +14,7 @@
 
 ## 决策
 
-2.0.0 直接移除 legacy public training lifecycle，不提供 alias。1.7.15 是最后一个包含该 surface 的版本。私有实现名按 owner 语义命名，而不是使用 `legacy`：
+1.7.16 直接移除了 legacy public training lifecycle，不提供 alias。1.7.15 是最后一个包含该 surface 的版本。私有实现名按 owner 语义命名，而不是使用 `legacy`：
 
 - `_host_*` 表示 adapter 私有的 CPU 权威 state、control、reset、sensor 与 body 操作。
 - `_wire_*` 表示版本化 external-worker 协议投影。
@@ -23,7 +23,7 @@
 
 测试专用私有 hook 与兼容 alias 直接删除，而不是改名。仓库阻止 runtime 与 test source 重新引入 `_legacy_*` 前缀。
 
-| 1.x 移除面 | 2.0.0 替代 |
+| 1.x 移除面 | 1.7.16 替代 |
 | --- | --- |
 | `step(np.ndarray)` | `step_tensor(torch.Tensor, nsteps=...)` |
 | `set_state(...)` 与 NumPy reset 组合 | `set_state_tensor(...)`；需要 staging、选中列合并、baseline、模型字段或 mocap 时使用 `begin_packed_reset(...)` |
