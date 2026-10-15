@@ -237,8 +237,7 @@ class TorchPackedResetComposer:
     def begin_state_mask(self, reset_mask: Any) -> None:
         """Restore default state staging for a fixed-width bool reset mask.
 
-        This is the graph-candidate counterpart to ``begin_state(rows)``. It
-        keeps the staging tensors full width and never materializes true-row
+        It keeps the staging tensors full width and never materializes true-row
         indices. Backends still own selected-row publication at commit.
         """
         mask = self._validate_state_mask(reset_mask)

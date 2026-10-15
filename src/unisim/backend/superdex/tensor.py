@@ -331,9 +331,8 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
         if not self._control_ready:
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
-        self._backend._host_step(
-            self._buffers().host_ctrl.numpy(), nsteps, _producer_owns_finite=True
-        )
+        buffers = self._buffers()
+        self._backend._host_step(buffers.host_ctrl.numpy(), nsteps, _producer_owns_finite=True)
         return {"timing": dict(self.last_timing)}
 
     def read_state_sensors(self) -> Mapping[str, Any]:

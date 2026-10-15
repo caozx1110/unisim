@@ -454,7 +454,10 @@ def motrix_step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> di
         )
         backend._direct_host_bridge_plan = plan
     plan.write_control(ctrl)
-    return plan.step(nsteps)
+    result = plan.step(nsteps)
+    if result is None:
+        result = {}
+    return result
 
 
 def motrix_set_state_tensor(
@@ -500,7 +503,10 @@ def motrix_set_state_tensor(
             TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
         )
         backend._direct_host_bridge_plan = plan
-    return plan.apply_reset(env_indices, qpos, qvel)
+    result = plan.apply_reset(env_indices, qpos, qvel)
+    if result is None:
+        result = {}
+    return result
 
 
 @dataclass

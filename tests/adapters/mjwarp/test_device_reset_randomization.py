@@ -101,8 +101,6 @@ def test_device_payload_scatter_selected_rows_only(
         "set_state_tensor_commit_forward_ms",
         "set_state_tensor_host_cache_refresh_ms",
         "set_state_tensor_model_update_ms",
-        "graph_completion",
-        "graph_input_completion",
     }
     assert result["timing"]["set_state_tensor_model_update_ms"] >= 0.0
 
@@ -151,31 +149,12 @@ def test_mask_reset_randomization_applies_only_selected_full_width_rows(
     payload = TensorResetRandomizationPayload(body_mass=full_mass)
 
     result = backend.set_state_tensor_mask(mask, qpos, qvel, payload)
-    completion = result["timing"]["graph_completion"]
-    assert completion is not None
-    completion.wait_before_read()
+    assert "completion" not in result
 
     mass = backend._device_model.body_mass.numpy()
     np.testing.assert_array_equal(mass[1], [5.0, 7.0])
     np.testing.assert_array_equal(mass[2], [6.0, 8.0])
     np.testing.assert_array_equal(mass[0], before_mass[0])
-    backend.close()
-
-
-def test_deferred_fused_backend_validation_fails_closed_at_boundary(
-    tmp_path: Path,
-) -> None:
-    backend = _make_backend(tmp_path)
-    rows, qpos, qvel = _rows_qpos_qvel(backend, [0])
-    invalid = qpos.clone()
-    invalid[0, 0] = torch.nan
-    backend.set_defer_torch_fused_validation(True)
-
-    backend.set_state_tensor(rows, invalid, qvel)
-    assert backend.torch_fused_valid is not None
-    assert backend.torch_fused_valid.item() is False
-    with pytest.raises(ValueError, match="mjwarp tensor validation failed"):
-        backend.publish_torch_fused_validation()
     backend.close()
 
 

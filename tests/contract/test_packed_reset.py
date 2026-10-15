@@ -151,6 +151,21 @@ def test_composer_discard_and_host_only_fail_closed() -> None:
     )
 
 
+def test_composer_mask_commit_emits_no_completion_receipt() -> None:
+    backend = _ComposerBackend()
+    transaction = TorchPackedResetComposer(backend)
+    mask = torch.tensor([False, True, False, True])
+    qpos = torch.zeros((4, 2), dtype=torch.float32)
+    qvel = torch.zeros((4, 2), dtype=torch.float32)
+
+    result = transaction.commit_state_mask(mask, qpos, qvel)
+
+    # Reset operations emit no completion receipt under the async step-only
+    # completion contract.
+    assert "completion" not in result
+    assert result["timing"]["set_state_tensor_mask_ms"] == 1.0
+
+
 def test_composer_stages_merges_and_commits_mocap_poses() -> None:
     backend = _ComposerBackend(packed_reset_mocap=True)
     transaction = TorchPackedResetComposer(backend)

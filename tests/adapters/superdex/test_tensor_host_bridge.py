@@ -594,6 +594,8 @@ def test_direct_tensor_apis_match_numpy_state(backend):
 
     result = backend.step_tensor(torch.full((3, 1), 0.2, dtype=torch.float32))
     assert "tensor_control_packed_d2h_ms" in result["timing"]
+    # Synchronous host bridges emit no completion receipt.
+    assert "completion" not in result
     direct_plan = backend._direct_host_bridge_plan
     assert direct_plan is not None
     reset_result = backend.set_state_tensor(
@@ -603,6 +605,7 @@ def test_direct_tensor_apis_match_numpy_state(backend):
     )
     assert reset_result is not None
     assert "tensor_reset_packed_d2h_ms" in reset_result["timing"]
+    assert "completion" not in reset_result
     assert backend._direct_host_bridge_plan is direct_plan
     assert direct_plan.transfer_stats["d2h_count"] == 3
     empty = backend.set_state_tensor(
