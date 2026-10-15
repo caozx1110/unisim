@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking (tensor contract):** removed the benchmark-only deferred fused validation surface added for the collector CUDA-graph era (Motphys/UniLab#2363). `TensorLifecycleCapabilities.deferred_fused_validation`, its capability rules, and MJWarp's deferral machinery (`defer_torch_fused_validation` / `set_defer_torch_fused_validation`, `publish_torch_fused_validation`, `torch_fused_valid`, and the `deferred_fused_validation` runtime diagnostic) are gone. Tensor operand validation is eager and fail-closed again: `step_tensor` checks control finiteness before the control upload and `_validate_torch_fused` raises on the first invalid operand. `ordered_completion_publication` no longer requires deferred fused validation on the in-process device-resident path; its remaining prerequisites are unchanged.
+
 ## 2.0.0 - 2026-10-15
 
 - **Breaking (tensor contract):** removed the caller-owned collector and state-update graph contracts added for UniLab issues Motphys/UniLab#2311, Motphys/UniLab#2338, and Motphys/UniLab#2359: graph preflights, public graph lifecycle/invalidation surfaces, `graph_completion` result keys, capture identity, whole-collector `collector_tick` receipts, and the `env_update` receipt operation. No aliases, deprecation wrappers, preflight allocator evidence, or graph receipt fallback remain. Eager ordered visibility is preserved through `CompletionToken`, `ImmediateCompletionToken`, `COMPLETION_OPERATIONS`, and the top-level `completion` result using `producer_id`; backend-owned physics graphs, deferred fused validation, and the fail-closed tensor capability matrix remain. MJWarp publishes actual step and reset receipts even when its backend-owned physics graphs are disabled, and the MJWarp hot-path static audit is retained under neutral ownership.

@@ -506,11 +506,7 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_sensor_storage: Any | None = None
         self._reset_scratch_sensor_cache: np.ndarray | None = None
         self._tensor_reset_defaults: dict[str, Any] | None = None
-        self._torch_fused_valid: Any | None = None
-        self._torch_step_finite_abs: Any | None = None
-        self._torch_step_finite: Any | None = None
         self._torch_true_verdict: Any | None = None
-        self._defer_torch_fused_validation = False
         self._completion_sequence = 0
         self._completion_producer_id = f"mjwarp-{id(self):016x}"
         # Tracked-body views are zero-copy slices of _sensor_cache; they must be
@@ -1627,13 +1623,6 @@ class MjwarpBackend(SimBackend):
         if not live:
             return
         aggregate = torch.stack([flag.reshape(()) for _, _, _, flag in live]).all()
-        if self._torch_fused_valid is None or self._torch_fused_valid.device != aggregate.device:
-            self._torch_fused_valid = torch.empty_like(aggregate)
-        verdict = self._torch_fused_valid
-        assert verdict is not None
-        verdict.copy_(aggregate)
-        if self._defer_torch_fused_validation:
-            return
         if bool(aggregate):
             return
         for name, rule, value, flag in live:
@@ -1642,43 +1631,6 @@ class MjwarpBackend(SimBackend):
             if rule not in ("finite", "rows") and not bool(torch.isfinite(value).all()):
                 raise ValueError(f"mjwarp tensor {name} must contain finite values")
             raise ValueError(self._torch_rule_error(name, rule))
-        raise ValueError("mjwarp tensor validation failed")
-
-    @property
-    def torch_fused_valid(self) -> Any | None:
-        """Latest fused device operand verdict, or ``None`` before validation."""
-        return self._torch_fused_valid
-
-    @property
-    def defer_torch_fused_validation(self) -> bool:
-        """Whether fused backend operand verdict publication may defer."""
-        return self._defer_torch_fused_validation
-
-    def set_defer_torch_fused_validation(self, enabled: bool) -> None:
-        """Opt in to completion-boundary fused operand publication on a cold path."""
-        if not isinstance(enabled, bool):
-            raise TypeError(f"defer torch fused validation must be bool, got {type(enabled)}")
-        if enabled and self._torch_step_finite is None:
-            import torch
-
-            reference = self._stable_tensor_field_view("qpos")
-            self._torch_step_finite_abs = torch.empty(
-                (self._num_envs, self._nu), dtype=torch.float32, device=reference.device
-            )
-            self._torch_step_finite = torch.empty(
-                (self._num_envs, self._nu), dtype=torch.bool, device=reference.device
-            )
-            if (
-                self._torch_fused_valid is None
-                or self._torch_fused_valid.device != reference.device
-            ):
-                self._torch_fused_valid = torch.empty((), dtype=torch.bool, device=reference.device)
-        self._defer_torch_fused_validation = enabled
-
-    def publish_torch_fused_validation(self) -> None:
-        """Fail closed on the latest fused backend operand verdict."""
-        if self._torch_fused_valid is None or bool(self._torch_fused_valid):
-            return
         raise ValueError("mjwarp tensor validation failed")
 
     def _disable_cuda_graphs(self, reason: str) -> None:
@@ -2059,7 +2011,6 @@ class MjwarpBackend(SimBackend):
             tracked_body_views=True,
             mask_selected_reset=True,
             mask_selected_reset_full_refresh=True,
-            deferred_fused_validation=True,
             ordered_completion_publication=True,
         )
 
@@ -2098,15 +2049,6 @@ class MjwarpBackend(SimBackend):
                 requested=True,
                 enabled=True,
                 disable_reason=None,
-            ),
-            "deferred_fused_validation": TensorRuntimeDiagnostic(
-                requested=self._defer_torch_fused_validation,
-                enabled=self._defer_torch_fused_validation,
-                disable_reason=(
-                    None
-                    if self._defer_torch_fused_validation
-                    else "eager fused validation requested"
-                ),
             ),
         }
 
@@ -2652,24 +2594,13 @@ class MjwarpBackend(SimBackend):
             raise NotImplementedError(
                 "mjwarp tensor stepping does not support host pre-step control callbacks"
             )
-        import torch
 
         ctrl_view = self._stable_tensor_field_view("ctrl")
         ctrl_tensor = self._validate_torch_operand(
             "ctrl",
             ctrl,
             shape=(self._num_envs, self._nu),
-            check_finite=not self._defer_torch_fused_validation,
         )
-        if self._defer_torch_fused_validation:
-            assert (
-                self._torch_step_finite_abs is not None
-                and self._torch_step_finite is not None
-                and self._torch_fused_valid is not None
-            )
-            torch.abs(ctrl_tensor, out=self._torch_step_finite_abs)
-            torch.lt(self._torch_step_finite_abs, float("inf"), out=self._torch_step_finite)
-            torch.all(self._torch_step_finite, out=self._torch_fused_valid)
 
         t0 = time.perf_counter()
         # The caller owns the public action tensor and cannot mutate it until

@@ -145,14 +145,6 @@ def test_tensor_feature_dependencies_fail_closed() -> None:
             TensorLifecycleCapabilities(**matrix)
 
 
-def test_deferred_fused_validation_capability_dependencies_fail_closed() -> None:
-    with pytest.raises(ValueError, match="unsupported tensor lifecycle"):
-        TensorLifecycleCapabilities(
-            execution=TensorExecution.UNSUPPORTED,
-            deferred_fused_validation=True,
-        )
-
-
 def test_ordered_completion_capability_dependencies_fail_closed() -> None:
     base = {
         "execution": TensorExecution.DEVICE_RESIDENT,
@@ -167,7 +159,6 @@ def test_ordered_completion_capability_dependencies_fail_closed() -> None:
         "selected_reset": True,
         "selected_reset_publication": SelectedResetPublication.AUTHORITATIVE_VIEWS,
         "mask_selected_reset": True,
-        "deferred_fused_validation": True,
     }
 
     with pytest.raises(ValueError, match="unsupported tensor lifecycle"):
@@ -262,15 +253,6 @@ def test_completion_contract_has_only_public_operation_metadata() -> None:
         "stream_id",
         "producer_id",
     }
-    with pytest.raises(ValueError, match="deferred fused validation"):
-        TensorLifecycleCapabilities(
-            execution=TensorExecution.HOST_BRIDGE,
-            process_topology=TensorProcessTopology.IN_PROCESS,
-            data_plane=TensorDataPlane.HOST_BRIDGE,
-            stream_event_ownership="caller",
-            torch_devices=("cpu",),
-            deferred_fused_validation=True,
-        )
 
 
 def test_mask_selected_reset_accepts_in_process_host_bridge() -> None:

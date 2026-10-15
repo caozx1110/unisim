@@ -513,30 +513,6 @@ def test_mjwarp_tensor_step_then_host_reset_preserves_unselected_rows(tmp_path: 
     np.testing.assert_allclose(after_host_reset[1], before_host_reset[1], atol=1e-6)
 
 
-def test_mjwarp_deferred_step_finite_verdict_is_device_resident(tmp_path: Path) -> None:
-    torch = pytest.importorskip("torch")
-    backend = _make_backend(tmp_path, "deferred-step-finite.xml")
-    backend.set_defer_torch_fused_validation(True)
-
-    valid = backend.step_tensor(
-        torch.full((2, 1), 0.5, dtype=torch.float32, device="cuda"), nsteps=1
-    )
-    valid["completion"].wait_before_read()
-
-    assert backend.torch_fused_valid is not None
-    assert backend.torch_fused_valid.device.type == "cuda"
-    assert bool(backend.torch_fused_valid)
-
-    invalid = backend.step_tensor(
-        torch.full((2, 1), torch.nan, dtype=torch.float32, device="cuda"), nsteps=1
-    )
-    invalid["completion"].wait_before_read()
-    assert backend.torch_fused_valid.device.type == "cuda"
-    with pytest.raises(ValueError, match="mjwarp tensor validation failed"):
-        backend.publish_torch_fused_validation()
-    backend.close()
-
-
 def test_mjwarp_tensor_sensor_after_reset_avoids_host_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

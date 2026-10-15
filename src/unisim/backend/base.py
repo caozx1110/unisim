@@ -221,11 +221,6 @@ class TensorLifecycleCapabilities:
     # ``set_state_tensor_mask`` semantics and authoritative selected-row views.
     mask_selected_reset: bool = False
     mask_selected_reset_full_refresh: bool = False
-    # Declares deferred operand validation before public failure publication.
-    # It is separate from runtime diagnostics: capability negotiation proves
-    # an adapter owns the boundary, while the diagnostic reports the
-    # selected/fallback state after construction.
-    deferred_fused_validation: bool = False
     # Declares the public, ordered completion receipt carried by tensor step
     # and reset results. It is intentionally neutral with respect to CUDA graph
     # replay: eager execution may also publish a receipt on an ordered stream.
@@ -253,7 +248,6 @@ class TensorLifecycleCapabilities:
                     self.tracked_body_views,
                     self.mask_selected_reset,
                     self.mask_selected_reset_full_refresh,
-                    self.deferred_fused_validation,
                     self.ordered_completion_publication,
                 )
             ):
@@ -338,14 +332,6 @@ class TensorLifecycleCapabilities:
             )
         if self.mask_selected_reset_full_refresh and not self.mask_selected_reset:
             raise ValueError("mask-selected full refresh requires mask-selected reset")
-        if self.deferred_fused_validation and not (
-            self.execution is TensorExecution.DEVICE_RESIDENT
-            and self.process_topology is TensorProcessTopology.IN_PROCESS
-            and self.data_plane is TensorDataPlane.DIRECT
-        ):
-            raise ValueError(
-                "deferred fused validation requires in-process DEVICE_RESIDENT direct storage"
-            )
         if self.ordered_completion_publication and not (
             self.stepping
             and (
@@ -355,7 +341,6 @@ class TensorLifecycleCapabilities:
                     and self.data_plane is TensorDataPlane.DIRECT
                     and self.selected_reset
                     and self.mask_selected_reset
-                    and self.deferred_fused_validation
                 )
                 or (
                     self.execution is TensorExecution.HOST_BRIDGE

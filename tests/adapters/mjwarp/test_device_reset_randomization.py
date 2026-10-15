@@ -160,23 +160,6 @@ def test_mask_reset_randomization_applies_only_selected_full_width_rows(
     backend.close()
 
 
-def test_deferred_fused_backend_validation_fails_closed_at_boundary(
-    tmp_path: Path,
-) -> None:
-    backend = _make_backend(tmp_path)
-    rows, qpos, qvel = _rows_qpos_qvel(backend, [0])
-    invalid = qpos.clone()
-    invalid[0, 0] = torch.nan
-    backend.set_defer_torch_fused_validation(True)
-
-    backend.set_state_tensor(rows, invalid, qvel)
-    assert backend.torch_fused_valid is not None
-    assert backend.torch_fused_valid.item() is False
-    with pytest.raises(ValueError, match="mjwarp tensor validation failed"):
-        backend.publish_torch_fused_validation()
-    backend.close()
-
-
 def test_device_payload_mirrors_refresh_on_host_read(tmp_path: Path) -> None:
     backend = _make_backend(tmp_path)
     rows, qpos, qvel = _rows_qpos_qvel(backend, [2, 0])
