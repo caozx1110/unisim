@@ -14,7 +14,7 @@ UniLab's Manager-Based runtime and collectors are NumPy-oriented, while GPU phys
 
 `SimBackend` exposes an optional, fail-closed tensor lifecycle rather than a global environment replacement. `TensorExecution` distinguishes `DEVICE_RESIDENT`, `HOST_BRIDGE`, and the default `UNSUPPORTED` profile. `get_tensor_capabilities()` exposes the partial method and reset-feature limits plus the process topology, bulk data plane, stream/event ownership, and accepted Torch devices. An unsupported lifecycle must use the default in-process topology and no data plane. Valid supported combinations are in-process direct device storage, in-process host-bridge storage, external-worker CUDA IPC for device-resident physics, or external-worker host shared memory for host-bridged physics; no coarse classification implies that every optional tensor method is supported.
 
-Since 2.0.0 this is the only public training lifecycle. The historical NumPy lifecycle was removed without aliases; see [the legacy NumPy removal ADR](adr-legacy-numpy-removal.md).
+Since 1.7.16 this is the only public training lifecycle. The historical NumPy lifecycle was removed without aliases; see [the legacy NumPy removal ADR](adr-legacy-numpy-removal.md).
 
 Capability construction also rejects contradictory declarations: unsupported matrices carry no feature, field, ownership, or device metadata; state views require fields; selected reset requires `qpos` and `qvel`; reset randomization requires selected reset; device reset randomization requires reset randomization on either the in-process device-resident direct-storage matrix or the in-process host-bridge matrix; and packed plans require the in-process host-bridge matrix.
 

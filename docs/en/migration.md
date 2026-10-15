@@ -20,9 +20,9 @@ Runtime-owned caches and worker installations use `UNISIM_*` environment variabl
 
 ## Legacy NumPy training lifecycle
 
-`unisim-core` 1.7.15 is the final release containing the public legacy NumPy lifecycle. Version 2.0.0 removes it without compatibility aliases. Training consumers must negotiate `get_tensor_capabilities()` and use the replacement boundary below; unsupported methods continue to fail closed.
+`unisim-core` 1.7.15 is the final release containing the public legacy NumPy lifecycle. Version 1.7.16 removed it without compatibility aliases. Training consumers must negotiate `get_tensor_capabilities()` and use the replacement boundary below; unsupported methods continue to fail closed.
 
-| Removed in 2.0.0 | Public replacement |
+| Removed in 1.7.16 | Public replacement |
 | --- | --- |
 | `step()` | `step_tensor()` |
 | `reset()` and selected `set_state()` | `set_state_tensor()`, or `begin_packed_reset()` plus the packed transaction for declaring adapters |

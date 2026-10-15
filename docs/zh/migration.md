@@ -20,9 +20,9 @@ Motrix 是第二个进程内适配器。它在相同的公共状态、控制和�
 
 ## Legacy NumPy 训练生命周期
 
-`unisim-core` 1.7.15 是最后一个包含 public legacy NumPy 生命周期的发布。2.0.0 无兼容 alias 地移除该生命周期。训练消费者必须通过 `get_tensor_capabilities()` 协商能力并使用下表替代边界；不支持的方法仍会 fail-closed。
+`unisim-core` 1.7.15 是最后一个包含 public legacy NumPy 生命周期的发布。1.7.16 无兼容 alias 地移除了该生命周期。训练消费者必须通过 `get_tensor_capabilities()` 协商能力并使用下表替代边界；不支持的方法仍会 fail-closed。
 
-| 2.0.0 移除项 | 公共替代 |
+| 1.7.16 移除项 | 公共替代 |
 | --- | --- |
 | `step()` | `step_tensor()` |
 | `reset()` 与选中行 `set_state()` | `set_state_tensor()`；对声明支持的 adapter 使用 `begin_packed_reset()` 与 packed transaction |
