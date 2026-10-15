@@ -22,10 +22,11 @@ def test_motrix_backend_contract(tmp_path: Path) -> None:
     backend = MotrixBackend(SceneCfg(model_file=str(model_path)), num_envs=2, sim_dt=0.01)
     assert_backend_conformance(backend)
     backend._host_step(np.zeros((2, 1)))
-    assert backend._host_get_state(("qpos",))["qpos"].shape == (
-        2,
-        7 + backend.get_state_views("qpos")["qpos"].cpu().numpy().shape[1],
-    )
+    state = backend._host_get_state()
+    widths = backend.get_public_state_widths()
+    assert state["qpos"].shape == (2, 7 + backend.num_dof_vel)
+    assert state["qpos"].shape == (2, widths.nq)
+    assert state["qvel"].shape == (2, widths.nv)
 
 
 def test_non_portable_body_torque_fails_closed(tmp_path: Path) -> None:

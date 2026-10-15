@@ -3690,6 +3690,65 @@ class MotrixBackend(SimBackend):
     # DOF state                                                          #
     # ------------------------------------------------------------------ #
 
+    def _host_get_state(
+        self, fields: tuple[str, ...] | str | None = None
+    ) -> Mapping[str, np.ndarray]:
+        """Return detached public qpos/qvel snapshots assembled on the host.
+
+        Portable scenes serve the composed public layout directly. Whole-MJCF
+        scenes rebuild the canonical ``[base_pos, base_quat, dofs]`` and
+        ``[base_lin_vel, base_ang_vel, dofs]`` blocks from the private base
+        getters and the actuator-ordered DoF columns, matching the layout the
+        packed tensor bridge publishes.
+        """
+        requested = (
+            ("qpos", "qvel")
+            if fields is None
+            else ((fields,) if isinstance(fields, str) else tuple(fields))
+        )
+        unknown = set(requested) - {"qpos", "qvel", "ctrl"}
+        if unknown:
+            raise KeyError(f"unknown {self.backend_type} state field(s): {sorted(unknown)}")
+        if "ctrl" in requested:
+            raise NotImplementedError(f"{self.__class__.__name__} does not expose control state")
+        result: dict[str, np.ndarray] = {}
+        if self._portable_mode:
+            self._require_portable_healthy("host state read")
+            if "qpos" in requested:
+                result["qpos"] = self._portable_state_qpos()
+            if "qvel" in requested:
+                result["qvel"] = self._portable_state_qvel()
+            return result
+        if "qpos" in requested:
+            qpos_indices = (
+                self._actuator_joint_pos_indices
+                if self._actuator_joint_pos_indices is not None
+                else self._joint_dof_pos_indices
+            )
+            result["qpos"] = np.concatenate(
+                (
+                    np.asarray(self._host_get_base_pos(), dtype=self._np_dtype),
+                    np.asarray(self._host_get_base_quat(), dtype=self._np_dtype),
+                    np.asarray(self._data.dof_pos, dtype=self._np_dtype)[:, qpos_indices],
+                ),
+                axis=1,
+            )
+        if "qvel" in requested:
+            qvel_indices = (
+                self._actuator_joint_vel_indices
+                if self._actuator_joint_vel_indices is not None
+                else self._joint_dof_vel_indices
+            )
+            result["qvel"] = np.concatenate(
+                (
+                    np.asarray(self._host_get_base_lin_vel(), dtype=self._np_dtype),
+                    np.asarray(self._host_get_base_ang_vel(), dtype=self._np_dtype),
+                    np.asarray(self._data.dof_vel, dtype=self._np_dtype)[:, qvel_indices],
+                ),
+                axis=1,
+            )
+        return result
+
     # ------------------------------------------------------------------ #
     # Body kinematics — world frame                                      #
     # ------------------------------------------------------------------ #
