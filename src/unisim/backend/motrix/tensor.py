@@ -10,9 +10,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from unisim.backend.base import (
-    COMPLETION_CONTRACT_VERSION,
     HostBridgeTransferPlan,
-    ImmediateCompletionToken,
     TensorDataPlane,
     TensorExecution,
     TensorIOSpec,
@@ -27,7 +25,6 @@ if TYPE_CHECKING:
     from .backend import MotrixBackend
 
 _STREAM_OWNERSHIP = "caller-stream-per-packed-boundary; stream synchronized at CPU bridge"
-_RECEIPT_PRODUCER_ID = "motrix-host-bridge-eager"
 _SUPPORTED_STATE_FIELDS = frozenset({"qpos", "qvel", "ctrl"})
 _BODY_VIEW_WIDTHS = {
     "track_pos_w_": 3,
@@ -55,25 +52,6 @@ def motrix_tensor_capabilities(backend: MotrixBackend) -> TensorLifecycleCapabil
         data_plane=TensorDataPlane.HOST_BRIDGE,
         stream_event_ownership=_STREAM_OWNERSHIP,
         torch_devices=("cpu", "cuda"),
-        ordered_completion_publication=True,
-    )
-
-
-def _completion(backend: MotrixBackend, operation: str, stream: Any) -> Any:
-    """Publish one already-complete packed HOST_BRIDGE boundary receipt."""
-    import torch
-
-    stream_id = 0
-    if stream.device.type == "cuda":
-        stream_id = int(torch.cuda.current_stream(stream.device).cuda_stream)
-    sequence = int(getattr(backend, "_completion_sequence", 0)) + 1
-    backend._completion_sequence = sequence
-    return ImmediateCompletionToken(
-        contract_version=COMPLETION_CONTRACT_VERSION,
-        operation=operation,
-        sequence=sequence,
-        stream_id=stream_id,
-        producer_id=_RECEIPT_PRODUCER_ID,
     )
 
 
@@ -479,7 +457,6 @@ def motrix_step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> di
     result = plan.step(nsteps)
     if result is None:
         result = {}
-    result["completion"] = _completion(backend, "step", ctrl)
     return result
 
 
@@ -529,7 +506,6 @@ def motrix_set_state_tensor(
     result = plan.apply_reset(env_indices, qpos, qvel)
     if result is None:
         result = {}
-    result["completion"] = _completion(backend, "selected_reset", env_indices)
     return result
 
 
@@ -776,10 +752,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
         self._backend._host_step(self._buffers().host_ctrl.numpy(), nsteps)
-        return {
-            "timing": dict(self.last_timing),
-            "completion": _completion(self._backend, "step", self._buffers().host_ctrl),
-        }
+        return {"timing": dict(self.last_timing)}
 
     def read_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()
@@ -890,10 +863,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
             elapsed,
             self._pin,
         )
-        return {
-            "timing": dict(self.last_timing),
-            "completion": _completion(self._backend, "selected_reset", env_indices),
-        }
+        return {"timing": dict(self.last_timing)}
 
     def read_selected_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()

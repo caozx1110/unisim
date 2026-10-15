@@ -106,7 +106,6 @@ def test_tensor_capability_matrix_is_narrow_and_fail_closed(backend):
     assert capabilities.process_topology is TensorProcessTopology.IN_PROCESS
     assert capabilities.data_plane is TensorDataPlane.HOST_BRIDGE
     assert capabilities.torch_devices == ("cpu", "cuda")
-    assert capabilities.ordered_completion_publication
     assert not capabilities.reset_randomization
     assert not capabilities.fixed_variants
     assert not capabilities.host_pre_step_control
@@ -595,9 +594,8 @@ def test_direct_tensor_apis_match_numpy_state(backend):
 
     result = backend.step_tensor(torch.full((3, 1), 0.2, dtype=torch.float32))
     assert "tensor_control_packed_d2h_ms" in result["timing"]
-    step_completion = result["completion"]
-    step_completion.wait_before_read()
-    assert step_completion.operation == "step"
+    # Synchronous host bridges emit no completion receipt.
+    assert "completion" not in result
     direct_plan = backend._direct_host_bridge_plan
     assert direct_plan is not None
     reset_result = backend.set_state_tensor(
@@ -607,9 +605,7 @@ def test_direct_tensor_apis_match_numpy_state(backend):
     )
     assert reset_result is not None
     assert "tensor_reset_packed_d2h_ms" in reset_result["timing"]
-    reset_completion = reset_result["completion"]
-    reset_completion.wait_before_read()
-    assert reset_completion.operation == "selected_reset"
+    assert "completion" not in reset_result
     assert backend._direct_host_bridge_plan is direct_plan
     assert direct_plan.transfer_stats["d2h_count"] == 3
     empty = backend.set_state_tensor(

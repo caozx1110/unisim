@@ -106,8 +106,8 @@ class SelectedResetPublication(Enum):
     AUTHORITATIVE_VIEWS = "authoritative_views"
 
 
-COMPLETION_OPERATIONS: frozenset[str] = frozenset({"step", "selected_reset", "mask_reset"})
-COMPLETION_CONTRACT_VERSION = 2
+COMPLETION_OPERATIONS: frozenset[str] = frozenset({"step"})
+COMPLETION_CONTRACT_VERSION = 3
 
 
 _TENSOR_DEVICE_LABEL = re.compile(r"^(cpu|cuda)(?::([0-9]+))?$")
@@ -221,10 +221,6 @@ class TensorLifecycleCapabilities:
     # ``set_state_tensor_mask`` semantics and authoritative selected-row views.
     mask_selected_reset: bool = False
     mask_selected_reset_full_refresh: bool = False
-    # Declares the public, ordered completion receipt carried by tensor step
-    # and reset results. It is intentionally neutral with respect to CUDA graph
-    # replay: eager execution may also publish a receipt on an ordered stream.
-    ordered_completion_publication: bool = False
 
     def __post_init__(self) -> None:
         if self.execution is TensorExecution.UNSUPPORTED:
@@ -248,7 +244,6 @@ class TensorLifecycleCapabilities:
                     self.tracked_body_views,
                     self.mask_selected_reset,
                     self.mask_selected_reset_full_refresh,
-                    self.ordered_completion_publication,
                 )
             ):
                 raise ValueError("unsupported tensor lifecycle must remain fail closed")
@@ -332,29 +327,6 @@ class TensorLifecycleCapabilities:
             )
         if self.mask_selected_reset_full_refresh and not self.mask_selected_reset:
             raise ValueError("mask-selected full refresh requires mask-selected reset")
-        if self.ordered_completion_publication and not (
-            self.stepping
-            and (
-                (
-                    self.execution is TensorExecution.DEVICE_RESIDENT
-                    and self.process_topology is TensorProcessTopology.IN_PROCESS
-                    and self.data_plane is TensorDataPlane.DIRECT
-                    and self.selected_reset
-                    and self.mask_selected_reset
-                )
-                or (
-                    self.execution is TensorExecution.HOST_BRIDGE
-                    and self.process_topology is TensorProcessTopology.IN_PROCESS
-                    and self.data_plane is TensorDataPlane.HOST_BRIDGE
-                    and self.packed_host_bridge
-                )
-            )
-            and self.process_topology is TensorProcessTopology.IN_PROCESS
-        ):
-            raise ValueError(
-                "ordered completion publication requires an in-process direct device-resident "
-                "or packed HOST_BRIDGE tensor lifecycle"
-            )
         if self.packed_reset_mocap and not self.packed_reset:
             raise ValueError("packed reset mocap requires packed reset")
         if self.selected_reset and not {"qpos", "qvel"}.issubset(self.state_fields):
@@ -425,19 +397,20 @@ class TensorRuntimeDiagnostic:
 
 @dataclass(frozen=True)
 class CompletionToken:
-    """Public receipt for work ordered on a backend execution stream.
+    """Public receipt for one asynchronous device-resident step operation.
 
-    This is a backend-owned value object, not a CUDA event handle. A producer
-    creates it only after enqueueing all operation outputs and Torch
-    publications on one ordered Torch stream. A consumer may make that stream
-    prefix visible on its own stream or wait at an explicit semantic boundary.
-    Consumers never inspect backend stream objects.
+    Receipts exist only for event-backed asynchronous ``step`` work (for
+    example an mjwarp CUDA event). Reset operations and synchronous host-bridge
+    producers emit no receipt at all. A producer creates the token only after
+    enqueueing all step outputs and Torch publications on its execution stream;
+    a consumer gates reads through :meth:`wait_before_read` and never inspects
+    backend stream or event objects. This is a backend-owned value object, not
+    a CUDA event handle.
     """
 
     contract_version: int
     operation: str
     sequence: int
-    stream_id: int
     producer_id: str
 
     def __post_init__(self) -> None:
@@ -451,12 +424,6 @@ class CompletionToken:
             or self.sequence < 0
         ):
             raise TypeError("completion sequence must be a non-negative integer")
-        if (
-            isinstance(self.stream_id, bool)
-            or not isinstance(self.stream_id, int)
-            or self.stream_id < 0
-        ):
-            raise TypeError("completion stream_id must be a non-negative integer")
         if not isinstance(self.producer_id, str) or not self.producer_id.strip():
             raise TypeError("completion producer_id must be a non-empty string")
 
@@ -466,33 +433,9 @@ class CompletionToken:
         A concrete backend returns a backend-owned token carrying an event or
         uses a backend implementation of the protocol. The public base token
         intentionally has no CUDA event to import or leak; callers cannot turn
-        stream-id metadata into implicit synchronization.
+        receipt metadata into implicit synchronization.
         """
         raise NotImplementedError("this completion receipt does not implement a read gate")
-
-    def ipc_handle(self) -> bytes:
-        """Return an optional cross-process descriptor for this receipt."""
-        raise NotImplementedError("this completion receipt has no IPC transport")
-
-
-@dataclass(frozen=True)
-class ImmediateCompletionToken(CompletionToken):
-    """Receipt for work already complete when a public boundary returns.
-
-    This is the HOST_BRIDGE counterpart to a device event receipt. The CPU
-    executor synchronizes before a packed boundary returns, so there is no
-    producer stream prefix left to gate. Later public Torch writes remain the
-    consumer's responsibility; replay ingress records its own ordered CUDA
-    publication event after copying a transition slot.
-    """
-
-    def wait_before_read(self, stream: Any | None = None) -> None:
-        """No-op because the authoritative host prefix completed before return."""
-        del stream
-
-    def ipc_handle(self) -> bytes:
-        """Fail closed because an immediate host receipt owns no CUDA IPC event."""
-        raise NotImplementedError("immediate host completion has no IPC event")
 
 
 @dataclass(frozen=True)

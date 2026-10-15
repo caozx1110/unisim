@@ -12,6 +12,7 @@ pytest.importorskip("warp")
 import warp
 
 from unisim import (
+    COMPLETION_CONTRACT_VERSION,
     MjwarpBackend,
     TensorExecution,
 )
@@ -695,10 +696,6 @@ def test_mjwarp_mask_tensor_reset_preserves_unselected_rows(tmp_path: Path) -> N
 
     result = backend.set_state_tensor_mask(mask, qpos, qvel)
 
-    reset_completion = result["completion"]
-    assert reset_completion is not None
-    reset_completion.wait_before_read()
-
     after = backend.get_state_views(("qpos", "qvel"))
     torch.testing.assert_close(after["qpos"][mask], qpos[mask])
     torch.testing.assert_close(after["qvel"][mask], qvel[mask])
@@ -753,26 +750,22 @@ def test_mjwarp_step_publishes_public_completion_receipt() -> None:
         reason = backend._cuda_graph_disable_reason or "unknown reason"
         pytest.skip(f"test requires an mjwarp CUDA graph; graphs disabled: {reason}")
 
-    stable_device = backend.get_state_views(("qpos",))["qpos"].device
-    stream = backend._torch_execution_stream(stable_device)
     result = backend.step_tensor(
         torch.zeros((2, 1), dtype=torch.float32, device="cuda"),
         nsteps=1,
     )
     completion = result["completion"]
 
-    assert completion.contract_version == 2
+    assert completion.contract_version == COMPLETION_CONTRACT_VERSION
     assert completion.operation == "step"
     assert completion.sequence == 1
-    assert completion.stream_id == int(stream.cuda_stream)
     assert completion.producer_id == backend._completion_producer_id
     consumer_stream = torch.cuda.Stream()
     completion.wait_before_read(consumer_stream)
-    assert isinstance(completion.ipc_handle(), bytes)
     backend.close()
 
 
-def test_mjwarp_mask_reset_publishes_ordered_completion_receipts() -> None:
+def test_mjwarp_reset_publishes_no_completion_receipt() -> None:
     torch = pytest.importorskip("torch")
     backend = _make_backend(Path("/tmp"), "unused-mask-completion.xml", num_envs=2)
     if not backend._cuda_graph_enabled:
@@ -784,13 +777,11 @@ def test_mjwarp_mask_reset_publishes_ordered_completion_receipts() -> None:
     mask = torch.tensor([False, True], dtype=torch.bool, device=qpos.device)
     result = backend.set_state_tensor_mask(mask, qpos, qvel, full_refresh=False)
 
-    completion = result["completion"]
-    assert completion.operation == "mask_reset"
-    completion.wait_before_read()
+    assert "completion" not in result
     backend.close()
 
 
-def test_mjwarp_eager_execution_publishes_completion_without_physics_graphs() -> None:
+def test_mjwarp_eager_execution_publishes_step_completion_without_physics_graphs() -> None:
     torch = pytest.importorskip("torch")
     backend = _make_backend(Path("/tmp"), "unused-eager-completion.xml", num_envs=2)
     backend._cuda_graph_enabled = False
@@ -804,9 +795,8 @@ def test_mjwarp_eager_execution_publishes_completion_without_physics_graphs() ->
     reset_result = backend.set_state_tensor_mask(mask, qpos, qvel, full_refresh=False)
 
     assert step_result["completion"].operation == "step"
-    assert reset_result["completion"].operation == "mask_reset"
     step_result["completion"].wait_before_read()
-    reset_result["completion"].wait_before_read()
+    assert "completion" not in reset_result
     backend.close()
 
 

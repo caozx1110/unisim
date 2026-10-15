@@ -126,7 +126,6 @@ class SuperDexBackend(SimBackend):
         self._dt = float(sim_dt)
         self._host_bridge_plans: weakref.WeakSet[Any] = weakref.WeakSet()
         self._direct_host_bridge_plan: Any | None = None
-        self._completion_sequence = 0
         self.scene_visual_model_file = scene.visual_model_file or (
             scene.model_file if scene.model_file.lower().endswith(".xml") else None
         )

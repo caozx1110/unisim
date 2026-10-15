@@ -408,11 +408,7 @@ class TorchPackedResetComposer:
                 "packed_reset_total_ms": (time.perf_counter() - started) * 1000.0,
             }
         )
-        completion = (result or {}).get("completion")
-        result_payload = {"timing": timing}
-        if completion is not None:
-            result_payload["completion"] = completion
-        return result_payload
+        return {"timing": timing}
 
     def write_mocap_pose(self, body_name: str, rows: Any, poses: Any) -> None:
         """Stage selected-row world-space poses for one mocap body."""

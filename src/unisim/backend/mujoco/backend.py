@@ -72,7 +72,6 @@ from unisim.scene_layout import CompiledSceneLayout
 from unisim.utils.rotation import np_quat_apply_batched, np_quat_apply_inverse_batched
 
 from ..base import (
-    COMPLETION_CONTRACT_VERSION,
     BackendHeightScanner,
     BackendMocapPoseBinding,
     BackendPlayCapabilities,
@@ -80,10 +79,8 @@ from ..base import (
     BackendRootStateLayout,
     BackendTerrainSpawnData,
     CameraCfg,
-    CompletionToken,
     DebugOverlayGetter,
     HostBridgeTransferPlan,
-    ImmediateCompletionToken,
     PhysicsStateLayout,
     PublicStateWidths,
     SelectedResetPublication,
@@ -673,8 +670,6 @@ class MuJoCoBackend(SimBackend):
         self._composed_scene = None
         self._host_bridge_plans: weakref.WeakSet[Any] = weakref.WeakSet()
         self._mocap_pose_bindings: dict[str, BackendMocapPoseBinding] = {}
-        self._completion_sequence = 0
-        self._completion_producer_id = "mujoco-host-bridge-eager"
         self._entity_layout: CompiledSceneLayout | None = None
         self._entity_faulted = False
         self._entity_closed = False
@@ -2270,23 +2265,6 @@ class MuJoCoBackend(SimBackend):
             selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
             mask_selected_reset=True,
             mask_selected_reset_full_refresh=True,
-            ordered_completion_publication=True,
-        )
-
-    def _completion(self, operation: str, *, stream_id: int) -> CompletionToken:
-        """Publish the already-complete HOST_BRIDGE boundary as a receipt."""
-        sequence = getattr(self, "_completion_sequence", 0) + 1
-        self._completion_sequence = sequence
-        return ImmediateCompletionToken(
-            contract_version=COMPLETION_CONTRACT_VERSION,
-            operation=operation,
-            sequence=sequence,
-            stream_id=stream_id,
-            producer_id=getattr(
-                self,
-                "_completion_producer_id",
-                "mujoco-host-bridge-eager",
-            ),
         )
 
     def get_public_state_widths(self) -> PublicStateWidths:
@@ -2686,14 +2664,9 @@ class MuJoCoBackend(SimBackend):
             result = {}
         timing = dict(result.get("timing", {}))
         timing["tensor_control_d2h_ms"] = d2h_ms
-        stream_id = int(torch.cuda.current_stream(ctrl.device).cuda_stream) if ctrl.is_cuda else 0
-        return {
-            "timing": timing,
-            "completion": self._completion(
-                "step",
-                stream_id=stream_id,
-            ),
-        }
+        # Synchronous host bridge: the CPU boundary is already complete on
+        # return, so it emits no completion receipt (async step receipts only).
+        return {"timing": timing}
 
     def _step_native(self, ctrl: np.ndarray, nsteps: int = 1) -> dict | None:
         """Step all envs with a constant control (zero-order hold).

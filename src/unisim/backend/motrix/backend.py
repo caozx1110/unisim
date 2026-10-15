@@ -614,7 +614,6 @@ class MotrixBackend(SimBackend):
         self._closed = False
         self._host_bridge_plans: weakref.WeakSet[Any] = weakref.WeakSet()
         self._direct_host_bridge_plan: Any | None = None
-        self._completion_sequence = 0
         self._num_envs = int(num_envs)
         self._np_dtype = np_dtype
         self._sim_dt = float(sim_dt)

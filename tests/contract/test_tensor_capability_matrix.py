@@ -7,7 +7,6 @@ import pytest
 from unisim import (
     COMPLETION_CONTRACT_VERSION,
     CompletionToken,
-    ImmediateCompletionToken,
     SupportLevel,
     TensorDataPlane,
     TensorExecution,
@@ -145,73 +144,11 @@ def test_tensor_feature_dependencies_fail_closed() -> None:
             TensorLifecycleCapabilities(**matrix)
 
 
-def test_ordered_completion_capability_dependencies_fail_closed() -> None:
-    base = {
-        "execution": TensorExecution.DEVICE_RESIDENT,
-        "process_topology": TensorProcessTopology.IN_PROCESS,
-        "data_plane": TensorDataPlane.DIRECT,
-        "stream_event_ownership": "backend records ordered Torch completion",
-        "torch_devices": ("cuda",),
-        "stepping": True,
-        "state_views": True,
-        "state_fields": frozenset({"qpos", "qvel", "ctrl"}),
-        "sensor_views": True,
-        "selected_reset": True,
-        "selected_reset_publication": SelectedResetPublication.AUTHORITATIVE_VIEWS,
-        "mask_selected_reset": True,
-    }
-
-    with pytest.raises(ValueError, match="unsupported tensor lifecycle"):
-        TensorLifecycleCapabilities(
-            execution=TensorExecution.UNSUPPORTED,
-            ordered_completion_publication=True,
-        )
-    with pytest.raises(ValueError, match="ordered completion publication"):
-        TensorLifecycleCapabilities(
-            **(
-                base
-                | {
-                    "mask_selected_reset": False,
-                    "ordered_completion_publication": True,
-                }
-            )
-        )
-
-    supported = TensorLifecycleCapabilities(**(base | {"ordered_completion_publication": True}))
-    assert supported.ordered_completion_publication
-
-
-def test_ordered_completion_supports_packed_host_bridge_without_event_receipt() -> None:
-    supported = TensorLifecycleCapabilities(
-        execution=TensorExecution.HOST_BRIDGE,
-        process_topology=TensorProcessTopology.IN_PROCESS,
-        data_plane=TensorDataPlane.HOST_BRIDGE,
-        stream_event_ownership=(
-            "caller-stream-per-packed-boundary; stream synchronized at CPU bridge"
-        ),
-        torch_devices=("cpu", "cuda"),
-        state_views=True,
-        state_fields=frozenset({"qpos", "qvel", "ctrl"}),
-        sensor_views=True,
-        stepping=True,
-        selected_reset=True,
-        selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
-        mask_selected_reset=True,
-        packed_host_bridge=True,
-        ordered_completion_publication=True,
-    )
-    assert supported.ordered_completion_publication
-
-    with pytest.raises(ValueError, match="HOST_BRIDGE"):
-        replace(supported, packed_host_bridge=False)
-
-
 def test_completion_token_is_fail_closed_public_metadata() -> None:
     valid = {
         "contract_version": COMPLETION_CONTRACT_VERSION,
         "operation": "step",
         "sequence": 7,
-        "stream_id": 12,
         "producer_id": "producer-a",
     }
 
@@ -220,28 +157,18 @@ def test_completion_token_is_fail_closed_public_metadata() -> None:
         CompletionToken(**(valid | {"contract_version": 1}))
     with pytest.raises(ValueError, match="operation"):
         CompletionToken(**(valid | {"operation": "learner-update"}))
+    with pytest.raises(ValueError, match="operation"):
+        CompletionToken(**(valid | {"operation": "selected_reset"}))
+    with pytest.raises(ValueError, match="operation"):
+        CompletionToken(**(valid | {"operation": "mask_reset"}))
     with pytest.raises(TypeError, match="sequence"):
         CompletionToken(**(valid | {"sequence": True}))
     with pytest.raises(TypeError, match="producer_id"):
         CompletionToken(**(valid | {"producer_id": " "}))
     with pytest.raises(TypeError, match="producer_id"):
         CompletionToken(**(valid | {"producer_id": None}))
-    with pytest.raises(NotImplementedError, match="IPC"):
-        CompletionToken(**valid).ipc_handle()
-
-
-def test_immediate_host_completion_token_is_public_and_complete() -> None:
-    valid = {
-        "contract_version": COMPLETION_CONTRACT_VERSION,
-        "operation": "step",
-        "sequence": 1,
-        "stream_id": 7,
-        "producer_id": "mujoco-host-bridge-eager",
-    }
-    receipt = ImmediateCompletionToken(**valid)
-    assert receipt.wait_before_read(None) is None
-    with pytest.raises(NotImplementedError, match="IPC"):
-        receipt.ipc_handle()
+    with pytest.raises(NotImplementedError, match="read gate"):
+        CompletionToken(**valid).wait_before_read()
 
 
 def test_completion_contract_has_only_public_operation_metadata() -> None:
@@ -250,7 +177,6 @@ def test_completion_contract_has_only_public_operation_metadata() -> None:
         "contract_version",
         "operation",
         "sequence",
-        "stream_id",
         "producer_id",
     }
 

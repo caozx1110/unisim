@@ -149,9 +149,7 @@ def test_mask_reset_randomization_applies_only_selected_full_width_rows(
     payload = TensorResetRandomizationPayload(body_mass=full_mass)
 
     result = backend.set_state_tensor_mask(mask, qpos, qvel, payload)
-    completion = result["completion"]
-    assert completion is not None
-    completion.wait_before_read()
+    assert "completion" not in result
 
     mass = backend._device_model.body_mass.numpy()
     np.testing.assert_array_equal(mass[1], [5.0, 7.0])

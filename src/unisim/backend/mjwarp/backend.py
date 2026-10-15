@@ -177,7 +177,6 @@ class _EventCompletionToken(CompletionToken):
         object.__setattr__(self, "contract_version", token.contract_version)
         object.__setattr__(self, "operation", token.operation)
         object.__setattr__(self, "sequence", token.sequence)
-        object.__setattr__(self, "stream_id", token.stream_id)
         object.__setattr__(self, "producer_id", token.producer_id)
         self.event = event
 
@@ -186,24 +185,6 @@ class _EventCompletionToken(CompletionToken):
             self.event.synchronize()
             return
         self.event.wait(stream)
-
-    def ipc_handle(self) -> bytes:
-        """Return the public CUDA IPC descriptor for this ordered receipt."""
-        return bytes(self.event.ipc_handle())
-
-    @classmethod
-    def from_ipc_handle(
-        cls,
-        token: CompletionToken,
-        handle: bytes,
-        *,
-        device: Any,
-    ) -> "_EventCompletionToken":
-        """Reconstruct a consumer-owned receipt from its public descriptor."""
-        import torch
-
-        event = torch.cuda.Event.from_ipc_handle(device, handle)
-        return cls(token, event)
 
 
 class MjwarpBackend(SimBackend):
@@ -1643,26 +1624,24 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_forward_graph = None
         self._cuda_graph_disable_reason: str | None = reason
 
-    def _completion(
+    def _step_completion(
         self,
-        operation: str,
         *,
         stream: Any,
     ) -> CompletionToken:
-        """Publish one ordered completion receipt on the public Torch stream."""
+        """Publish one event-backed asynchronous step receipt on the stream."""
         import torch
 
         device = getattr(stream, "device", None)
         if device is None:
             raise ValueError("completion requires the ordered Torch stream device")
-        event = torch.cuda.Event(interprocess=True)
+        event = torch.cuda.Event()
         event.record(stream)
         self._completion_sequence += 1
         token = CompletionToken(
             contract_version=COMPLETION_CONTRACT_VERSION,
-            operation=operation,
+            operation="step",
             sequence=self._completion_sequence,
-            stream_id=int(stream.cuda_stream),
             producer_id=self._completion_producer_id,
         )
         return _EventCompletionToken(token, event)
@@ -2011,7 +1990,6 @@ class MjwarpBackend(SimBackend):
             tracked_body_views=True,
             mask_selected_reset=True,
             mask_selected_reset_full_refresh=True,
-            ordered_completion_publication=True,
         )
 
     def begin_packed_reset(self, *, device: Any | None = None) -> Any:
@@ -2624,7 +2602,7 @@ class MjwarpBackend(SimBackend):
         except BaseException:
             self._entity_faulted = True
             raise
-        completion = self._completion("step", stream=ctrl_stream)
+        completion = self._step_completion(stream=ctrl_stream)
         self._time_cache += np.float32(int(nsteps) * self._sim_dt)
         self._tracked_body_state_dirty = bool(self._tracked_body_names)
         self._host_cache_stale = True
@@ -2811,7 +2789,6 @@ class MjwarpBackend(SimBackend):
             self._state_torch_views["__reset_mask"] = mask
         mask.zero_()
         mask.index_fill_(0, rows, True)
-        reset_stream = self._torch_execution_stream(mask.device)
         reset_ms = (time.perf_counter() - t0) * 1000.0
 
         t0 = time.perf_counter()
@@ -2844,14 +2821,12 @@ class MjwarpBackend(SimBackend):
             # refresh, as documented on _publish_selected_tensor_reset_sensors.
             if model_randomized or not self._publish_selected_tensor_reset_sensors(rows):
                 self._tracked_body_state_dirty = bool(self._tracked_body_names)
-            completion = self._completion("selected_reset", stream=reset_stream)
         except BaseException:
             self._entity_faulted = True
             raise
         forward_ms = (time.perf_counter() - t0) * 1000.0
         self._host_cache_stale = True
         return {
-            "completion": completion,
             "timing": {
                 "set_state_tensor_mask_ms": reset_ms,
                 "set_state_tensor_commit_forward_ms": forward_ms,
@@ -2930,7 +2905,6 @@ class MjwarpBackend(SimBackend):
             graph_mask = self._torch_view(self._reset_mask_device)
             self._state_torch_views["__reset_mask"] = graph_mask
         graph_mask.copy_(mask_tensor)
-        reset_stream = self._torch_execution_stream(mask_tensor.device)
         reset_ms = (time.perf_counter() - mask_started) * 1000.0
         forward_started = time.perf_counter()
         try:
@@ -2960,12 +2934,10 @@ class MjwarpBackend(SimBackend):
                 self._execute_device_forward()
                 self._tracked_body_state_dirty = False
             sensor_refresh_ms = (time.perf_counter() - sensor_refresh_started) * 1000.0
-            completion = self._completion("mask_reset", stream=reset_stream)
         except BaseException:
             self._entity_faulted = True
             raise
         return {
-            "completion": completion,
             "timing": {
                 "set_state_tensor_mask_ms": reset_ms,
                 "set_state_tensor_commit_forward_ms": (time.perf_counter() - forward_started)
