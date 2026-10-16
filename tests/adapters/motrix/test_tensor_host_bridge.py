@@ -73,7 +73,9 @@ def test_tensor_capability_matrix_is_narrow_and_fail_closed(backend: MotrixBacke
     assert capabilities.data_plane is TensorDataPlane.HOST_BRIDGE
     assert capabilities.torch_devices == ("cpu", "cuda")
     assert capabilities.stream_event_ownership
-    assert not capabilities.reset_randomization
+    assert capabilities.reset_randomization
+    assert capabilities.device_reset_randomization
+    assert capabilities.packed_reset
     assert not capabilities.fixed_variants
     assert not capabilities.host_pre_step_control
 

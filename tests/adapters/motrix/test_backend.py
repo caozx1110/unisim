@@ -21,6 +21,7 @@ def test_motrix_backend_contract(tmp_path: Path) -> None:
     model_path.write_text(MODEL)
     backend = MotrixBackend(SceneCfg(model_file=str(model_path)), num_envs=2, sim_dt=0.01)
     assert_backend_conformance(backend)
+    assert not backend.get_tensor_capabilities().packed_reset
     backend._host_step(np.zeros((2, 1)))
     state = backend._host_get_state()
     widths = backend.get_public_state_widths()

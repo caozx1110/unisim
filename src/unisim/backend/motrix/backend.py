@@ -3986,7 +3986,7 @@ class MotrixBackend(SimBackend):
         return TensorExecution.HOST_BRIDGE
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
-        """Return the deliberately narrow initial packed host-bridge profile."""
+        """Return the MotrixSim packed host-bridge capability matrix."""
         from .tensor import motrix_tensor_capabilities
 
         return motrix_tensor_capabilities(self)
@@ -4038,6 +4038,28 @@ class MotrixBackend(SimBackend):
         from .tensor import motrix_set_state_tensor
 
         return motrix_set_state_tensor(self, env_indices, qpos, qvel, randomization)
+
+    def set_state_tensor_mask(
+        self,
+        reset_mask: Any,
+        qpos: Any,
+        qvel: Any,
+        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        *,
+        full_refresh: bool = False,
+    ) -> dict | None:
+        """Commit full-width accelerator reset state selected by a bool mask."""
+        from .tensor import motrix_set_state_tensor_mask
+
+        return motrix_set_state_tensor_mask(
+            self, reset_mask, qpos, qvel, randomization, full_refresh=full_refresh
+        )
+
+    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+        """Begin a host-bridge transaction with one packed reset commit boundary."""
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
 
     def _bind_sensor_data_reader(self, names: tuple[str, ...]) -> Callable[[], np.ndarray]:
         """Retain Motrix's opaque native reader after cold-path name validation.

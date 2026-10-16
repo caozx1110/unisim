@@ -11,12 +11,17 @@ import numpy as np
 
 from unisim.backend.base import (
     HostBridgeTransferPlan,
+    SelectedResetPublication,
     TensorDataPlane,
     TensorExecution,
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
     tensor_device_matches,
+)
+from unisim.dr.types import (
+    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 
 if TYPE_CHECKING:
@@ -36,7 +41,15 @@ _BODY_VIEW_WIDTHS = {
 
 def motrix_tensor_capabilities(backend: MotrixBackend) -> TensorLifecycleCapabilities:
     """Return the deliberately narrow MotrixSim tensor capability matrix."""
-    del backend
+    from unisim.backend.packed_reset import PACKED_RESET_MODEL_FIELDS
+
+    reset_terms = backend.get_dr_capabilities().supported_reset_terms
+    supports_packed_layout = backend._portable_mode or backend._body_floatingbase is not None
+    packed_fields = (
+        frozenset(reset_terms & PACKED_RESET_MODEL_FIELDS)
+        if supports_packed_layout
+        else frozenset()
+    )
     return TensorLifecycleCapabilities(
         execution=TensorExecution.HOST_BRIDGE,
         state_views=True,
@@ -44,7 +57,11 @@ def motrix_tensor_capabilities(backend: MotrixBackend) -> TensorLifecycleCapabil
         sensor_views=True,
         stepping=True,
         selected_reset=True,
-        reset_randomization=False,
+        reset_randomization=bool(reset_terms),
+        device_reset_randomization=bool(packed_fields),
+        packed_reset=bool(packed_fields),
+        packed_reset_fields=packed_fields,
+        packed_reset_mocap=False,
         fixed_variants=False,
         host_pre_step_control=False,
         packed_host_bridge=True,
@@ -52,6 +69,8 @@ def motrix_tensor_capabilities(backend: MotrixBackend) -> TensorLifecycleCapabil
         data_plane=TensorDataPlane.HOST_BRIDGE,
         stream_event_ownership=_STREAM_OWNERSHIP,
         torch_devices=("cpu", "cuda"),
+        selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
+        mask_selected_reset=True,
     )
 
 
@@ -471,8 +490,6 @@ def motrix_set_state_tensor(
     import torch
 
     require_motrix_tensor_runtime(backend)
-    if randomization is not None:
-        raise NotImplementedError("MotrixSim tensor reset does not support randomization")
     values = {"env_indices": env_indices, "qpos": qpos, "qvel": qvel}
     for name, value in values.items():
         if not isinstance(value, torch.Tensor):
@@ -495,6 +512,53 @@ def motrix_set_state_tensor(
     if qpos.device != source_device or qvel.device != source_device:
         raise ValueError("MotrixSim tensor reset tensors must share one device")
     target = _normalize_device(source_device, label="direct tensor I/O")
+    if isinstance(randomization, TensorResetRandomizationPayload):
+        for field in randomization.requested_terms():
+            value = getattr(randomization, field)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"MotrixSim tensor reset {field} must be a torch.Tensor")
+            if value.device != source_device:
+                raise ValueError("MotrixSim tensor reset values must share one device")
+        _synchronize_device(env_indices)
+        host_randomization = ResetRandomizationPayload(
+            **{
+                field: value.detach().cpu().numpy()
+                for field in randomization.requested_terms()
+                if (value := getattr(randomization, field)) is not None
+            }
+        )
+        rows = env_indices.detach().cpu().numpy()
+        positions = qpos.detach().cpu().numpy()
+        velocities = qvel.detach().cpu().numpy()
+        if rows.size:
+            sorted_rows = env_indices.sort().values
+            in_range = (sorted_rows[0] >= 0) & (sorted_rows[-1] < backend.num_envs)
+            unique = (sorted_rows[1:] != sorted_rows[:-1]).all()
+            valid = in_range if env_indices.shape[0] < 2 else in_range & unique
+            if not bool(valid.item()):
+                raise ValueError(
+                    "MotrixSim tensor reset env_indices must contain unique values in "
+                    f"[0, {backend.num_envs})"
+                )
+            order = np.argsort(rows, kind="stable")
+            rows = rows[order]
+            positions = np.ascontiguousarray(positions[order])
+            velocities = np.ascontiguousarray(velocities[order])
+            host_randomization = ResetRandomizationPayload(
+                **{
+                    field: np.ascontiguousarray(np.asarray(value)[order])
+                    for field, value in (
+                        (name, getattr(host_randomization, name))
+                        for name in host_randomization.requested_terms()
+                    )
+                }
+            )
+        return backend._host_set_state(rows, positions, velocities, host_randomization)
+    if randomization is not None and not isinstance(randomization, ResetRandomizationPayload):
+        raise TypeError(
+            "MotrixSim tensor reset randomization must be "
+            "ResetRandomizationPayload, TensorResetRandomizationPayload, or None"
+        )
     plan = backend._direct_host_bridge_plan
     if plan is None or plan.device != target:
         if plan is not None:
@@ -503,10 +567,114 @@ def motrix_set_state_tensor(
             TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
         )
         backend._direct_host_bridge_plan = plan
-    result = plan.apply_reset(env_indices, qpos, qvel)
+    if randomization is None:
+        result = plan.apply_reset(env_indices, qpos, qvel)
+    else:
+        rows = env_indices.detach().cpu().numpy()
+        positions = qpos.detach().cpu().numpy()
+        velocities = qvel.detach().cpu().numpy()
+        order = np.argsort(rows, kind="stable")
+        host_randomization = ResetRandomizationPayload(
+            **{
+                field: np.ascontiguousarray(np.asarray(value)[order])
+                for field, value in (
+                    (name, getattr(randomization, name))
+                    for name in randomization.requested_terms()
+                )
+            }
+        )
+        result = backend._host_set_state(
+            rows[order],
+            np.ascontiguousarray(positions[order]),
+            np.ascontiguousarray(velocities[order]),
+            host_randomization,
+        )
     if result is None:
         result = {}
     return result
+
+
+def motrix_set_state_tensor_mask(
+    backend: MotrixBackend,
+    reset_mask: Any,
+    qpos: Any,
+    qvel: Any,
+    randomization: Any | None = None,
+    *,
+    full_refresh: bool = False,
+) -> dict | None:
+    """Commit full-width reset tensors selected by a backend-owned bool mask."""
+    import torch
+
+    require_motrix_tensor_runtime(backend)
+    if not isinstance(full_refresh, bool):
+        raise TypeError("full_refresh must be bool")
+    values = {"reset_mask": reset_mask, "qpos": qpos, "qvel": qvel}
+    for name, value in values.items():
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"MotrixSim tensor mask reset {name} must be a torch.Tensor")
+        if not bool(value.is_contiguous()):
+            raise ValueError(f"MotrixSim tensor mask reset {name} must be contiguous")
+    if reset_mask.ndim != 1 or reset_mask.dtype != torch.bool:
+        raise TypeError("MotrixSim tensor reset_mask must be a contiguous 1-D bool tensor")
+    if tuple(reset_mask.shape) != (backend.num_envs,):
+        raise ValueError(f"MotrixSim tensor reset_mask must have shape {(backend.num_envs,)}")
+    widths = _field_widths(backend)
+    if tuple(qpos.shape) != (backend.num_envs, widths["qpos"]):
+        raise ValueError(
+            f"MotrixSim tensor mask reset qpos must have shape "
+            f"{(backend.num_envs, widths['qpos'])}"
+        )
+    if tuple(qvel.shape) != (backend.num_envs, widths["qvel"]):
+        raise ValueError(
+            f"MotrixSim tensor mask reset qvel must have shape "
+            f"{(backend.num_envs, widths['qvel'])}"
+        )
+    if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
+        raise TypeError("MotrixSim tensor mask reset qpos and qvel must be float32")
+    source_device = reset_mask.device
+    if qpos.device != source_device or qvel.device != source_device:
+        raise ValueError("MotrixSim tensor mask reset tensors must share one device")
+    if not bool(torch.isfinite(qpos).all()) or not bool(torch.isfinite(qvel).all()):
+        raise ValueError("MotrixSim tensor mask reset qpos and qvel must contain finite values")
+    target = _normalize_device(source_device, label="direct tensor I/O")
+    del target
+    selected_rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+    host_randomization: ResetRandomizationPayload | None = None
+    if isinstance(randomization, TensorResetRandomizationPayload):
+        for field in randomization.requested_terms():
+            value = getattr(randomization, field)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"MotrixSim tensor mask reset {field} must be a torch.Tensor")
+            if value.device != source_device:
+                raise ValueError("MotrixSim tensor mask reset values must share one device")
+        host_randomization = ResetRandomizationPayload(
+            **{
+                field: value.index_select(0, selected_rows).detach().cpu().numpy()
+                for field in randomization.requested_terms()
+                if (value := getattr(randomization, field)) is not None
+            }
+        )
+    elif randomization is not None:
+        if not isinstance(randomization, ResetRandomizationPayload):
+            raise TypeError(
+                "MotrixSim tensor mask reset randomization must be "
+                "TensorResetRandomizationPayload or None"
+            )
+        raise NotImplementedError(
+            "MotrixSim mask reset requires a device-resident TensorResetRandomizationPayload"
+        )
+    if full_refresh:
+        raise NotImplementedError("MotrixSim tensor mask reset does not support full refresh")
+    _synchronize_device(reset_mask)
+    rows = selected_rows.detach().cpu().numpy()
+    result = backend._host_set_state(
+        rows,
+        qpos.index_select(0, selected_rows).detach().cpu().numpy(),
+        qvel.index_select(0, selected_rows).detach().cpu().numpy(),
+        host_randomization,
+    )
+    return {} if result is None else result
 
 
 @dataclass

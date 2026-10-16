@@ -30,6 +30,7 @@ UniSim owns a backend-neutral, staged packed reset transaction:
 ### Adapter behavior
 
 - MuJoCo (`HOST_BRIDGE`) accepts selected-row and full-width mask `TensorResetRandomizationPayload` forms inside the same explicit tensor-to-host reset boundary, synchronizing once before materializing the host payload. The persistent `HostBridgeTransferPlan.apply_reset()` remains the single-packet fast path for selected-row IDs.
+- MotrixSim (`HOST_BRIDGE`) accepts the same selected-row and full-width mask forms for its runtime-negotiated field subset, materializing the payload inside the host reset boundary and publishing selected rows authoritatively without a separate full-refresh phase.
 - MJWarp (`DEVICE_RESIDENT`) composes on device and commits through existing device-side scatters with `AUTHORITATIVE_VIEWS` publication. `geom_size` stays excluded because its derived bounds are host-computed today.
 - MuJoCo declares packed reset mocap support for kinematic entity roots; the selected Torch rows and poses cross its explicit host boundary only at commit. MJWarp keeps mocap writes fail-closed in this slice.
 - Every other adapter remains fail-closed; there is no backend-private probing.

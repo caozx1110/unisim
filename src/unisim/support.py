@@ -282,14 +282,30 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         declare("tensor.stepping", exact, "MotrixSim tensor stepping")
         declare("tensor.selected_reset", exact, "MotrixSim selected-row tensor reset")
         declare(
+            "tensor.selected_reset_publication",
+            exact,
+            "AUTHORITATIVE_VIEWS immediately after set_state_tensor returns",
+        )
+        declare(
             "tensor.reset_randomization",
-            unsupported,
-            "Packed tensor reset has no randomization",
+            SupportLevel.UNKNOWN,
+            "Runtime-negotiated MotrixSim reset-randomization terms",
         )
         declare(
             "tensor.device_reset_randomization",
+            exact,
+            "TensorResetRandomizationPayload is materialized inside the explicit "
+            "tensor-to-host reset boundary",
+        )
+        declare(
+            "tensor.packed_reset",
+            exact,
+            "Host-bridge staged packed reset transaction with committed baselines",
+        )
+        declare(
+            "tensor.packed_reset_mocap",
             unsupported,
-            "Packed host-bridge reset applies host NumPy payloads only",
+            "Motrix kinematic mocap writes remain a fail-closed follow-up",
         )
         declare("tensor.fixed_variants", unsupported, "Packed tensor reset has no fixed variants")
         declare("tensor.host_pre_step_control", unsupported, "Host callbacks remain NumPy-only")

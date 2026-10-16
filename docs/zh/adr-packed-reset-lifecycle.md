@@ -30,6 +30,7 @@ UniSim 拥有 backend-neutral 的 staged packed reset 事务：
 ### 适配器行为
 
 - MuJoCo（`HOST_BRIDGE`）在同一显式 tensor-to-host reset 边界内接受 selected-row 与 full-width mask 形态的 `TensorResetRandomizationPayload`，先同步一次再物化 host payload。持久的 `HostBridgeTransferPlan.apply_reset()` 仍是 selected-row ID 的单包快速路径。
+- MotrixSim（`HOST_BRIDGE`）在其运行时协商的字段子集内接受同样的 selected-row 与 full-width mask 形态，在 host reset 边界内物化 payload，并权威发布选中行且没有单独 full-refresh 阶段。
 - MJWarp（`DEVICE_RESIDENT`）在 device 上组合，并通过既有 device-side scatter 提交，发布语义为 `AUTHORITATIVE_VIEWS`。`geom_size` 因派生 bounds 目前在 host 计算而继续排除。
 - MuJoCo 为 kinematic entity root 声明 packed reset mocap 支持；选中 Torch 行与 pose 只在提交时通过显式 host 边界。本阶段 MJWarp 的 mocap 写入保持快速失败。
 - 其余适配器保持快速失败；不进行 backend-private probing。
