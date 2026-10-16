@@ -27,6 +27,7 @@ from unisim.backend.isaacsim.tensor_ipc import (
 from unisim.backend.isaacsim.worker import _dispatch
 from unisim.backend.subprocess_ipc import protocol
 from unisim.backend.subprocess_ipc.cuda_ipc import CudaIpcEventHandle, CudaIpcMemHandle
+from unisim.support import _assert_tensor_platform_capabilities
 
 
 def _arena_payload(
@@ -145,6 +146,7 @@ def test_cuda_ipc_capabilities_are_opt_in_and_minimal() -> None:
 
     backend._tensor_cuda_ipc_requested = True
     capabilities = backend.get_tensor_capabilities()
+    _assert_tensor_platform_capabilities("isaacsim", capabilities)
     assert capabilities.execution.value == "device_resident"
     assert capabilities.process_topology.value == "external_worker"
     assert capabilities.data_plane.value == "cuda_ipc"

@@ -22,6 +22,8 @@ The optional tensor lifecycle is independently negotiated: MuJoCo/MJBatch, Motri
 
 `unisim.support.get_tensor_platform_profiles()` provides an SDK-free rendering of those reviewed default tensor boundaries for all declared adapters. It does not discover an installed engine or promote a task owner; platform-specific lifecycle fields retain their `SupportLevel` values, including MuJoCo's runtime-negotiated `unknown` reset randomization and fixed-variant declarations.
 
+The execution, process-topology, data-plane, and Torch-device boundaries are declared as enum values. Adapter capability tests compare real backend `get_tensor_capabilities()` payloads with those static declarations.
+
 The SDK-free portable MJCF compiler contract is available in the base import, but actual cold-path compilation lazily requires `unisim-core[scene-compiler]` (`mujoco~=3.11.0`, without the mjbatch executor). The compiler's source/intent report and content identity do not themselves declare native adapter support; every adapter still needs its own materialization and readback evidence. The governing boundary is the [portable MJCF ADR](adr-portable-mjcf.md).
 
 IsaacSim's raw- and role-derived-USD caches are cold materialization optimizations only. They do not cache native scenes, views, parameters, or effective reports; hits still materialize and read back from cached USD. See [entity scene execution](entity-scenes.md) for cache roots, environment overrides, identity inputs, role validation, and atomic publication behavior.

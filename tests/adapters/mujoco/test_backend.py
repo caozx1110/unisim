@@ -12,6 +12,7 @@ from unisim import (
 )
 from unisim.backend.base import TensorIOSpec
 from unisim.scene import SceneCfg
+from unisim.support import _assert_tensor_platform_capabilities
 
 MODEL = """<mujoco model='unisim-test'>
   <option timestep='0.01'/>
@@ -235,6 +236,7 @@ def test_mujoco_host_bridge_tensor_lifecycle(tmp_path: Path) -> None:
     backend.materialize()
     assert backend.tensor_execution().value == "host_bridge"
     capabilities = backend.get_tensor_capabilities()
+    _assert_tensor_platform_capabilities("mujoco", capabilities)
     assert capabilities.execution is TensorExecution.HOST_BRIDGE
     assert capabilities.state_views
     assert capabilities.state_fields == {"qpos", "qvel", "ctrl"}
