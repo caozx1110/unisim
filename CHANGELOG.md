@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.7.23 - 2026-10-16
+
 - Fixed `MotrixBackend` host state reads on non-portable scenes (#382). The 1.7.16 legacy NumPy API removal added `_host_get_state` overrides to every host adapter except Motrix, so the MotrixSim tensor bridge's canonical host state read (used by `get_state_views(..., device=None)` and `get_public_state_widths()`) fell through to the fail-closed base stub and raised `NotImplementedError` for single-robot scenes. `MotrixBackend` now implements `_host_get_state` directly: portable scenes serve the composed public qpos/qvel layout, and whole-MJCF scenes assemble the canonical `[base_pos, base_quat, dofs]` / `[base_lin_vel, base_ang_vel, dofs]` blocks from the private base getters and actuator-ordered DoF columns, matching the packed tensor bridge layout.
 
 ## 1.7.22 - 2026-10-16
