@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed Motrix fixed-width mask reset publication to compiled host-bridge plans (#386). `set_state_tensor_mask()` now records its committed selected rows on every open plan, allowing `read_selected_state_sensors()` to publish authoritative selected-row views without a full-batch refresh.
+
 ## 1.7.24 - 2026-10-16
 
 - Added the packed reset transaction to `MotrixBackend` (#2364). Motrix now declares runtime-negotiated device reset randomization, `packed_reset`, authoritative selected-reset publication, and fixed-width mask reset support; `begin_packed_reset()` reuses the shared Torch composer with committed model-field baselines. Selected-row and mask commits materialize `TensorResetRandomizationPayload` inside the explicit CPU host boundary, preserving public state layouts, false rows, and native override semantics. Whole-MJCF packed reset promotion is limited to floating-base scenes whose public virtual-root layout is natively committable; portable scenes use their composed public layout, while fixed-base whole-MJCF packed reset, fixed variants, host callbacks, and mocap writes remain fail-closed.

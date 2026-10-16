@@ -228,6 +228,33 @@ def test_selected_read_before_full_read_preserves_all_rows_or_fails_closed(
         )
 
 
+def test_mask_reset_publishes_selected_rows_to_host_bridge_plans(backend: MotrixBackend) -> None:
+    plan = backend.compile_host_bridge_io(
+        TensorIOSpec(
+            state_fields=("qpos", "qvel"),
+            sensor_names=("angle", "speed"),
+            device="cpu",
+        )
+    )
+    full_views = plan.read_state_sensors()
+    mask = torch.tensor([False, True, True])
+    qpos = full_views["qpos"].clone()
+    qvel = full_views["qvel"].clone()
+    qpos[mask, 0] = torch.tensor([0.4, -0.2])
+    qvel[mask, -1] = torch.tensor([1.5, -0.7])
+
+    backend.set_state_tensor_mask(mask, qpos, qvel)
+    selected = plan.read_selected_state_sensors()
+
+    np.testing.assert_allclose(selected["qpos"].detach().numpy(), qpos, atol=1e-6)
+    np.testing.assert_allclose(selected["qvel"].detach().numpy(), qvel, atol=1e-6)
+    np.testing.assert_allclose(
+        selected["angle"].detach().numpy()[mask],
+        qpos[mask, 7:8],
+        atol=1e-6,
+    )
+
+
 def test_selected_read_does_not_compute_unselected_rows(
     backend: MotrixBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
