@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -257,6 +259,97 @@ def test_mask_reset_publishes_selected_rows_to_host_bridge_plans(backend: Motrix
     )
 
 
+def test_selected_physical_sensors_use_one_batched_read(
+    backend: MotrixBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = backend.compile_host_bridge_io(
+        TensorIOSpec(
+            state_fields=("qpos", "qvel"),
+            sensor_names=("angle", "speed"),
+            device="cpu",
+        )
+    )
+    full_views = plan.read_state_sensors()
+    rows = np.asarray((2, 0), dtype=np.int64)
+    qpos = full_views["qpos"][rows].clone()
+    qvel = full_views["qvel"][rows].clone()
+    qpos[:, 0] = torch.tensor((0.3, -0.1), dtype=torch.float32)
+    qvel[:, -1] = torch.tensor((-0.4, 0.8), dtype=torch.float32)
+    plan.apply_reset(
+        torch.tensor(rows, dtype=torch.int64),
+        qpos,
+        qvel,
+    )
+
+    original_sensor_rows_batch = backend._host_read_sensor_rows_batch
+    calls: list[Sequence[str]] = []
+
+    def tracking_sensor_rows_batch(names: Sequence[str], env_ids):
+        calls.append(tuple(names))
+        return original_sensor_rows_batch(names, env_ids)
+
+    monkeypatch.setattr(backend, "_host_read_sensor_rows_batch", tracking_sensor_rows_batch)
+
+    def fail_base_read(*args: object, name: str = "") -> None:
+        raise AssertionError(f"{name} should not be read after apply_reset")
+
+    for name in (
+        "_host_get_base_pos",
+        "_host_get_base_quat",
+        "_host_get_base_lin_vel",
+        "_host_get_base_ang_vel",
+    ):
+        monkeypatch.setattr(backend, name, partial(fail_base_read, name=name))
+    selected = plan.read_selected_state_sensors()
+
+    assert calls == [("angle", "speed")]
+    np.testing.assert_allclose(
+        selected["angle"].numpy()[rows],
+        qpos[:, 7:8],
+    )
+    np.testing.assert_allclose(
+        selected["speed"].numpy()[rows],
+        qvel[:, -1:],
+    )
+
+
+def test_selected_reset_payload_matches_canonical_reread(backend: MotrixBackend) -> None:
+    """The cached reset packet remains equivalent to authoritative state reads."""
+
+    plan = backend.compile_host_bridge_io(
+        TensorIOSpec(
+            state_fields=("qpos", "qvel"),
+            sensor_names=("angle", "speed"),
+            device="cpu",
+        )
+    )
+    state = backend._host_get_state()
+    rows = np.asarray((2, 0), dtype=np.int64)
+    qpos = state["qpos"][rows].copy()
+    qvel = state["qvel"][rows].copy()
+    qpos[:, 0] = (0.3, -0.1)
+    qpos[:, 7] = (0.4, -0.2)
+    qvel[:, -1] = (1.5, -0.7)
+    plan.apply_reset(
+        torch.tensor(rows, dtype=torch.int64),
+        torch.tensor(qpos, dtype=torch.float32),
+        torch.tensor(qvel, dtype=torch.float32),
+    )
+
+    selected = plan.read_selected_state_sensors()
+    canonical = backend._host_get_state()
+
+    for name, expected_rows in (("qpos", qpos), ("qvel", qvel)):
+        np.testing.assert_allclose(selected[name].numpy()[rows], expected_rows, atol=1e-6)
+        np.testing.assert_allclose(selected[name].numpy()[rows], canonical[name][rows], atol=1e-6)
+    np.testing.assert_allclose(
+        selected["angle"].numpy()[rows], backend._host_read_sensor("angle")[rows], atol=1e-6
+    )
+    np.testing.assert_allclose(
+        selected["speed"].numpy()[rows], backend._host_read_sensor("speed")[rows], atol=1e-6
+    )
+
+
 def test_selected_read_does_not_compute_unselected_rows(
     backend: MotrixBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -292,8 +385,8 @@ def test_selected_read_does_not_compute_unselected_rows(
         raise AssertionError("selected read computed full-batch public state")
 
     with monkeypatch.context() as patch:
-        patch.setattr(backend, "get_body_state_w", reject_full_body_state)
-        patch.setattr(backend, "get_state", reject_full_state)
+        patch.setattr(backend, "_host_get_body_state_w", reject_full_body_state)
+        patch.setattr(backend, "_host_get_state", reject_full_state)
         selected = plan.read_selected_state_sensors()
 
     expected = original_state(("qpos", "qvel"))
@@ -812,7 +905,7 @@ def test_packed_reads_do_not_reread_sensor_layout(
         calls.append(name)
         return original_get_sensor_data(name)
 
-    monkeypatch.setattr(backend, "get_sensor_data", tracking_get_sensor_data)
+    monkeypatch.setattr(backend, "_host_read_sensor", tracking_get_sensor_data)
     plan.write_control(torch.zeros((3, 1), dtype=torch.float32))
     plan.step()
     for _ in range(3):
@@ -847,7 +940,7 @@ def test_compile_fails_closed_on_sensor_layout_drift(
             return values.reshape(backend.num_envs, -1)[:, :-1]
         return values
 
-    monkeypatch.setattr(backend, "get_sensor_data", drifting_get_sensor_data)
+    monkeypatch.setattr(backend, "_host_read_sensor", drifting_get_sensor_data)
     with pytest.raises(RuntimeError, match="layout changed after compilation"):
         backend.compile_host_bridge_io(
             TensorIOSpec(
