@@ -18,6 +18,7 @@ from unisim import (
 )
 from unisim.dr.types import ResetRandomizationPayload
 from unisim.scene import SceneCfg
+from unisim.support import _assert_tensor_platform_capabilities
 
 MODEL = """<mujoco model='unisim-test-mjwarp'>
   <option timestep='0.01'/>
@@ -421,6 +422,7 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     )
     assert device.tensor_execution().value == "device_resident"
     capabilities = device.get_tensor_capabilities()
+    _assert_tensor_platform_capabilities("mjwarp", capabilities)
     assert capabilities.execution is TensorExecution.DEVICE_RESIDENT
     assert capabilities.state_views
     assert capabilities.state_fields == {"qpos", "qvel", "ctrl", "sensordata", "time"}

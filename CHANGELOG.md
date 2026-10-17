@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Changed the SDK-free tensor platform matrix to declare execution, process topology, data plane, and Torch-device boundaries as enum values instead of parsing capability reason strings (Motphys/UniLab#2382). Adapter runtime tests now compare constructed backend capabilities directly with those reviewed static boundaries.
+
 ## 1.7.24 - 2026-10-16
 
 - Added the packed reset transaction to `MotrixBackend` (#2364). Motrix now declares runtime-negotiated device reset randomization, `packed_reset`, authoritative selected-reset publication, and fixed-width mask reset support; `begin_packed_reset()` reuses the shared Torch composer with committed model-field baselines. Selected-row and mask commits materialize `TensorResetRandomizationPayload` inside the explicit CPU host boundary, preserving public state layouts, false rows, and native override semantics. Whole-MJCF packed reset promotion is limited to floating-base scenes whose public virtual-root layout is natively committable; portable scenes use their composed public layout, while fixed-base whole-MJCF packed reset, fixed variants, host callbacks, and mocap writes remain fail-closed.

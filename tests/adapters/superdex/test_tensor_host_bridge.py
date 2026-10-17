@@ -17,6 +17,7 @@ from unisim.backend.base import (
     TensorProcessTopology,
 )
 from unisim.scene import SceneCfg
+from unisim.support import _assert_tensor_platform_capabilities
 
 if sys.version_info[:2] not in ((3, 12), (3, 13)):
     pytest.skip("SuperDex wheels require Python 3.12 or 3.13", allow_module_level=True)
@@ -96,6 +97,7 @@ def backend(tmp_path):
 
 def test_tensor_capability_matrix_is_narrow_and_fail_closed(backend):
     capabilities = backend.get_tensor_capabilities()
+    _assert_tensor_platform_capabilities("superdex", capabilities)
     assert backend.tensor_execution() is TensorExecution.HOST_BRIDGE
     assert capabilities.execution is TensorExecution.HOST_BRIDGE
     assert capabilities.state_fields == frozenset({"qpos", "qvel", "ctrl"})
