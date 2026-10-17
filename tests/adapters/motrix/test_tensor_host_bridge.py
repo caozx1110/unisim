@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 
@@ -280,14 +281,14 @@ def test_selected_physical_sensors_use_one_batched_read(
         qvel,
     )
 
-    original_sensor_rows = backend._host_read_sensor_rows
-    calls: list[str] = []
+    original_sensor_rows_batch = backend._host_read_sensor_rows_batch
+    calls: list[Sequence[str]] = []
 
-    def tracking_sensor_rows(name: str, env_ids):
-        calls.append(name)
-        return original_sensor_rows(name, env_ids)
+    def tracking_sensor_rows_batch(names: Sequence[str], env_ids):
+        calls.append(tuple(names))
+        return original_sensor_rows_batch(names, env_ids)
 
-    monkeypatch.setattr(backend, "_host_read_sensor_rows", tracking_sensor_rows)
+    monkeypatch.setattr(backend, "_host_read_sensor_rows_batch", tracking_sensor_rows_batch)
 
     def fail_base_read(*args: object, name: str = "") -> None:
         raise AssertionError(f"{name} should not be read after apply_reset")
@@ -301,7 +302,7 @@ def test_selected_physical_sensors_use_one_batched_read(
         monkeypatch.setattr(backend, name, partial(fail_base_read, name=name))
     selected = plan.read_selected_state_sensors()
 
-    assert calls == []
+    assert calls == [("angle", "speed")]
     np.testing.assert_allclose(
         selected["angle"].numpy()[rows],
         qpos[:, 7:8],
@@ -309,6 +310,43 @@ def test_selected_physical_sensors_use_one_batched_read(
     np.testing.assert_allclose(
         selected["speed"].numpy()[rows],
         qvel[:, -1:],
+    )
+
+
+def test_selected_reset_payload_matches_canonical_reread(backend: MotrixBackend) -> None:
+    """The cached reset packet remains equivalent to authoritative state reads."""
+
+    plan = backend.compile_host_bridge_io(
+        TensorIOSpec(
+            state_fields=("qpos", "qvel"),
+            sensor_names=("angle", "speed"),
+            device="cpu",
+        )
+    )
+    state = backend._host_get_state()
+    rows = np.asarray((2, 0), dtype=np.int64)
+    qpos = state["qpos"][rows].copy()
+    qvel = state["qvel"][rows].copy()
+    qpos[:, 0] = (0.3, -0.1)
+    qpos[:, 7] = (0.4, -0.2)
+    qvel[:, -1] = (1.5, -0.7)
+    plan.apply_reset(
+        torch.tensor(rows, dtype=torch.int64),
+        torch.tensor(qpos, dtype=torch.float32),
+        torch.tensor(qvel, dtype=torch.float32),
+    )
+
+    selected = plan.read_selected_state_sensors()
+    canonical = backend._host_get_state()
+
+    for name, expected_rows in (("qpos", qpos), ("qvel", qvel)):
+        np.testing.assert_allclose(selected[name].numpy()[rows], expected_rows, atol=1e-6)
+        np.testing.assert_allclose(selected[name].numpy()[rows], canonical[name][rows], atol=1e-6)
+    np.testing.assert_allclose(
+        selected["angle"].numpy()[rows], backend._host_read_sensor("angle")[rows], atol=1e-6
+    )
+    np.testing.assert_allclose(
+        selected["speed"].numpy()[rows], backend._host_read_sensor("speed")[rows], atol=1e-6
     )
 
 

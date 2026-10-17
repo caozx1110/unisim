@@ -1057,19 +1057,20 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         order = torch.argsort(selected_rows)
         rows_device = selected_rows.index_select(0, order).detach().clone()
         rows = rows_device.detach().cpu().numpy().astype(np.intp, copy=True)
-        order = np.argsort(rows, kind="stable")
+        host_order = order.detach().cpu().numpy()
+
+        def selected_values(values: Any) -> np.ndarray:
+            selected = (
+                values.index_select(0, order)
+                if isinstance(values, torch.Tensor)
+                else np.asarray(values)[host_order]
+            )
+            return np.ascontiguousarray(selected, dtype=np.float32)
+
         self._last_reset_rows_host = rows
         self._last_reset_rows_device = rows_device
-        self._last_reset_qpos_host = (
-            np.ascontiguousarray(np.asarray(qpos)[order], dtype=np.float32)
-            if qpos is not None
-            else None
-        )
-        self._last_reset_qvel_host = (
-            np.ascontiguousarray(np.asarray(qvel)[order], dtype=np.float32)
-            if qvel is not None
-            else None
-        )
+        self._last_reset_qpos_host = selected_values(qpos) if qpos is not None else None
+        self._last_reset_qvel_host = selected_values(qvel) if qvel is not None else None
 
     def read_selected_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()
@@ -1084,6 +1085,11 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         count = int(rows.shape[0])
         states = None
         if self._last_reset_qpos_host is not None and self._last_reset_qvel_host is not None:
+            # Reset randomization currently changes dynamics terms only, and the
+            # qpos conversion used by `_host_set_state` is an exact quaternion
+            # round-trip. The committed reset payload therefore equals a canonical
+            # re-read. If state commit ever mutates qpos/qvel, publish that state
+            # here instead so this cache cannot diverge from canonical state.
             states = {
                 "qpos": self._last_reset_qpos_host,
                 "qvel": self._last_reset_qvel_host,
