@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Fixed Motrix fixed-width mask reset publication to compiled host-bridge plans (#386). `set_state_tensor_mask()` now records its committed selected rows on every open plan, allowing `read_selected_state_sensors()` to publish authoritative selected-row views without a full-batch refresh.
+- Optimized Motrix selected packed reads (#390). Selected physical sensors are fetched in one native batch, and mask-reset publication reuses the committed selected `qpos`/`qvel` payload instead of re-reading canonical base state.
 
 ## 1.7.24 - 2026-10-16
 
