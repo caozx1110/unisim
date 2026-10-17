@@ -20,6 +20,7 @@ else:
 from unisim.backend.base import TensorExecution
 from unisim.backend.genesis.backend import GenesisBackend
 from unisim.scene import SceneCfg
+from unisim.support import _assert_tensor_platform_capabilities
 
 
 class _NoHostTensor(torch.Tensor):
@@ -278,6 +279,7 @@ def _cuda_backend() -> tuple[GenesisBackend, _FakeEntity, _FakeScene]:
 def test_genesis_partial_cuda_capability_profile() -> None:
     backend, _, _ = _cuda_backend()
     capabilities = backend.get_tensor_capabilities()
+    _assert_tensor_platform_capabilities("genesis", capabilities)
 
     assert backend.tensor_execution() is TensorExecution.DEVICE_RESIDENT
     assert capabilities.state_views

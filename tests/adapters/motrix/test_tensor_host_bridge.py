@@ -25,6 +25,7 @@ from unisim.backend.motrix import tensor as motrix_tensor
 from unisim.dr.types import ModelSourceDescriptor
 from unisim.entities import EntityInitialState, SceneEntitySpec
 from unisim.scene import SceneCfg
+from unisim.support import _assert_tensor_platform_capabilities
 
 torch = pytest.importorskip("torch")
 
@@ -63,6 +64,7 @@ def backend(tmp_path: Path) -> MotrixBackend:
 
 def test_tensor_capability_matrix_is_narrow_and_fail_closed(backend: MotrixBackend) -> None:
     capabilities = backend.get_tensor_capabilities()
+    _assert_tensor_platform_capabilities("motrix", capabilities)
     assert backend.tensor_execution() is TensorExecution.HOST_BRIDGE
     assert capabilities.execution is TensorExecution.HOST_BRIDGE
     assert capabilities.state_fields == frozenset({"qpos", "qvel", "ctrl"})

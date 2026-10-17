@@ -4,6 +4,7 @@
 
 - Fixed Motrix fixed-width mask reset publication to compiled host-bridge plans (#386). `set_state_tensor_mask()` now records its committed selected rows on every open plan, allowing `read_selected_state_sensors()` to publish authoritative selected-row views without a full-batch refresh.
 - Optimized Motrix selected packed reads (#390). Selected physical sensors are fetched in one native batch, and mask-reset publication reuses the committed selected `qpos`/`qvel` payload instead of re-reading canonical base state.
+- Changed the SDK-free tensor platform matrix to declare execution, process topology, data plane, and Torch-device boundaries as enum values instead of parsing capability reason strings (Motphys/UniLab#2382). Adapter runtime tests now compare constructed backend capabilities directly with those reviewed static boundaries.
 
 ## 1.7.24 - 2026-10-16
 

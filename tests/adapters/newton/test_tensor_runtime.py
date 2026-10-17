@@ -15,6 +15,7 @@ from unisim.backend.newton.dependencies import (
     load_newton_dependencies,
 )
 from unisim.scene import SceneCfg
+from unisim.support import _assert_tensor_platform_capabilities
 
 from .test_contract import _MODEL
 
@@ -81,6 +82,7 @@ def test_newton_declares_partial_device_resident_tensor_lifecycle(
     try:
         assert backend.tensor_execution().value == "device_resident"
         capabilities = backend.get_tensor_capabilities()
+        _assert_tensor_platform_capabilities("newton", capabilities)
         assert capabilities.process_topology.value == "in_process"
         assert capabilities.data_plane.value == "direct"
         assert capabilities.torch_devices == ("cuda",)
