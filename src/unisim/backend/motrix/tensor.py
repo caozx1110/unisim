@@ -358,7 +358,7 @@ def _pack_state_sensors(
     widths: Mapping[str, int],
     rows: np.ndarray | None = None,
     resolved: _ResolvedSensorNames | None = None,
-    states: Mapping[str, np.ndarray] | None = None,
+    states: dict[str, np.ndarray] | None = None,
 ) -> None:
     selected = slice(None) if rows is None else rows
     canonical_fields = tuple(name for name in ("qpos", "qvel") if name in state_fields)
@@ -865,7 +865,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         )
 
     def _pack_host_packet(
-        self, rows: np.ndarray | None = None, *, states: Mapping[str, np.ndarray] | None = None
+        self, rows: np.ndarray | None = None, *, states: dict[str, np.ndarray] | None = None
     ) -> Any:
         buffers = self._buffers()
         packet = buffers.selected_host[: rows.shape[0]] if rows is not None else buffers.host_packet
