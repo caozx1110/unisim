@@ -100,11 +100,11 @@ def test_uniform_mesh_variants_match_single_env_runtimes(tmp_path: Path) -> None
     batch = MotrixBackend(_scene(tmp_path, (2, 0, 1)), 3, 0.002, base_name="object/base")
     independent: list[MotrixBackend] = []
     try:
-        qpos = batch.get_state("qpos")["qpos"].copy()
-        qvel = np.zeros_like(batch.get_state("qvel")["qvel"])
-        batch.reset()
+        qpos = batch._host_get_state(("qpos",))["qpos"].copy()
+        qvel = np.zeros_like(batch._host_get_state(("qvel",))["qvel"])
+        batch._host_reset()
         ctrl = np.zeros((3, batch.num_actuators), dtype=np.float32)
-        batch.step(ctrl, nsteps=10)
+        batch._host_step(ctrl, nsteps=10)
 
         for variant in (2, 0, 1):
             single = MotrixBackend(
@@ -114,18 +114,18 @@ def test_uniform_mesh_variants_match_single_env_runtimes(tmp_path: Path) -> None
                 base_name="object/base",
             )
             independent.append(single)
-            single.set_state(np.asarray((0,)), qpos[[variant]], qvel[[variant]])
-            single.step(ctrl[[variant]], nsteps=10)
+            single._host_set_state(np.asarray((0,)), qpos[[variant]], qvel[[variant]])
+            single._host_step(ctrl[[variant]], nsteps=10)
 
         np.testing.assert_allclose(
-            batch.get_state("qpos")["qpos"],
-            np.stack([single.get_state("qpos")["qpos"][0] for single in independent]),
+            batch._host_get_state(("qpos",))["qpos"],
+            np.stack([single._host_get_state(("qpos",))["qpos"][0] for single in independent]),
             rtol=2e-6,
             atol=2e-7,
         )
         np.testing.assert_allclose(
-            batch.get_state("qvel")["qvel"],
-            np.stack([single.get_state("qvel")["qvel"][0] for single in independent]),
+            batch._host_get_state(("qvel",))["qvel"],
+            np.stack([single._host_get_state(("qvel",))["qvel"][0] for single in independent]),
             rtol=2e-6,
             atol=2e-7,
         )

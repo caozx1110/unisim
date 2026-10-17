@@ -58,6 +58,8 @@ def test_cuda_arena_layout_is_aligned_and_rejects_noncanonical_offsets() -> None
         "reset_env_indices": (3,),
         "reset_qpos": (3, 7),
         "reset_qvel": (3, 6),
+        "reset_kp": (3, 5),
+        "reset_kd": (3, 5),
         "body_state": (3, 4, 13),
         "sensor_state": (3, 2, 3),
     }
@@ -68,6 +70,8 @@ def test_cuda_arena_layout_is_aligned_and_rejects_noncanonical_offsets() -> None
         "reset_env_indices": "int64",
         "reset_qpos": "float32",
         "reset_qvel": "float32",
+        "reset_kp": "float32",
+        "reset_kd": "float32",
         "body_state": "float32",
         "sensor_state": "float32",
     }
@@ -78,10 +82,12 @@ def test_cuda_arena_layout_is_aligned_and_rejects_noncanonical_offsets() -> None
         layout.reset_env_indices_offset,
         layout.reset_qpos_offset,
         layout.reset_qvel_offset,
+        layout.reset_kp_offset,
+        layout.reset_kd_offset,
         layout.body_state_offset,
         layout.sensor_state_offset,
-    ) == (0, 256, 512, 768, 1024, 1280, 1536, 2304)
-    assert layout.size_bytes == 2560
+    ) == (0, 256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2816)
+    assert layout.size_bytes == 3072
 
     encoded = layout.as_dict()
     assert IsaacSimCudaArenaLayout.from_dict(encoded) == layout
@@ -159,7 +165,10 @@ def test_cuda_ipc_capabilities_are_opt_in_and_minimal() -> None:
     assert capabilities.tracked_body_views
     widths = backend.get_public_state_widths()
     assert (widths.nq, widths.nv) == (7, 6)
-    assert not capabilities.reset_randomization
+    assert capabilities.reset_randomization
+    assert capabilities.device_reset_randomization
+    assert capabilities.packed_reset
+    assert capabilities.mask_selected_reset
     assert not capabilities.fixed_variants
     assert capabilities.torch_devices == ("cuda",)
     backend._cuda_ipc_arena = None
@@ -218,7 +227,9 @@ def _make_backend_and_arena(log: list[str]) -> tuple[Any, Any, Any]:
         def wait_state(self) -> None:
             log.append(("wait-state",))
 
-        def write_reset(self, env_indices: Any, qpos: Any, qvel: Any) -> None:
+        def write_reset(
+            self, env_indices: Any, qpos: Any, qvel: Any, randomization: Any = None
+        ) -> None:
             log.append(
                 ("write-reset", tuple(env_indices.shape), tuple(qpos.shape), tuple(qvel.shape))
             )
@@ -432,7 +443,7 @@ def test_host_selected_reset_moves_only_metadata_over_pipe(
     backend._cuda_reset_selected = _Selected(False)
     qpos.shape = (1, 7)
     qvel.shape = (1, 6)
-    with pytest.raises(NotImplementedError, match="randomization"):
+    with pytest.raises(TypeError, match="randomization"):
         backend.set_state_tensor(rows, qpos, qvel, randomization=SimpleNamespace())  # type: ignore[arg-type]
 
     empty_rows, empty_qpos, empty_qvel = _Rows(), _State(), _State()
@@ -457,7 +468,12 @@ def test_host_selected_reset_moves_only_metadata_over_pipe(
     assert len(backend._requests) == 1  # type: ignore[attr-defined]
     command, payload, expect = backend._requests[0]  # type: ignore[attr-defined]
     assert command == "TENSOR_CUDA_RESET"
-    assert payload == {"count": 1, "sequence": 1}
+    assert payload == {
+        "count": 1,
+        "sequence": 1,
+        "has_randomization": False,
+        "randomization_terms": (),
+    }
 
 
 def test_host_selected_reset_row_closure_uses_one_bounded_sync(
@@ -1655,6 +1671,8 @@ def test_real_raw_cuda_arena_exports_stable_torch_views() -> None:
         arena.reset_env_indices.copy_(torch.tensor([1, 0], device=arena.qpos.device))
         arena.reset_qpos.fill_(8.0)
         arena.reset_qvel.fill_(-3.0)
+        arena.reset_kp.fill_(9.0)
+        arena.reset_kd.fill_(10.0)
         arena.body_state.fill_(11.0)
         arena.sensor_state.fill_(-4.0)
         torch.cuda.synchronize()
@@ -1663,13 +1681,15 @@ def test_real_raw_cuda_arena_exports_stable_torch_views() -> None:
         assert torch.equal(arena.reset_env_indices.cpu(), torch.tensor([1, 0], dtype=torch.int64))
         assert torch.equal(arena.reset_qpos.cpu(), torch.full((2, 3), 8.0))
         assert torch.equal(arena.reset_qvel.cpu(), torch.full((2, 2), -3.0))
+        assert torch.equal(arena.reset_kp.cpu(), torch.full((2, 1), 9.0))
+        assert torch.equal(arena.reset_kd.cpu(), torch.full((2, 1), 10.0))
         assert tuple(arena.body_state.shape) == (2, 2, 13)
         assert torch.equal(arena.body_state.cpu(), torch.full((2, 2, 13), 11.0))
         assert tuple(arena.sensor_state.shape) == (2, 2, 3)
         assert torch.equal(arena.sensor_state.cpu(), torch.full((2, 2, 3), -4.0))
         payload = arena.to_payload()
         assert payload["device_uuid"]
-        assert payload["schema_version"] == 3
+        assert payload["schema_version"] == 4
         assert payload["sensors"] == []
         assert "reset_event" in payload
         assert payload["layout"] == arena.layout.as_dict()

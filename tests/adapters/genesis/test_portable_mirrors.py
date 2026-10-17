@@ -362,8 +362,10 @@ def test_mirror_overlap_preserves_physical_trajectory(tmp_path: Path) -> None:
                     (EntityStatePatch("mirror", root_pose=overlap_target),),
                 )
             )
-            far_backend.step(np.zeros((2, far_backend.num_actuators), dtype=np.float32))
-            overlap_backend.step(np.zeros((2, overlap_backend.num_actuators), dtype=np.float32))
+            far_backend._host_step(np.zeros((2, far_backend.num_actuators), dtype=np.float32))
+            overlap_backend._host_step(
+                np.zeros((2, overlap_backend.num_actuators), dtype=np.float32)
+            )
             far_state = far_backend.get_entity_state("object")
             overlap_state = overlap_backend.get_entity_state("object")
             for field, far_values in far_state.items():

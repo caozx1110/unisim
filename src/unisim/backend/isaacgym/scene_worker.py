@@ -1017,11 +1017,11 @@ class SceneWorker:
         """Validate the wire property tables before any native mutation."""
         if "randomization" not in payload:
             return None
-        if self.pending_body_fk is not None:
-            raise ValueError("reset randomization requires a mapped scene")
         raw = payload["randomization"]
         if not isinstance(raw, dict) or not set(raw) <= self._RESET_RANDOMIZATION_TERMS:
             raise ValueError("randomization must contain only supported property terms")
+        if self.pending_body_fk is not None and set(raw) - {"kp", "kd"}:
+            raise ValueError("model-file reset randomization supports only kp and kd")
 
         def table(value: Any, name: str, shape: tuple[int, ...]) -> np.ndarray:
             if not isinstance(value, (list, np.ndarray)):
@@ -1183,7 +1183,7 @@ class SceneWorker:
                             prop.inertia.y = api.Vec3(*[float(v) for v in expected[:, 1]])
                             prop.inertia.z = api.Vec3(*[float(v) for v in expected[:, 2]])
                     gym.set_actor_rigid_body_properties(env_handle, actor, body_props)
-                geom_count = len(entity.geoms)
+                geom_count = len(getattr(entity, "geoms", ()))
                 if geom_friction is not None and geom_count:
                     if native_bodies is None:
                         native_bodies = self._native_body_names(env_handle, actor)
@@ -1364,7 +1364,7 @@ class SceneWorker:
                             @ axes
                         )
                 expected["body_inertia"] = (inertias, 5e-4, 1e-7)
-            geom_count = len(entity.geoms)
+            geom_count = len(getattr(entity, "geoms", ()))
             if "geom_friction" in randomization and geom_count:
                 friction = np.asarray(previous["geom_friction"], dtype=np.float64).copy()
                 friction[envs] = randomization["geom_friction"][

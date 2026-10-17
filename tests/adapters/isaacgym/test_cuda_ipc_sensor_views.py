@@ -109,6 +109,22 @@ def test_sensor_views_are_available_after_reset_without_a_readiness_step() -> No
     assert waits == [321] * 2
 
 
+def test_derived_sensor_views_are_served_by_the_backend_projection() -> None:
+    plan, waits = _plan()
+    derived = object()
+    requests: list[tuple[str, IsaacGymCudaIpcPlan]] = []
+
+    def project(name: str, host: IsaacGymCudaIpcPlan) -> object:
+        requests.append((name, host))
+        return derived if name == "torso_upvector" else None
+
+    plan.backend = SimpleNamespace(_cuda_derived_sensor_view=project)
+
+    assert plan.get_sensor_view("torso_upvector") is derived
+    assert requests == [("torso_upvector", plan)]
+    assert waits == []
+
+
 def test_duplicate_unqualified_body_names_fail_closed() -> None:
     entity_scene = SimpleNamespace(
         layout=SimpleNamespace(

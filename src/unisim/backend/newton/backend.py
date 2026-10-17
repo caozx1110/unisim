@@ -42,9 +42,12 @@ from unisim.backend.playback_common import (
     validate_offline_visual_model,
 )
 from unisim.dr.types import (
+    RESET_TERM_KD,
+    RESET_TERM_KP,
     DomainRandomizationCapabilities,
     ResetRandomizationPayload,
     TensorResetRandomizationPayload,
+    _validate_reset_term,
 )
 from unisim.entities import SceneResetRequest
 from unisim.entity_state import (
@@ -1380,6 +1383,15 @@ class NewtonBackend(SimBackend):
             sensor_views=True,
             stepping=True,
             selected_reset=not self._portable_mode,
+            reset_randomization=not self._portable_mode,
+            device_reset_randomization=not self._portable_mode,
+            packed_reset=not self._portable_mode,
+            packed_reset_fields=(
+                frozenset({RESET_TERM_KP, RESET_TERM_KD})
+                if not self._portable_mode
+                else frozenset()
+            ),
+            mask_selected_reset=not self._portable_mode,
             process_topology=TensorProcessTopology.IN_PROCESS,
             data_plane=TensorDataPlane.DIRECT,
             stream_event_ownership=(
@@ -1734,6 +1746,67 @@ class NewtonBackend(SimBackend):
         physics_ms = (time.perf_counter() - started) * 1000.0
         return {"timing": {"tensor_physics_ms": physics_ms, "tensor_host_cache_refresh_ms": 0.0}}
 
+    def _validate_tensor_reset_payload(
+        self,
+        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None,
+        *,
+        row_count: int,
+    ) -> TensorResetRandomizationPayload | None:
+        """Validate selected-row or full-width device PD gain tables."""
+
+        if randomization is None or randomization.is_empty():
+            return None
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "newton tensor reset randomization requires a TensorResetRandomizationPayload"
+            )
+        supported = {RESET_TERM_KP, RESET_TERM_KD}
+        unsupported = set(randomization.requested_terms()) - supported
+        if unsupported:
+            raise NotImplementedError(
+                "newton tensor reset randomization does not support terms: "
+                + ", ".join(sorted(unsupported))
+            )
+        import torch
+
+        for term in supported:
+            value = getattr(randomization, term)
+            if value is None:
+                continue
+            expected = (row_count, self.num_actuators)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"newton tensor reset {term} must be a torch.Tensor")
+            if tuple(value.shape) != expected:
+                raise ValueError(
+                    f"newton tensor reset {term} must have shape {expected}, "
+                    f"got {tuple(value.shape)}"
+                )
+            if value.dtype != torch.float32 or not bool(value.is_contiguous()):
+                raise TypeError(f"newton tensor reset {term} must be contiguous float32")
+            self._tensor_device(value.device)
+            if not bool(torch.isfinite(value).all().item()):
+                raise ValueError(f"newton tensor reset {term} values must be finite")
+            if bool((value < 0.0).any().item()):
+                raise ValueError(f"newton tensor reset {term} values must be nonnegative")
+        return randomization
+
+    def _apply_tensor_reset_randomization(
+        self,
+        rows: Any,
+        randomization: TensorResetRandomizationPayload,
+    ) -> None:
+        """Write selected MuJoCo-family PD gains into Newton's device model."""
+
+        warp = self._deps.warp
+        gainprm = warp.to_torch(self._solver.mjw_model.actuator_gainprm)
+        biasprm = warp.to_torch(self._solver.mjw_model.actuator_biasprm)
+        if randomization.kp is not None:
+            gainprm[rows, :, 0] = randomization.kp
+            biasprm[rows, :, 1] = -randomization.kp
+        if randomization.kd is not None:
+            biasprm[rows, :, 2] = -randomization.kd
+        warp.synchronize_device(self._device)
+
     def set_state_tensor(
         self,
         env_indices: Any,
@@ -1749,8 +1822,6 @@ class NewtonBackend(SimBackend):
             raise NotImplementedError(
                 "Newton tensor selected reset supports the single-articulation profile only"
             )
-        if randomization is not None and not randomization.is_empty():
-            raise NotImplementedError("Newton tensor reset does not support randomization")
         values = {"env_indices": env_indices, "qpos": qpos, "qvel": qvel}
         for name, value in values.items():
             if not isinstance(value, torch.Tensor):
@@ -1776,10 +1847,14 @@ class NewtonBackend(SimBackend):
         if count == 0:
             return {"timing": {"tensor_reset_ms": 0.0}}
 
+        tensor_randomization = self._validate_tensor_reset_payload(randomization, row_count=count)
+
         self._tensor_ensure_state()
         assert self._tensor_qpos is not None
         assert self._tensor_qvel is not None
         started = time.perf_counter()
+        if tensor_randomization is not None:
+            self._apply_tensor_reset_randomization(env_indices, tensor_randomization)
         full_qpos, full_qvel, raw_qpos, raw_qvel, mask, solver_mask = self._prepare_tensor_reset(
             env_indices, qpos, qvel
         )
@@ -1804,6 +1879,77 @@ class NewtonBackend(SimBackend):
                 "tensor_host_cache_refresh_ms": 0.0,
             }
         }
+
+    def set_state_tensor_mask(
+        self,
+        reset_mask: Any,
+        qpos: Any,
+        qvel: Any,
+        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        *,
+        full_refresh: bool = False,
+    ) -> dict | None:
+        """Commit full-width state selected by a backend-owned boolean mask."""
+
+        import torch
+
+        if full_refresh:
+            raise NotImplementedError("newton tensor mask reset is a selected-row boundary")
+        self._require_tensor_lifecycle("mask reset")
+        self._require_state("tensor mask reset")
+        if self._portable_mode:
+            raise NotImplementedError(
+                "newton tensor mask reset supports the single-articulation profile only"
+            )
+        values = {"reset_mask": reset_mask, "qpos": qpos, "qvel": qvel}
+        for name, value in values.items():
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"newton tensor mask reset {name} must be a torch.Tensor")
+            if not bool(value.is_contiguous()):
+                raise ValueError(f"newton tensor mask reset {name} must be contiguous")
+        if reset_mask.ndim != 1 or reset_mask.dtype != torch.bool:
+            raise TypeError("newton tensor mask reset_mask must be a contiguous 1-D bool tensor")
+        if tuple(reset_mask.shape) != (self._num_envs,):
+            raise ValueError(f"newton tensor mask reset_mask must have shape {(self._num_envs,)}")
+        if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
+            raise TypeError("newton tensor mask reset qpos and qvel must be float32")
+        expected_qpos = (self._num_envs, self._metadata.nq)
+        expected_qvel = (self._num_envs, self._metadata.nv)
+        if tuple(qpos.shape) != expected_qpos:
+            raise ValueError(f"newton tensor mask reset qpos must have shape {expected_qpos}")
+        if tuple(qvel.shape) != expected_qvel:
+            raise ValueError(f"newton tensor mask reset qvel must have shape {expected_qvel}")
+        device = self._tensor_device(reset_mask.device)
+        if qpos.device != device or qvel.device != device:
+            raise ValueError("newton tensor mask reset tensors must share one device")
+        tensor_randomization = self._validate_tensor_reset_payload(
+            randomization, row_count=self._num_envs
+        )
+        if not bool(reset_mask.any().item()):
+            return {"timing": {"set_state_tensor_mask_ms": 0.0}}
+
+        rows = reset_mask.nonzero(as_tuple=False).flatten()
+        selected_payload: TensorResetRandomizationPayload | None = None
+        if tensor_randomization is not None:
+            selected_values = {
+                term: getattr(tensor_randomization, term).index_select(0, rows)
+                for term in (RESET_TERM_KP, RESET_TERM_KD)
+                if getattr(tensor_randomization, term) is not None
+            }
+            selected_payload = TensorResetRandomizationPayload(**selected_values)
+        return self.set_state_tensor(
+            rows,
+            qpos.index_select(0, rows).contiguous(),
+            qvel.index_select(0, rows).contiguous(),
+            selected_payload,
+        )
+
+    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+        """Begin a device-resident packed reset transaction."""
+
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
 
     def _validate_torch_reset_rows(self, env_indices: Any) -> None:
         """Validate selected rows with one bounded device-to-host reduction."""
@@ -2133,7 +2279,19 @@ class NewtonBackend(SimBackend):
             raise
 
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
-        return DomainRandomizationCapabilities()
+        if self._portable_mode:
+            return DomainRandomizationCapabilities()
+        return DomainRandomizationCapabilities(
+            supported_reset_terms=frozenset({RESET_TERM_KP, RESET_TERM_KD})
+        )
+
+    def get_reset_term_default(self, term: str) -> np.ndarray:
+        _validate_reset_term(term)
+        if term == RESET_TERM_KP:
+            return self._metadata.actuator_kp.copy()
+        if term == RESET_TERM_KD:
+            return self._metadata.actuator_kd.copy()
+        raise NotImplementedError(f"NewtonBackend does not support reset term {term!r}")
 
     def get_play_capabilities(self) -> BackendPlayCapabilities:
         native = newton_render_dependencies_available()

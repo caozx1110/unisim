@@ -1,4 +1,5 @@
 """MuJoCo-owned playback execution helpers."""
+
 from __future__ import annotations
 
 import tempfile

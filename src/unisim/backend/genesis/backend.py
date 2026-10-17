@@ -1963,6 +1963,11 @@ class GenesisBackend(SimBackend):
             sensor_views=True,
             stepping=True,
             selected_reset=True,
+            reset_randomization=True,
+            device_reset_randomization=True,
+            packed_reset=True,
+            packed_reset_fields=frozenset({RESET_TERM_BODY_MASS, RESET_TERM_KP, RESET_TERM_KD}),
+            mask_selected_reset=True,
             process_topology=TensorProcessTopology.IN_PROCESS,
             data_plane=TensorDataPlane.DIRECT,
             stream_event_ownership=(
@@ -1974,6 +1979,69 @@ class GenesisBackend(SimBackend):
 
     def get_public_state_widths(self) -> PublicStateWidths:
         return PublicStateWidths(nq=self._metadata.nq, nv=self._metadata.nv)
+
+    def _validate_tensor_reset_payload(
+        self,
+        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None,
+        *,
+        row_count: int,
+    ) -> TensorResetRandomizationPayload | None:
+        """Validate a selected-row or full-width device reset payload."""
+
+        if randomization is None or randomization.is_empty():
+            return None
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "genesis tensor reset randomization requires a TensorResetRandomizationPayload"
+            )
+        allowed = {RESET_TERM_BODY_MASS, RESET_TERM_KP, RESET_TERM_KD}
+        unsupported = set(randomization.requested_terms()) - allowed
+        if unsupported:
+            raise NotImplementedError(
+                "genesis tensor reset randomization does not support terms: "
+                + ", ".join(sorted(unsupported))
+            )
+        widths = {
+            RESET_TERM_BODY_MASS: self._metadata.nbody,
+            RESET_TERM_KP: self.num_actuators,
+            RESET_TERM_KD: self.num_actuators,
+        }
+        for term, width in widths.items():
+            value = getattr(randomization, term)
+            if value is None:
+                continue
+            expected = (row_count, width)
+            operand = self._validate_torch_operand(term, value, shape=expected)
+            if not bool(self._torch.isfinite(operand).all().item()):
+                raise ValueError(f"genesis tensor reset {term} values must be finite")
+            if bool((operand < 0.0).any().item()):
+                raise ValueError(f"genesis tensor reset {term} values must be nonnegative")
+        return randomization
+
+    def _apply_tensor_reset_randomization(
+        self,
+        env_indices: Any,
+        randomization: TensorResetRandomizationPayload,
+    ) -> None:
+        """Apply the declared final-value model fields on the CUDA device."""
+
+        if randomization.body_mass is not None:
+            self._entity.set_links_inertial_mass(
+                randomization.body_mass,
+                envs_idx=env_indices,
+            )
+        if randomization.kp is not None:
+            self._entity.set_dofs_kp(
+                randomization.kp,
+                dofs_idx_local=self._actuated_dofs,
+                envs_idx=env_indices,
+            )
+        if randomization.kd is not None:
+            self._entity.set_dofs_kv(
+                randomization.kd,
+                dofs_idx_local=self._actuated_dofs,
+                envs_idx=env_indices,
+            )
 
     def get_sensor_names(self) -> tuple[str, ...]:
         return tuple(sorted(self._sensor_slots))
@@ -2489,8 +2557,6 @@ class GenesisBackend(SimBackend):
             raise NotImplementedError(
                 "genesis tensor selected reset supports the single-articulation profile only"
             )
-        if randomization is not None and not randomization.is_empty():
-            raise NotImplementedError("genesis tensor reset does not support randomization")
         if not isinstance(env_indices, self._torch.Tensor):
             raise TypeError("genesis tensor env_indices must be a torch.Tensor")
         rows = self._validate_torch_operand(
@@ -2505,6 +2571,9 @@ class GenesisBackend(SimBackend):
         )
         qvel_tensor = self._validate_torch_operand(
             "qvel", qvel, shape=(int(rows.shape[0]), self._metadata.nv)
+        )
+        tensor_randomization = self._validate_tensor_reset_payload(
+            randomization, row_count=int(rows.shape[0])
         )
         if int(rows.shape[0]) == 0:
             return {"timing": {"tensor_reset_ms": 0.0}}
@@ -2527,12 +2596,92 @@ class GenesisBackend(SimBackend):
                 rows,
                 self._tensor_time_zero.expand(rows.shape[0]),
             )
+            if tensor_randomization is not None:
+                self._apply_tensor_reset_randomization(rows, tensor_randomization)
             self._tensor_refresh_state(force=True)
         except BaseException:
             self._entity_faulted = True
             raise
         self._host_cache_stale = True
         return {"timing": {"tensor_reset_ms": (time.perf_counter() - started) * 1000.0}}
+
+    def set_state_tensor_mask(
+        self,
+        reset_mask: Any,
+        qpos: Any,
+        qvel: Any,
+        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        *,
+        full_refresh: bool = False,
+    ) -> dict[str, dict[str, float]]:
+        """Commit full-width CUDA state selected by a persistent bool mask.
+
+        Genesis' public state setters consume a boolean environment mask
+        directly, so the fixed-width reset boundary does not compact selected
+        rows on the host or device.
+        """
+        if full_refresh:
+            raise NotImplementedError("genesis tensor mask reset is a selected-row boundary")
+        self._tensor_device()
+        self._require_state("tensor reset")
+        if self._portable_mode:
+            raise NotImplementedError(
+                "genesis tensor mask reset supports the single-articulation profile only"
+            )
+        mask_tensor = self._validate_torch_operand(
+            "reset_mask", reset_mask, shape=(self._num_envs,), dtype_name="torch.bool"
+        )
+        qpos_tensor = self._validate_torch_operand(
+            "qpos", qpos, shape=(self._num_envs, self._metadata.nq)
+        )
+        qvel_tensor = self._validate_torch_operand(
+            "qvel", qvel, shape=(self._num_envs, self._metadata.nv)
+        )
+        full_randomization = self._validate_tensor_reset_payload(
+            randomization, row_count=self._num_envs
+        )
+        if not bool(mask_tensor.any().item()):
+            return {"timing": {"tensor_reset_ms": 0.0}}
+
+        tensor_time = self._tensor_ensure_time()
+        current_qpos = self._native_state_tensor("qpos", self._entity.get_qpos(), self._metadata.nq)
+        current_qvel = self._native_state_tensor(
+            "qvel", self._entity.get_dofs_velocity(), self._metadata.nv
+        )
+        torch_module = self._torch
+        merged_qpos = torch_module.where(mask_tensor[:, None], qpos_tensor, current_qpos)
+        merged_qvel = torch_module.where(mask_tensor[:, None], qvel_tensor, current_qvel)
+        selected_rows = mask_tensor.nonzero(as_tuple=False).flatten()
+        selected_randomization: TensorResetRandomizationPayload | None = None
+        if full_randomization is not None:
+            selected_values = {
+                term: getattr(full_randomization, term).index_select(0, selected_rows)
+                for term in (RESET_TERM_BODY_MASS, RESET_TERM_KP, RESET_TERM_KD)
+                if getattr(full_randomization, term) is not None
+            }
+            selected_randomization = TensorResetRandomizationPayload(**selected_values)
+
+        started = time.perf_counter()
+        try:
+            self._entity.set_qpos(merged_qpos, envs_idx=mask_tensor, zero_velocity=False)
+            self._entity.set_dofs_velocity(merged_qvel, envs_idx=mask_tensor)
+            assert self._tensor_time_zero is not None
+            tensor_time.masked_fill_(mask_tensor, self._tensor_time_zero)
+            if selected_randomization is not None:
+                self._apply_tensor_reset_randomization(selected_rows, selected_randomization)
+            self._tensor_refresh_state(force=True)
+        except BaseException:
+            self._entity_faulted = True
+            raise
+        self._host_cache_stale = True
+        return {"timing": {"tensor_reset_ms": (time.perf_counter() - started) * 1000.0}}
+
+    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+        """Begin a device-resident packed reset transaction."""
+
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
 
     # ------------------------------------------------------------------ #
     # SimBackend properties and cold metadata                             #
@@ -3078,9 +3227,6 @@ class GenesisBackend(SimBackend):
     def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
         """Reset public state, including state-only visual mirror roots."""
 
-        super()._host_reset(env_ids)
-        if not self._portable_mode:
-            return
         rows = (
             np.arange(self._num_envs, dtype=np.intp)
             if env_ids is None
@@ -3088,6 +3234,15 @@ class GenesisBackend(SimBackend):
         )
         if rows.size == 0:
             return
+        qpos = np.broadcast_to(
+            np.asarray(self.get_default_qpos(), dtype=np.float32),
+            (rows.size, self._metadata.nq),
+        )
+        qvel = np.broadcast_to(
+            np.asarray(self.get_init_qvel(), dtype=np.float32),
+            (rows.size, self._metadata.nv),
+        )
+        self._host_set_state(rows, qpos.copy(), qvel.copy())
         from unisim.entities import EntityStatePatch, SceneResetRequest
 
         patches = tuple(

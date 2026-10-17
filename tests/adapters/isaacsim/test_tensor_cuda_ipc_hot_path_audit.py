@@ -120,6 +120,14 @@ def test_isaacsim_host_and_worker_hot_paths_have_no_hidden_host_detours() -> Non
     assert _attribute_count(worker_reset, "tolist") == 0
 
 
+def test_isaacsim_reset_property_bridge_is_explicit_and_reset_only() -> None:
+    bridge = _method(_WORKER_SOURCE, "SceneWorkerContext", "_apply_cuda_reset_properties")
+    assert "cpu" in _attribute_names(bridge)
+
+    reset = _method(_WORKER_SOURCE, "SceneWorkerContext", "reset_cuda_ipc")
+    assert "cpu" not in _attribute_names(reset)
+
+
 def test_isaacsim_tensor_commands_are_metadata_only_and_bounded() -> None:
     step = _method(_BACKEND_SOURCE, "IsaacSimBackend", "step_tensor")
     reset = _method(_BACKEND_SOURCE, "IsaacSimBackend", "set_state_tensor")
@@ -134,4 +142,4 @@ def test_isaacsim_tensor_commands_are_metadata_only_and_bounded() -> None:
     step_payload = _request_payload_keys(step)
     reset_payload = _request_payload_keys(reset)
     assert step_payload == {"nsteps"}
-    assert reset_payload == {"count", "sequence"}
+    assert reset_payload == {"count", "sequence", "has_randomization", "randomization_terms"}

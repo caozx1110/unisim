@@ -263,8 +263,8 @@ def test_selected_read_does_not_compute_unselected_rows(
         raise AssertionError("selected read computed full-batch public state")
 
     with monkeypatch.context() as patch:
-        patch.setattr(backend, "get_body_state_w", reject_full_body_state)
-        patch.setattr(backend, "get_state", reject_full_state)
+        patch.setattr(backend, "_host_get_body_state_w", reject_full_body_state)
+        patch.setattr(backend, "_host_get_state", reject_full_state)
         selected = plan.read_selected_state_sensors()
 
     expected = original_state(("qpos", "qvel"))
@@ -783,7 +783,7 @@ def test_packed_reads_do_not_reread_sensor_layout(
         calls.append(name)
         return original_get_sensor_data(name)
 
-    monkeypatch.setattr(backend, "get_sensor_data", tracking_get_sensor_data)
+    monkeypatch.setattr(backend, "_host_read_sensor", tracking_get_sensor_data)
     plan.write_control(torch.zeros((3, 1), dtype=torch.float32))
     plan.step()
     for _ in range(3):
@@ -818,7 +818,7 @@ def test_compile_fails_closed_on_sensor_layout_drift(
             return values.reshape(backend.num_envs, -1)[:, :-1]
         return values
 
-    monkeypatch.setattr(backend, "get_sensor_data", drifting_get_sensor_data)
+    monkeypatch.setattr(backend, "_host_read_sensor", drifting_get_sensor_data)
     with pytest.raises(RuntimeError, match="layout changed after compilation"):
         backend.compile_host_bridge_io(
             TensorIOSpec(

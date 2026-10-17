@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Extended the packed reset transaction to the remaining production tensor backends (UniLab #2387). Genesis commits selected-row `body_mass`, `kp`, and `kd`; Newton commits `kp` and `kd` through MuJoCo-family actuator arrays; and IsaacGym/IsaacSim commit selected-row `kp`/`kd` through CUDA IPC arenas followed by one explicitly named reset-only worker property bridge. All four declare fixed-width mask reset and authoritative post-reset publication. The Isaac bridge is the only host detour, is named `_apply_cuda_reset_properties`, and is never reachable from step, state, control, or sensor hot paths.
+
 ## 1.7.24 - 2026-10-16
 
 - Added the packed reset transaction to `MotrixBackend` (#2364). Motrix now declares runtime-negotiated device reset randomization, `packed_reset`, authoritative selected-reset publication, and fixed-width mask reset support; `begin_packed_reset()` reuses the shared Torch composer with committed model-field baselines. Selected-row and mask commits materialize `TensorResetRandomizationPayload` inside the explicit CPU host boundary, preserving public state layouts, false rows, and native override semantics. Whole-MJCF packed reset promotion is limited to floating-base scenes whose public virtual-root layout is natively committable; portable scenes use their composed public layout, while fixed-base whole-MJCF packed reset, fixed variants, host callbacks, and mocap writes remain fail-closed.

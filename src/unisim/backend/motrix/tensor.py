@@ -578,8 +578,7 @@ def motrix_set_state_tensor(
             **{
                 field: np.ascontiguousarray(np.asarray(value)[order])
                 for field, value in (
-                    (name, getattr(randomization, name))
-                    for name in randomization.requested_terms()
+                    (name, getattr(randomization, name)) for name in randomization.requested_terms()
                 )
             }
         )
@@ -622,13 +621,11 @@ def motrix_set_state_tensor_mask(
     widths = _field_widths(backend)
     if tuple(qpos.shape) != (backend.num_envs, widths["qpos"]):
         raise ValueError(
-            f"MotrixSim tensor mask reset qpos must have shape "
-            f"{(backend.num_envs, widths['qpos'])}"
+            f"MotrixSim tensor mask reset qpos must have shape {(backend.num_envs, widths['qpos'])}"
         )
     if tuple(qvel.shape) != (backend.num_envs, widths["qvel"]):
         raise ValueError(
-            f"MotrixSim tensor mask reset qvel must have shape "
-            f"{(backend.num_envs, widths['qvel'])}"
+            f"MotrixSim tensor mask reset qvel must have shape {(backend.num_envs, widths['qvel'])}"
         )
     if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
         raise TypeError("MotrixSim tensor mask reset qpos and qvel must be float32")

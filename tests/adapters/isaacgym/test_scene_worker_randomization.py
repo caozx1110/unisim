@@ -259,8 +259,8 @@ def test_model_file_worker_rejects_randomization(tmp_path) -> None:
     worker.pending_body_fk = {}
     pose = np.array([[0, 0, 2, 1, 0, 0, 0.0]])
     payload = _stage(worker, SceneResetRequest((4,), (EntityStatePatch("object", root_pose=pose),)))
-    payload["randomization"] = {"kp": [[30.0]]}
-    with pytest.raises(ValueError, match="mapped scene"):
+    payload["randomization"] = {"body_mass": [[1.0, 1.0]]}
+    with pytest.raises(ValueError, match="model-file reset randomization supports only kp and kd"):
         worker.reset(payload)
     assert not worker.faulted
 

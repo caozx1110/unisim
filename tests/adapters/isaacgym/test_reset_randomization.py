@@ -148,7 +148,7 @@ def test_model_file_capabilities_stay_fail_closed() -> None:
     backend._entity_scene = None
     backend._staged_body_wrench = None
     capabilities = backend.get_dr_capabilities()
-    assert not capabilities.supported_reset_terms
+    assert capabilities.supported_reset_terms == {RESET_TERM_KP, RESET_TERM_KD}
     assert not capabilities.supported_interval_terms
     assert not capabilities.supports_fixed_variants
 

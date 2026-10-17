@@ -135,6 +135,11 @@ def test_cuda_ipc_worker_reset_failure_marks_scene_faulted() -> None:
     runtime.reset_indices = torch.zeros((1,), dtype=torch.int64)
     runtime.reset_qpos = torch.zeros((1, 1), dtype=torch.float32)
     runtime.reset_qvel = torch.zeros((1, 1), dtype=torch.float32)
+    runtime.qpos = torch.zeros((1, 1), dtype=torch.float32)
+    runtime.qvel = torch.zeros((1, 1), dtype=torch.float32)
+    runtime.body_state = torch.zeros((1, 0, 13), dtype=torch.float32)
+    runtime.sensor_state = torch.zeros((1, 2, 3), dtype=torch.float32)
+    runtime.arena = SimpleNamespace(num_envs=1)
     runtime.root_projections = []
     runtime.joint_projections = [
         {
@@ -153,6 +158,7 @@ def test_cuda_ipc_worker_reset_failure_marks_scene_faulted() -> None:
     runtime.ctx = SimpleNamespace(
         torch=torch,
         device="cpu",
+        _dof_state=torch.zeros((1, 2), dtype=torch.float32),
         scene_worker=SimpleNamespace(**scene),
     )
     runtime.reset_event = SimpleNamespace(wait_stream=lambda stream: None)
@@ -163,10 +169,10 @@ def test_cuda_ipc_worker_reset_failure_marks_scene_faulted() -> None:
     runtime._submit_native_dofs = fail
     with pytest.raises(RuntimeError, match="native selected DOF-state setter failed"):
         runtime.set_state({"count": 1, "sequence": 1})
-    assert scene["faulted"] is True
+    assert runtime.ctx.scene_worker.faulted is True
     assert scene["pending_roots"] and scene["pending_dofs"]
     with pytest.raises(RuntimeError, match="IsaacGym scene is faulted"):
-        runtime.set_state({"count": 1, "sequence": 2})
+        runtime.set_state({"count": 1, "sequence": 1})
 
 
 def test_cuda_ipc_worker_step_failure_marks_scene_faulted() -> None:
@@ -194,7 +200,7 @@ def test_cuda_ipc_worker_step_failure_marks_scene_faulted() -> None:
 
     with pytest.raises(RuntimeError, match="native DOF position target setter failed"):
         runtime.step({"nsteps": 2})
-    assert scene["faulted"] is True
+    assert runtime.ctx.scene_worker.faulted is True
     assert scene["pending_roots"] and scene["pending_dofs"]
     with pytest.raises(RuntimeError, match="IsaacGym scene is faulted"):
         runtime.step({"nsteps": 1})

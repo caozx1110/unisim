@@ -19,6 +19,7 @@ import numpy as np
 from unisim.backend.base import (
     BackendPlayCapabilities,
     PhysicsStateLayout,
+    PublicStateWidths,
     SelectedResetPublication,
     TensorDataPlane,
     TensorExecution,
@@ -54,6 +55,7 @@ from unisim.dr.types import (
     FixedVariantLayout,
     IntervalRandomizationPlan,
     ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
     _validate_reset_term,
 )
 from unisim.entities import SceneResetRequest
@@ -117,6 +119,12 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         if not math.isfinite(float(env_spacing)) or env_spacing <= 0:
             raise ValueError(f"env_spacing must be positive and finite, got {env_spacing!r}")
         self._env_spacing = float(env_spacing)
+        requested_device_id = kwargs.get("device_id", 0)
+        if isinstance(requested_device_id, bool) or not isinstance(requested_device_id, int):
+            raise TypeError(f"device_id must be an integer or None, got {requested_device_id!r}")
+        if requested_device_id < -1:
+            raise ValueError(f"device_id must be -1 or >= 0, got {requested_device_id!r}")
+        self._requested_device_id = requested_device_id
         super().__init__(scene, num_envs, sim_dt, **kwargs)
         self._staged_body_wrench = (
             None
@@ -374,9 +382,9 @@ class IsaacGymBackend(MjcfSubprocessBackend):
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
         """Advertise mapped-scene reset DR and interval wrenches.
 
-        The model-file raw-MJCF path keeps the fail-closed empty declaration; mapped
-        entity scenes declare the reset terms the worker writes and reads back
-        natively.  Per-env ``gravity``/``dof_damping`` have no PhysX channel
+        The model-file raw-MJCF path declares only the selected-reset PD-gain
+        bridge; mapped entity scenes declare the reset terms the worker writes
+        and reads back natively.  Per-env ``gravity``/``dof_damping`` have no PhysX channel
         (sim-wide parameter, drive-only joint damping) and the multi-root scene
         has no single ``base`` target, so those terms stay unsupported.
         """
@@ -392,7 +400,10 @@ class IsaacGymBackend(MjcfSubprocessBackend):
             else {}
         )
         if self._entity_scene is None:
-            return DomainRandomizationCapabilities(**variant_kwargs)
+            return DomainRandomizationCapabilities(
+                supported_reset_terms=frozenset({RESET_TERM_KP, RESET_TERM_KD}),
+                **variant_kwargs,
+            )
         return DomainRandomizationCapabilities(
             supported_reset_terms=_MAPPED_RESET_TERMS,
             supported_interval_terms=_MAPPED_INTERVAL_TERMS,
@@ -541,7 +552,14 @@ class IsaacGymBackend(MjcfSubprocessBackend):
     def get_reset_term_default(self, term: str) -> np.ndarray:
         """Return per-environment variant-assigned mapped reset defaults."""
         if self._entity_scene is None:
-            return super().get_reset_term_default(term)
+            _validate_reset_term(term)
+            if not self.get_dr_capabilities().supports_reset_term(term):
+                raise NotImplementedError(f"IsaacGymBackend does not support reset term {term!r}")
+            kp, kd = self.get_actuator_gains()
+            value = kp if term == RESET_TERM_KP else kd
+            result = np.array(value, dtype=np.float32, copy=True)
+            result.setflags(write=False)
+            return result
         _validate_reset_term(term)
         if not self.get_dr_capabilities().supports_reset_term(term):
             raise NotImplementedError(f"IsaacGymBackend does not support reset term {term!r}")
@@ -978,7 +996,13 @@ class IsaacGymBackend(MjcfSubprocessBackend):
     # ------------------------------------------------------------------ #
     def tensor_execution(self) -> TensorExecution:
         info = self._model_info
-        if info is None or not bool(getattr(info, "use_gpu_pipeline", False)):
+        if info is None:
+            return (
+                TensorExecution.DEVICE_RESIDENT
+                if self._requested_device_id >= 0
+                else TensorExecution.UNSUPPORTED
+            )
+        if not bool(getattr(info, "use_gpu_pipeline", False)):
             return TensorExecution.UNSUPPORTED
         return TensorExecution.DEVICE_RESIDENT
 
@@ -992,7 +1016,6 @@ class IsaacGymBackend(MjcfSubprocessBackend):
             sensor_views=True,
             stepping=True,
             selected_reset=True,
-            reset_randomization=False,
             fixed_variants=False,
             host_pre_step_control=False,
             packed_host_bridge=False,
@@ -1002,6 +1025,11 @@ class IsaacGymBackend(MjcfSubprocessBackend):
                 "collector records control/reset-ready and worker records state-ready; "
                 "caller owns Torch stream"
             ),
+            reset_randomization=True,
+            device_reset_randomization=True,
+            packed_reset=True,
+            packed_reset_fields=frozenset({RESET_TERM_KP, RESET_TERM_KD}),
+            mask_selected_reset=True,
             torch_devices=("cuda",),
             selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
             requires_post_construction_publication_barrier=True,
@@ -1037,14 +1065,103 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         views = plan.get_state_views(requested)
         return {name: views[name] for name in requested}
 
+    def get_public_state_widths(self) -> PublicStateWidths:
+        """Return the synthetic raw-MJCF public tensor state widths."""
+
+        layout = self.get_physics_state_layout()
+        return PublicStateWidths(nq=int(layout.nq), nv=int(layout.nv))
+
+    def _cuda_derived_sensor_specs(self) -> dict[str, tuple[Any, int]]:
+        """Return frame sensors projectable from public CUDA body state."""
+
+        return {
+            name: mapped
+            for name, mapped in getattr(self, "_sensor_map", {}).items()
+            if mapped[0].kind in ("framepos", "framequat", "framezaxis")
+        }
+
+    @staticmethod
+    def _cuda_quat_rotate(torch: Any, quat_wxyz: Any, vectors: Any) -> Any:
+        vector = quat_wxyz[..., 1:4]
+        cross = torch.cross(vector, vectors, dim=-1)
+        return (
+            vectors + quat_wxyz[..., 0:1] * (2.0 * cross) + 2.0 * torch.cross(vector, cross, dim=-1)
+        )
+
+    @staticmethod
+    def _cuda_quat_mul(torch: Any, left_wxyz: Any, right_wxyz: Any) -> Any:
+        left_vector = left_wxyz[..., 1:4]
+        right_vector = right_wxyz[..., 1:4]
+        vector = (
+            left_wxyz[..., 0:1] * right_vector
+            + right_wxyz[..., 0:1] * left_vector
+            + torch.cross(left_vector, right_vector, dim=-1)
+        )
+        scalar = left_wxyz[..., 0:1] * right_wxyz[..., 0:1] - torch.sum(
+            left_vector * right_vector, dim=-1, keepdim=True
+        )
+        return torch.cat((scalar, vector), dim=-1)
+
+    def _cuda_derived_sensor_view(self, name: str, plan: Any) -> Any:
+        candidates = [
+            (qualified, mapped)
+            for qualified, mapped in self._cuda_derived_sensor_specs().items()
+            if qualified == name or qualified.endswith(f"/{name}")
+        ]
+        if len(candidates) != 1:
+            return None
+        _, (spec, _body_id) = candidates[0]
+        import torch
+
+        body_name = spec.body_name
+        body_pos = plan.get_sensor_view(f"track_pos_w_{body_name}")
+        body_quat = plan.get_sensor_view(f"track_quat_w_{body_name}")
+        if spec.kind == "framepos":
+            local_pos = torch.as_tensor(
+                spec.local_pos, dtype=torch.float32, device=body_pos.device
+            ).expand(body_pos.shape[0], 3)
+            return body_pos + self._cuda_quat_rotate(torch, body_quat, local_pos)
+        local_quat = torch.as_tensor(
+            spec.local_quat, dtype=torch.float32, device=body_quat.device
+        ).expand(body_quat.shape[0], 4)
+        world_quat = self._cuda_quat_mul(torch, body_quat, local_quat)
+        if spec.kind == "framequat":
+            return world_quat
+        world_z = torch.zeros_like(body_pos)
+        world_z[:, 2] = 1.0
+        return self._cuda_quat_rotate(torch, world_quat, world_z)
+
+    def _bind_sensor_data_reader(self, names: tuple[str, ...]) -> Callable[[], np.ndarray]:
+        """Bind the cold NumPy shape contract over CUDA sensor views."""
+        plan = getattr(self, "_cuda_ipc_plan", None)
+        if plan is None:
+            plan = self.compile_cuda_ipc_io(None)
+
+        def read() -> np.ndarray:
+            return np.concatenate(
+                [plan.get_sensor_view(name).detach().cpu().numpy() for name in names],
+                axis=1,
+            )
+
+        return read
+
     def get_sensor_view(self, name: str, device: Any | None = None) -> Any:
-        if name not in ("pelvis_local_linvel", "torso_gyro") and not any(
-            name.startswith(prefix)
-            for prefix in (
-                "track_pos_w_",
-                "track_quat_w_",
-                "track_linvel_w_",
-                "track_angvel_w_",
+        derived_candidates = [
+            qualified
+            for qualified in self._cuda_derived_sensor_specs()
+            if qualified == name or qualified.endswith(f"/{name}")
+        ]
+        if (
+            name not in ("pelvis_local_linvel", "torso_gyro")
+            and len(derived_candidates) != 1
+            and not any(
+                name.startswith(prefix)
+                for prefix in (
+                    "track_pos_w_",
+                    "track_quat_w_",
+                    "track_linvel_w_",
+                    "track_angvel_w_",
+                )
             )
         ):
             raise KeyError(f"unknown IsaacGym CUDA IPC tensor sensor {name!r}")
@@ -1058,6 +1175,9 @@ class IsaacGymBackend(MjcfSubprocessBackend):
                 current_device=plan.device_index,
                 label="IsaacGym CUDA IPC sensor views",
             )
+        derived = self._cuda_derived_sensor_view(name, plan)
+        if derived is not None:
+            return derived
         return plan.get_sensor_view(name)
 
     def step_tensor(self, ctrl: Any, nsteps: int = 1) -> dict[str, dict[str, float]]:
@@ -1066,6 +1186,54 @@ class IsaacGymBackend(MjcfSubprocessBackend):
             plan = self.compile_cuda_ipc_io(None)
         return plan.step_tensor(ctrl, nsteps)
 
+    def _cuda_tensor_reset_wire_payload(
+        self,
+        randomization: Any,
+        *,
+        row_count: int,
+        device: Any,
+    ) -> dict[str, Any] | None:
+        """Validate PD gains and cross the worker reset-property boundary."""
+
+        if randomization is None or randomization.is_empty():
+            return None
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "isaacgym CUDA IPC reset randomization requires a TensorResetRandomizationPayload"
+            )
+        supported = {RESET_TERM_KP, RESET_TERM_KD}
+        unsupported = set(randomization.requested_terms()) - supported
+        if unsupported:
+            raise NotImplementedError(
+                "isaacgym CUDA IPC reset randomization does not support terms: "
+                + ", ".join(sorted(unsupported))
+            )
+        import torch
+
+        wire: dict[str, Any] = {}
+        for term in supported:
+            value = getattr(randomization, term)
+            if value is None:
+                continue
+            expected = (row_count, self.num_actuators)
+            if not isinstance(value, torch.Tensor):
+                raise TypeError(f"isaacgym CUDA IPC reset {term} must be a torch.Tensor")
+            if value.dtype != torch.float32 or not bool(value.is_contiguous()):
+                raise TypeError(f"isaacgym CUDA IPC reset {term} must be contiguous float32")
+            if tuple(value.shape) != expected:
+                raise ValueError(
+                    f"isaacgym CUDA IPC reset {term} must have shape {expected}, "
+                    f"got {tuple(value.shape)}"
+                )
+            if value.device != torch.device(device):
+                raise ValueError(f"isaacgym CUDA IPC reset {term} device does not match arena")
+            if not bool(torch.isfinite(value).all().item()):
+                raise ValueError(f"isaacgym CUDA IPC reset {term} values must be finite")
+            if bool((value < 0.0).any().item()):
+                raise ValueError(f"isaacgym CUDA IPC reset {term} values must be nonnegative")
+            wire[term] = value
+        return wire or None
+
     def set_state_tensor(
         self,
         env_indices: Any,
@@ -1073,12 +1241,97 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         qvel: Any,
         randomization: Any | None = None,
     ) -> dict[str, dict[str, float]]:
-        if randomization is not None:
-            raise NotImplementedError("IsaacGym CUDA IPC reset randomization is not implemented")
+        if randomization is not None and not isinstance(
+            randomization, TensorResetRandomizationPayload
+        ):
+            raise TypeError(
+                "IsaacGym CUDA IPC reset randomization requires a TensorResetRandomizationPayload"
+            )
         plan = getattr(self, "_cuda_ipc_plan", None)
         if plan is None:
             plan = self.compile_cuda_ipc_io(None)
-        return plan.set_state_tensor(env_indices, qpos, qvel)
+        wire_randomization = (
+            None
+            if randomization is None
+            else self._cuda_tensor_reset_wire_payload(
+                randomization,
+                row_count=int(env_indices.shape[0]),
+                device=plan.device,
+            )
+        )
+        return plan.set_state_tensor(env_indices, qpos, qvel, wire_randomization)
+
+    def set_state_tensor_mask(
+        self,
+        reset_mask: Any,
+        qpos: Any,
+        qvel: Any,
+        randomization: Any | None = None,
+        *,
+        full_refresh: bool = False,
+    ) -> dict[str, dict[str, float]] | None:
+        """Commit full-width state through a backend-owned mask projection."""
+
+        import torch
+
+        if full_refresh:
+            raise NotImplementedError("isaacgym CUDA IPC mask reset is a selected-row boundary")
+        plan = getattr(self, "_cuda_ipc_plan", None)
+        if plan is None:
+            plan = self.compile_cuda_ipc_io(None)
+        if not isinstance(reset_mask, torch.Tensor):
+            raise TypeError("isaacgym CUDA IPC reset mask must be a torch.Tensor")
+        if (
+            reset_mask.ndim != 1
+            or reset_mask.dtype != torch.bool
+            or not bool(reset_mask.is_contiguous())
+        ):
+            raise TypeError("isaacgym CUDA IPC reset mask must be a contiguous 1-D bool tensor")
+        if tuple(reset_mask.shape) != (self._num_envs,):
+            raise ValueError(f"isaacgym CUDA IPC reset mask must have shape {(self._num_envs,)}")
+        if not isinstance(qpos, torch.Tensor) or not isinstance(qvel, torch.Tensor):
+            raise TypeError("isaacgym CUDA IPC reset states must be torch.Tensors")
+        expected_qpos = (self._num_envs, plan.arena.nq)
+        expected_qvel = (self._num_envs, plan.arena.nv)
+        if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
+            raise TypeError("isaacgym CUDA IPC reset states must be float32")
+        if tuple(qpos.shape) != expected_qpos:
+            raise ValueError(f"isaacgym CUDA IPC reset qpos must have shape {expected_qpos}")
+        if tuple(qvel.shape) != expected_qvel:
+            raise ValueError(f"isaacgym CUDA IPC reset qvel must have shape {expected_qvel}")
+        if qpos.device != reset_mask.device or qvel.device != reset_mask.device:
+            raise ValueError("isaacgym CUDA IPC mask reset tensors must share one device")
+        self._cuda_tensor_reset_wire_payload(
+            randomization,
+            row_count=self._num_envs,
+            device=plan.device,
+        )
+        if not bool(reset_mask.any().item()):
+            return {"timing": {"set_state_tensor_mask_ms": 0.0}}
+
+        rows = reset_mask.nonzero(as_tuple=False).flatten()
+        selected_payload: TensorResetRandomizationPayload | None = None
+        if randomization is not None and not randomization.is_empty():
+            selected_payload = TensorResetRandomizationPayload(
+                **{
+                    term: getattr(randomization, term).index_select(0, rows).contiguous()
+                    for term in (RESET_TERM_KP, RESET_TERM_KD)
+                    if getattr(randomization, term) is not None
+                }
+            )
+        return self.set_state_tensor(
+            rows,
+            qpos.index_select(0, rows).contiguous(),
+            qvel.index_select(0, rows).contiguous(),
+            selected_payload,
+        )
+
+    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+        """Begin a packed transaction over the external CUDA IPC reset boundary."""
+
+        from unisim.backend.packed_reset import TorchPackedResetComposer
+
+        return TorchPackedResetComposer(self, device=device)
 
     def close(self) -> None:
         plan = getattr(self, "_cuda_ipc_plan", None)

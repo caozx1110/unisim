@@ -122,13 +122,7 @@ def test_device_reset_randomization_unsupported_lifecycle_fails_closed() -> None
 
 @pytest.mark.parametrize(
     "override",
-    [
-        {"reset_randomization": False},
-        {
-            "process_topology": TensorProcessTopology.EXTERNAL_WORKER,
-            "data_plane": TensorDataPlane.CUDA_IPC,
-        },
-    ],
+    [{"reset_randomization": False}],
 )
 def test_device_reset_randomization_requires_reset_randomization_and_direct_device_matrix(
     override: dict,
@@ -136,6 +130,17 @@ def test_device_reset_randomization_requires_reset_randomization_and_direct_devi
     kwargs = {**_device_reset_randomization_kwargs(), **override}
     with pytest.raises(ValueError, match="device reset randomization requires"):
         TensorLifecycleCapabilities(**kwargs)
+
+
+def test_device_reset_randomization_accepts_external_cuda_ipc_matrix() -> None:
+    capabilities = TensorLifecycleCapabilities(
+        **{
+            **_device_reset_randomization_kwargs(),
+            "process_topology": TensorProcessTopology.EXTERNAL_WORKER,
+            "data_plane": TensorDataPlane.CUDA_IPC,
+        }
+    )
+    assert capabilities.device_reset_randomization
 
 
 def test_tensor_reset_randomization_payload_terms_and_public_export() -> None:

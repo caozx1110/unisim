@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
-_CUDA_IPC_ARENA_VERSION = 3
+_CUDA_IPC_ARENA_VERSION = 4
 _ARENA_ALIGNMENT_BYTES = 256
 _FLOAT32_BYTES = 4
 _INT64_BYTES = 8
@@ -34,6 +34,8 @@ class IsaacGymCudaIpcArenaLayout:
     reset_indices_offset: int
     reset_qpos_offset: int
     reset_qvel_offset: int
+    reset_kp_offset: int
+    reset_kd_offset: int
     qpos_offset: int
     qvel_offset: int
     ctrl_offset: int
@@ -55,7 +57,9 @@ class IsaacGymCudaIpcArenaLayout:
         reset_indices_offset = 0
         reset_qpos_offset = _align(reset_indices_offset + num_envs * _INT64_BYTES)
         reset_qvel_offset = _align(reset_qpos_offset + num_envs * nq * _FLOAT32_BYTES)
-        qpos_offset = _align(reset_qvel_offset + num_envs * nv * _FLOAT32_BYTES)
+        reset_kp_offset = _align(reset_qvel_offset + num_envs * nv * _FLOAT32_BYTES)
+        reset_kd_offset = _align(reset_kp_offset + num_envs * nu * _FLOAT32_BYTES)
+        qpos_offset = _align(reset_kd_offset + num_envs * nu * _FLOAT32_BYTES)
         qvel_offset = _align(qpos_offset + num_envs * nq * _FLOAT32_BYTES)
         ctrl_offset = _align(qvel_offset + num_envs * nv * _FLOAT32_BYTES)
         body_state_offset = _align(ctrl_offset + num_envs * nu * _FLOAT32_BYTES)
@@ -70,6 +74,8 @@ class IsaacGymCudaIpcArenaLayout:
             reset_indices_offset,
             reset_qpos_offset,
             reset_qvel_offset,
+            reset_kp_offset,
+            reset_kd_offset,
             qpos_offset,
             qvel_offset,
             ctrl_offset,
@@ -110,6 +116,14 @@ class IsaacGymCudaIpcArenaLayout:
     def reset_qvel_shape(self) -> Tuple[int, int]:
         return (self.num_envs, self.nv)
 
+    @property
+    def reset_kp_shape(self) -> Tuple[int, int]:
+        return (self.num_envs, self.nu)
+
+    @property
+    def reset_kd_shape(self) -> Tuple[int, int]:
+        return (self.num_envs, self.nu)
+
     def wire(self) -> Dict[str, Any]:
         return {
             "version": _CUDA_IPC_ARENA_VERSION,
@@ -121,6 +135,8 @@ class IsaacGymCudaIpcArenaLayout:
             "reset_indices_offset": self.reset_indices_offset,
             "reset_qpos_offset": self.reset_qpos_offset,
             "reset_qvel_offset": self.reset_qvel_offset,
+            "reset_kp_offset": self.reset_kp_offset,
+            "reset_kd_offset": self.reset_kd_offset,
             "qpos_offset": self.qpos_offset,
             "qvel_offset": self.qvel_offset,
             "ctrl_offset": self.ctrl_offset,
@@ -140,6 +156,8 @@ class IsaacGymCudaIpcArenaLayout:
             "reset_indices_offset",
             "reset_qpos_offset",
             "reset_qvel_offset",
+            "reset_kp_offset",
+            "reset_kd_offset",
             "qpos_offset",
             "qvel_offset",
             "ctrl_offset",
@@ -160,6 +178,8 @@ class IsaacGymCudaIpcArenaLayout:
             payload["reset_indices_offset"],
             payload["reset_qpos_offset"],
             payload["reset_qvel_offset"],
+            payload["reset_kp_offset"],
+            payload["reset_kd_offset"],
             payload["qpos_offset"],
             payload["qvel_offset"],
             payload["ctrl_offset"],
@@ -486,6 +506,18 @@ class IsaacGymCudaIpcWorkerRuntime:
             arena.reset_qvel_shape,
             ordinal,
         )
+        self.reset_kp: Any = torch_from_cuda_pointer(
+            torch,
+            memory.pointer + arena.reset_kp_offset,
+            arena.reset_kp_shape,
+            ordinal,
+        )
+        self.reset_kd: Any = torch_from_cuda_pointer(
+            torch,
+            memory.pointer + arena.reset_kd_offset,
+            arena.reset_kd_shape,
+            ordinal,
+        )
         self.body_state: Any = torch_from_cuda_pointer(
             torch,
             memory.pointer + arena.body_state_offset,
@@ -755,6 +787,8 @@ class IsaacGymCudaIpcWorkerRuntime:
         self.reset_indices = None
         self.reset_qpos = None
         self.reset_qvel = None
+        self.reset_kp = None
+        self.reset_kd = None
         self.body_state = None
         self.sensor_state = None
         self.actor_ids = None
@@ -975,6 +1009,24 @@ class IsaacGymCudaIpcWorkerRuntime:
         ):
             raise RuntimeError("native selected DOF-state setter failed")
 
+    def _apply_cuda_reset_properties(self, rows: Any, count: int, terms: Sequence[str]) -> None:
+        """Cross the explicit worker-side reset PD-property bridge.
+
+        Values arrive device-resident in the CUDA IPC arena. IsaacGym's actor
+        property API is CPU-native, so this named reset-only boundary copies the
+        selected rows once; step/state/control hot paths never enter it.
+        """
+
+        scene = self.ctx.scene_worker
+        raw: Dict[str, Any] = {}
+        if "kp" in terms:
+            raw["kp"] = self.reset_kp[:count].detach().cpu().numpy()
+        if "kd" in terms:
+            raw["kd"] = self.reset_kd[:count].detach().cpu().numpy()
+        randomization = scene._validated_reset_randomization({"randomization": raw}, count)
+        if randomization is not None:
+            scene._apply_reset_randomization(rows.detach().cpu().numpy(), randomization)
+
     def set_state(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self.closed:
             raise RuntimeError("IsaacGym CUDA IPC runtime is closed")
@@ -1063,6 +1115,11 @@ class IsaacGymCudaIpcWorkerRuntime:
             if native_dof_actors:
                 dof_union = torch.cat(native_dof_actors, dim=0).sort().values
                 self._submit_native_dofs(dof_union)
+
+            property_started = time.perf_counter()
+            if payload.get("has_randomization"):
+                self._apply_cuda_reset_properties(rows, count, payload["randomization_terms"])
+            timing["reset_property_ms"] = (time.perf_counter() - property_started) * 1000.0
 
             # CUDA IPC selected reset is authoritative and has already submitted all
             # native indexed writes.  Scene materialization may otherwise retain its
@@ -1202,6 +1259,8 @@ class IsaacGymCudaIpcPlan:
         self._reset_indices: Any = None
         self._reset_qpos: Any = None
         self._reset_qvel: Any = None
+        self._reset_kp: Any = None
+        self._reset_kd: Any = None
         self._reset_row_bounds: Any = None
         self._reset_selected: Any = None
         self._reset_true: Any = None
@@ -1440,6 +1499,16 @@ class IsaacGymCudaIpcPlan:
             offset=self.arena.reset_qvel_offset,
             shape=self.arena.reset_qvel_shape,
         )
+        self._reset_kp = self._make_view(
+            name="reset_kp",
+            offset=self.arena.reset_kp_offset,
+            shape=self.arena.reset_kp_shape,
+        )
+        self._reset_kd = self._make_view(
+            name="reset_kd",
+            offset=self.arena.reset_kd_offset,
+            shape=self.arena.reset_kd_shape,
+        )
         # Reset validation uses persistent device scalars.  Python ints passed to
         # ``clamp`` are uploaded by Torch on every reset, which would reintroduce
         # a tiny H2D at the otherwise device-resident reset boundary.
@@ -1494,6 +1563,12 @@ class IsaacGymCudaIpcPlan:
 
     def get_sensor_view(self, name: str) -> Any:
         self._require_open()
+        backend = getattr(self, "backend", None)
+        derived_provider = getattr(backend, "_cuda_derived_sensor_view", None)
+        if callable(derived_provider):
+            derived = derived_provider(name, self)
+            if derived is not None:
+                return derived
         prefix: str | None = None
         body_name = ""
         if name not in ("pelvis_local_linvel", "torso_gyro"):
@@ -1602,6 +1677,7 @@ class IsaacGymCudaIpcPlan:
         env_indices: Any,
         qpos: Any,
         qvel: Any,
+        randomization: Dict[str, Any] | None = None,
     ) -> Dict[str, Dict[str, float]]:
         self._require_open()
         torch = self._torch
@@ -1653,10 +1729,20 @@ class IsaacGymCudaIpcPlan:
             self._reset_indices[:count].copy_(env_indices, non_blocking=True)
             self._reset_qpos[:count].copy_(qpos, non_blocking=True)
             self._reset_qvel[:count].copy_(qvel, non_blocking=True)
+            if randomization is not None:
+                if "kp" in randomization:
+                    self._reset_kp[:count].copy_(randomization["kp"], non_blocking=True)
+                if "kd" in randomization:
+                    self._reset_kd[:count].copy_(randomization["kd"], non_blocking=True)
             self.reset_event.record(stream)
         response = self.backend._request(
             CMD_CUDA_IPC_SET_STATE,
-            {"count": count, "sequence": sequence},
+            {
+                "count": count,
+                "sequence": sequence,
+                "has_randomization": randomization is not None,
+                "randomization_terms": () if randomization is None else tuple(randomization),
+            },
             expect=self._protocol.CMD_READY,
         )
         self._reset_sequence = sequence
@@ -1677,6 +1763,8 @@ class IsaacGymCudaIpcPlan:
         self._reset_indices = None
         self._reset_qpos = None
         self._reset_qvel = None
+        self._reset_kp = None
+        self._reset_kd = None
         self._reset_row_bounds = None
         self._reset_selected = None
         self._reset_true = None
