@@ -674,6 +674,9 @@ def motrix_set_state_tensor_mask(
         qvel.index_select(0, selected_rows).detach().cpu().numpy(),
         host_randomization,
     )
+    for plan in backend._host_bridge_plans:
+        if isinstance(plan, MotrixHostBridgeTransferPlan):
+            plan._publish_mask_reset_rows(selected_rows)
     return {} if result is None else result
 
 
@@ -1032,6 +1035,16 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
             self._pin,
         )
         return {"timing": dict(self.last_timing)}
+
+    def _publish_mask_reset_rows(self, selected_rows: Any) -> None:
+        import torch
+
+        self._require_open()
+        order = torch.argsort(selected_rows)
+        rows_device = selected_rows.index_select(0, order).detach().clone()
+        rows = rows_device.detach().cpu().numpy().astype(np.intp, copy=True)
+        self._last_reset_rows_host = rows
+        self._last_reset_rows_device = rows_device
 
     def read_selected_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()
