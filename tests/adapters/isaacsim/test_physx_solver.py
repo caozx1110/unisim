@@ -108,6 +108,11 @@ def test_valid_values_normalize():
         {"gpu_max_rigid_patch_count": 1.5},
         {"gpu_max_rigid_patch_count": True},
         {"gpu_max_rigid_patch_count": "8388608"},
+        {"env_spacing": 0.0},
+        {"env_spacing": -2.0},
+        {"env_spacing": float("nan")},
+        {"env_spacing": True},
+        {"env_spacing": "2.0"},
     ],
 )
 def test_invalid_values_fail_closed(kwargs):
@@ -146,12 +151,55 @@ def test_rest_offset_equal_to_contact_offset_is_accepted():
         {"max_depenetration_velocity": -1.0},
         {"gpu_max_rigid_contact_count": 0},
         {"gpu_max_rigid_patch_count": -1},
+        {"env_spacing": 0.0},
+        {"env_spacing": -2.0},
+        {"env_spacing": float("nan")},
+        {"env_spacing": True},
+        {"env_spacing": "2.0"},
     ],
 )
 def test_backend_constructor_rejects_before_scene_use(kwargs):
     # Validation runs before scene composition or any worker spawn.
     with pytest.raises((TypeError, ValueError)):
         IsaacSimBackend(None, 1, 0.01, **kwargs)
+
+
+def test_environment_spacing_report_fails_closed():
+    backend = IsaacSimBackend.__new__(IsaacSimBackend)
+    backend._env_spacing = 50.0
+    backend._entity_scene = object()
+    backend._num_envs = 2
+    valid = _meta({"env_spacing": 50.0}, [])
+    valid["env_origins"] = [[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]]
+    backend._validate_environment_spacing_report(valid)
+    with pytest.raises(IsaacSimWorkerError, match="environment spacing does not match"):
+        backend._validate_environment_spacing_report(_meta({"env_spacing": 2.0}, []))
+    with pytest.raises(IsaacSimWorkerError, match="invalid environment spacing"):
+        backend._validate_environment_spacing_report(_meta({"env_spacing": True}, []))
+
+
+def test_environment_spacing_report_checks_actual_origins_and_skips_model_files():
+    backend = IsaacSimBackend.__new__(IsaacSimBackend)
+    backend._env_spacing = 50.0
+    backend._entity_scene = object()
+    backend._num_envs = 2
+    meta = _meta({"env_spacing": 50.0}, [])
+    meta["env_origins"] = [[0.0, 0.0, 0.0], [25.0, 0.0, 0.0]]
+
+    with pytest.raises(IsaacSimWorkerError, match="environment origins do not implement"):
+        backend._validate_environment_spacing_report(meta)
+
+    backend._num_envs = 3
+    meta["env_origins"] = [
+        [0.0, 0.0, 0.0],
+        [50.0, 0.0, 0.0],
+        [150.0, 0.0, 0.0],
+    ]
+    with pytest.raises(IsaacSimWorkerError, match="environment origins do not implement"):
+        backend._validate_environment_spacing_report(meta)
+
+    backend._entity_scene = None
+    backend._validate_environment_spacing_report(_meta({}, []))
 
 
 def test_worker_payload_revalidation_fails_closed():

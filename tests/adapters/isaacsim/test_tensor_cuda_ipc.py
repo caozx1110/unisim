@@ -122,6 +122,30 @@ def test_factory_translates_owner_tensor_cuda_ipc_opt_in(monkeypatch: pytest.Mon
     assert recorded["tensor_cuda_ipc"] is True
 
 
+def test_factory_translates_mapped_environment_spacing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: dict[str, Any] = {}
+
+    class Recorder:
+        def __init__(self, scene: Any, num_envs: int, sim_dt: float, **kwargs: Any) -> None:
+            recorded.update(kwargs)
+
+    monkeypatch.setattr(
+        "unisim.backend.isaacsim.backend.IsaacSimBackend",
+        Recorder,
+    )
+    unisim.create_backend(
+        "isaacsim",
+        None,
+        1,
+        0.01,
+        worker_command=["true"],
+        isaacsim_env_spacing=50.0,
+    )
+    assert recorded["env_spacing"] == 50.0
+
+
 @pytest.mark.parametrize("value", ["false", 1, np.True_])
 def test_factory_rejects_non_bool_tensor_cuda_ipc_opt_in(value: Any) -> None:
     with pytest.raises(TypeError, match="isaacsim_tensor_cuda_ipc must be a boolean"):

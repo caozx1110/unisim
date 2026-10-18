@@ -197,6 +197,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         gpu_max_rigid_patch_count: int | None = None,
         tensor_cuda_ipc: bool = False,
         share_friction_materials: bool = False,
+        env_spacing: float | None = None,
         **kwargs: Any,
     ) -> None:
         mode = None if render_mode is None else normalize_play_render_mode(render_mode)
@@ -209,6 +210,14 @@ class IsaacSimBackend(MjcfSubprocessBackend):
                 f"share_friction_materials must be a boolean, got {share_friction_materials!r}"
             )
         self._share_friction_materials = share_friction_materials
+        if env_spacing is not None:
+            if isinstance(env_spacing, bool) or not isinstance(env_spacing, (int, float)):
+                raise TypeError(f"env_spacing must be a positive number, got {env_spacing!r}")
+            if not np.isfinite(env_spacing) or float(env_spacing) <= 0.0:
+                raise ValueError(f"env_spacing must be finite and positive, got {env_spacing!r}")
+            self._env_spacing = float(env_spacing)
+        else:
+            self._env_spacing = 2.0
         self._cuda_ipc_arena: HostCudaIpcArena | None = None
         self._cuda_control_bounds: tuple[Any, Any] | None = None
         self._cuda_reset_row_bounds: Any = None
@@ -235,6 +244,10 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         if share_friction_materials and self._entity_scene is None:
             raise NotImplementedError(
                 "IsaacSim friction material sharing requires a mapped Manager-Based scene"
+            )
+        if env_spacing is not None and self._entity_scene is None:
+            raise NotImplementedError(
+                "IsaacSim environment spacing requires a mapped Manager-Based scene"
             )
         self._render_width = int(render_width)
         self._render_height = int(render_height)
@@ -294,6 +307,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             ),
             "tensor_cuda_ipc": getattr(self, "_tensor_cuda_ipc_requested", False),
             "share_friction_materials": getattr(self, "_share_friction_materials", False),
+            "env_spacing": getattr(self, "_env_spacing", 2.0),
         }
 
     def _worker_configuration_requested(self) -> dict[str, Any]:
@@ -1982,6 +1996,8 @@ class IsaacSimBackend(MjcfSubprocessBackend):
                 )
         self._validate_solver_readback(meta)
         self._validate_friction_material_sharing_report(meta)
+        if self._entity_scene is not None:
+            self._validate_environment_spacing_report(meta)
         self._worker_materialization_report = {
             key: meta[key]
             for key in ("raw_usd_cache", "role_usd_cache", "init_telemetry")
@@ -2182,6 +2198,45 @@ class IsaacSimBackend(MjcfSubprocessBackend):
                 "isaacsim friction material sharing does not match the host INIT request: "
                 f"worker={reported!r}, host={expected!r}"
             )
+
+    def _validate_environment_spacing_report(self, meta: dict[str, Any]) -> None:
+        """Fail closed when GridCloner did not honor mapped-scene spacing."""
+
+        if getattr(self, "_entity_scene", None) is None:
+            return
+        envelope = meta.get("configuration_report")
+        effective = envelope.get("effective") if isinstance(envelope, dict) else None
+        reported = effective.get("env_spacing") if isinstance(effective, dict) else None
+        expected = getattr(self, "_env_spacing", 2.0)
+        if isinstance(reported, bool) or not isinstance(reported, (int, float)):
+            raise self._worker_error(
+                f"isaacsim worker reported invalid environment spacing: {reported!r}"
+            )
+        if not bool(np.isclose(reported, expected, rtol=0.0, atol=1e-6)):
+            raise self._worker_error(
+                "isaacsim environment spacing does not match the host INIT request: "
+                f"worker={reported!r}, host={expected!r}"
+            )
+        raw_origins = meta.get("env_origins")
+        if self._num_envs > 1 and raw_origins is not None:
+            origins = np.asarray(raw_origins, dtype=np.float32)
+            tolerance = max(1e-6, expected * 1e-6)
+            axis_steps: list[np.ndarray] = []
+            for axis in range(2):
+                coordinates = np.unique(origins[:, axis])
+                steps = np.diff(coordinates)
+                axis_steps.append(steps[steps > tolerance])
+            observed = (
+                np.concatenate(axis_steps)
+                if any(value.size for value in axis_steps)
+                else np.array([])
+            )
+            if observed.size == 0 or not np.allclose(observed, expected, rtol=0.0, atol=tolerance):
+                raise self._worker_error(
+                    "isaacsim environment origins do not implement the requested "
+                    f"GridCloner spacing: expected={expected!r}, "
+                    f"minimum_origin_step={float(np.min(observed)) if observed.size else None!r}"
+                )
 
     def _require_mapped_entity_scene(self) -> PreparedWorkerScene:
         if self._entity_scene is None:

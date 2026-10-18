@@ -108,6 +108,8 @@ class SceneWorker:
         self.body_com = np.zeros((count, self.layout.nbody, 3))
         self.root_com = np.zeros((count, len(self.layout.entities), 3))
         self.control_dofs = np.empty((count, self.layout.nu), dtype=np.int64)
+        self.control_lower: np.ndarray | None = None
+        self.control_upper: np.ndarray | None = None
         self.pending_roots: dict[int, np.ndarray] = {}
         self.pending_dofs: dict[int, np.ndarray] = {}
         self.pending_dof_actors: set[int] = set()
@@ -146,6 +148,8 @@ class SceneWorker:
         self.body_com = np.zeros((self.num_envs, self.layout.nbody, 3))
         self.root_com = np.zeros((self.num_envs, 1, 3))
         self.control_dofs = np.empty((self.num_envs, self.layout.nu), dtype=np.int64)
+        self.control_lower = None
+        self.control_upper = None
         self.pending_roots = {}
         self.pending_dofs = {}
         self.pending_dof_actors = set()
@@ -160,6 +164,12 @@ class SceneWorker:
         entity = self.layout.entities[0]
         expected_variant = payload.get("variant_assignment", [0] * self.num_envs)
         sources = payload.get("variant_model_files", [payload["model_file"]])
+        variant_bounds = metadata.get("variant_control_bounds")
+        if variant_bounds is not None:
+            if not isinstance(variant_bounds, list) or len(variant_bounds) != len(sources):
+                raise RuntimeError("variant joint bounds do not match the model sources")
+            self.control_lower = np.full((self.num_envs, self.layout.nu), -np.inf)
+            self.control_upper = np.full((self.num_envs, self.layout.nu), np.inf)
         for env_index, (env, actor) in enumerate(zip(ctx.env_handles, ctx.actor_handles)):
             asset = ctx.gym.get_actor_asset(env, actor)
             native_joints = tuple(ctx.gym.get_asset_dof_names(asset))
@@ -184,6 +194,14 @@ class SceneWorker:
             )
             self.body_ids[env_index] = bodies
             self.control_dofs[env_index] = dofs
+            if self.control_lower is not None and self.control_upper is not None:
+                source_id = int(expected_variant[env_index])
+                assert variant_bounds is not None
+                source_bounds = variant_bounds[source_id]
+                for column, joint_name in enumerate(entity.actuator_joint_names):
+                    lower, upper = source_bounds[joint_name]
+                    self.control_lower[env_index, column] = lower
+                    self.control_upper[env_index, column] = upper
             properties = ctx.gym.get_actor_rigid_body_properties(env, actor)
             for index, name in enumerate(entity.body_names):
                 com = properties[native_bodies.index(name)].com
@@ -1461,6 +1479,14 @@ class SceneWorker:
                     if self.initial_ctrl is not None
                     else self.pending_dofs[int(dof)][0]
                 )
+                if self.control_lower is not None and self.control_upper is not None:
+                    value = float(
+                        np.clip(
+                            value,
+                            self.control_lower[row, index],
+                            self.control_upper[row, index],
+                        )
+                    )
                 self.targets[dof] = float(value)
         if self.initial_ctrl is None:
             self.initial_ctrl = np.array(
@@ -1519,6 +1545,27 @@ class SceneWorker:
         self._body_rows, self._body_columns = np.nonzero(self.body_ids >= 0)
         self._native_body_ids = self.body_ids[self._body_rows, self._body_columns]
         self._body_refresh_com = self.body_com[self._body_rows, self._body_columns]
+
+    def _clip_control_values(
+        self, values: np.ndarray, envs: np.ndarray | None = None
+    ) -> np.ndarray:
+        """Clamp position targets to source MJCF bounds.
+
+        IsaacGym Preview 4 does not expose mutable native joint-stop flags after
+        MJCF import. Keeping every commanded target inside the source range is
+        the worker's deterministic boundary approximation.
+        """
+
+        if self.control_lower is None or self.control_upper is None:
+            return values
+        lower = self.control_lower if envs is None else self.control_lower[envs]
+        upper = self.control_upper if envs is None else self.control_upper[envs]
+        if lower.shape != values.shape or upper.shape != values.shape:
+            raise ValueError(
+                "control values and source joint bounds have incompatible shapes: "
+                f"values={values.shape}, lower={lower.shape}, upper={upper.shape}"
+            )
+        return np.clip(values, lower, upper)
 
     def refresh(self) -> None:
         ctx = self.ctx
@@ -1630,6 +1677,7 @@ class SceneWorker:
             control_values = finite_array(
                 payload["control_values"], (count, self.layout.nu), "control_values"
             )
+            control_values = self._clip_control_values(control_values, envs)
             if np.any(np.abs(control_values) > np.finfo(np.float32).max):
                 raise ValueError("control_values exceed native float32 range")
             unselected_controls = [
@@ -1746,7 +1794,16 @@ class SceneWorker:
                             column = entity.actuator_indices[
                                 entity.actuator_joint_names.index(joint.name)
                             ]
-                            staged_controls.append((int(env), column, float(qpos[row, pi])))
+                            value = float(qpos[row, pi])
+                            if self.control_lower is not None and self.control_upper is not None:
+                                value = float(
+                                    np.clip(
+                                        value,
+                                        self.control_lower[env, column],
+                                        self.control_upper[env, column],
+                                    )
+                                )
+                            staged_controls.append((int(env), column, value))
         self.pending_roots.update(staged_roots)
         self.pending_dofs.update(staged_dofs)
         self.pending_dof_actors.update(staged_actors)
@@ -1796,6 +1853,7 @@ class SceneWorker:
             raise ValueError("nsteps must be a positive integer")
         ctx = self.ctx
         ctrl = finite_array(ctx.slots["ctrl"], (self.num_envs, self.layout.nu), "ctrl")
+        ctrl = self._clip_control_values(ctrl)
         wrench = None
         if "body_wrench" in payload:
             expected = (self.num_envs, self.layout.nbody, 6)

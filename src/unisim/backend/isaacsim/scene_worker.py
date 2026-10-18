@@ -1851,6 +1851,7 @@ class SceneWorkerContext:
         self._cuda_reset_sequence = 0
         self._tensor_cuda_ipc = False
         self._share_friction_materials = False
+        self._env_spacing = 2.0
         self.faulted = False
         self.model_file_projection: Any = None
         self._model_file_metadata: dict[str, Any] | None = None
@@ -2001,6 +2002,15 @@ class SceneWorkerContext:
         self.num_envs = payload["num_envs"]
         self.entries = payload["scene_entities"]
         self.sim_dt = float(payload["sim_dt"])
+        env_spacing = payload.get("env_spacing", 2.0)
+        if (
+            isinstance(env_spacing, bool)
+            or not isinstance(env_spacing, (int, float))
+            or not np.isfinite(env_spacing)
+            or float(env_spacing) <= 0.0
+        ):
+            raise ValueError(f"env_spacing must be finite and positive, got {env_spacing!r}")
+        self._env_spacing = float(env_spacing)
         device_id = int(payload.get("device_id", 0))
         if device_id < 0:
             raise NotImplementedError("IsaacSim mapped scene requires CUDA")
@@ -2060,7 +2070,7 @@ class SceneWorkerContext:
             import carb
 
             carb.settings.get_settings().set_bool("/physics/disableContactProcessing", False)
-        cloner = GridCloner(spacing=2.0)
+        cloner = GridCloner(spacing=self._env_spacing)
         prototype_cloner = Cloner()
         cloner.define_base_env("/World/envs")
         self.env_paths = cloner.generate_paths("/World/envs/env", self.num_envs)
@@ -4229,6 +4239,7 @@ class SceneWorkerContext:
         effective: dict[str, Any] = {
             "dt": float(self.sim.get_physics_dt()),
             "share_friction_materials": getattr(self, "_share_friction_materials", False),
+            "env_spacing": getattr(self, "_env_spacing", 2.0),
             "gravity": self.gravity.tolist(),
             "collision_filter": {
                 "self_collision": {

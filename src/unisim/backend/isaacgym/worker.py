@@ -223,7 +223,7 @@ class _WorkerContext:
         # matching MuJoCo <position kp kv forcerange> actuator semantics
         # (PhysX applies force = kp * (target - pos) - kv * vel, clamped to
         # the symmetric effort limit).  All parameters come from the host's
-        # MJCF scan because the importer drops kv/frictionloss/joint ranges.
+        # MJCF scan because the importer may drop kv/frictionloss/joint ranges.
         variant_fields = payload.get("variant_dof_fields")
         if variant_fields is None:
             variant_fields = [self._wire_dof_fields(payload)]
@@ -234,10 +234,40 @@ class _WorkerContext:
             )
         joint_names = [str(name) for name in (payload.get("mjcf_joint_names") or [])]
         variant_dof_props = []
+        variant_control_bounds: List[Dict[str, Tuple[float, float]]] = []
         for variant_asset, fields in zip(assets, variant_fields):
             dof_props = self.gym.get_asset_dof_properties(variant_asset)
             self._apply_actuator_props(dof_props, fields, joint_names)
             variant_dof_props.append(dof_props)
+            variant_control_bounds.append(
+                dict(
+                    (
+                        name,
+                        (
+                            float(fields["lower"][index]),
+                            float(fields["upper"][index]),
+                        ),
+                    )
+                    for index, name in enumerate(joint_names)
+                )
+            )
+            for name, (lower, upper) in variant_control_bounds[-1].items():
+                for bound, allowed_infinity in ((lower, -np.inf), (upper, np.inf)):
+                    if np.isnan(bound) or (np.isinf(bound) and bound != allowed_infinity):
+                        raise RuntimeError(
+                            "isaacgym MJCF joint %r has a non-finite-safe bound [%r, %r]"
+                            % (name, lower, upper)
+                        )
+                    if np.isfinite(bound) and abs(bound) > np.finfo(np.float32).max:
+                        raise RuntimeError(
+                            "isaacgym MJCF joint %r bounds exceed float32 [%r, %r]"
+                            % (name, lower, upper)
+                        )
+                if lower > upper:
+                    raise RuntimeError(
+                        "isaacgym MJCF joint %r has an inverted range [%r, %r]"
+                        % (name, lower, upper)
+                    )
 
         spacing = self._env_spacing(payload) * 0.5
         num_per_row = max(1, int(np.ceil(np.sqrt(self.num_envs))))
@@ -264,6 +294,29 @@ class _WorkerContext:
             self.gym.set_actor_dof_properties(
                 env_handle, actor_handle, variant_dof_props[asset_index]
             )
+            readback_dof_props = self.gym.get_actor_dof_properties(env_handle, actor_handle)
+            for field in (
+                "driveMode",
+                "stiffness",
+                "damping",
+                "effort",
+                "armature",
+                "friction",
+            ):
+                if not np.allclose(
+                    readback_dof_props[field],
+                    variant_dof_props[asset_index][field],
+                    rtol=1e-5,
+                    atol=1e-7,
+                ):
+                    raise RuntimeError(
+                        "isaacgym native dof readback differs for field %s: %s != %s"
+                        % (
+                            field,
+                            readback_dof_props[field],
+                            variant_dof_props[asset_index][field],
+                        )
+                    )
             self.env_handles.append(env_handle)
             self.actor_handles.append(actor_handle)
             origin = self.gym.get_env_origin(env_handle)
@@ -367,6 +420,7 @@ class _WorkerContext:
             "graphics_enabled": self.graphics_device_id >= 0,
             "fixed_variant_count": len(assets) if fixed_variants else 0,
             "fixed_variant_assignment": assignment if fixed_variants else [],
+            "variant_control_bounds": variant_control_bounds,
         }
         self.scene_worker = module.SceneWorker.adopt_initialized_context(
             self, metadata, payload, self.protocol.load_model_file_projection()
@@ -402,6 +456,8 @@ class _WorkerContext:
             "effort": payload["dof_effort"],
             "armature": payload["dof_armature"],
             "friction": payload["dof_friction"],
+            "lower": payload["dof_lower"],
+            "upper": payload["dof_upper"],
         }
 
     def _apply_actuator_props(

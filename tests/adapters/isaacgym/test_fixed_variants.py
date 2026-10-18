@@ -25,12 +25,15 @@ def _variant_xml(
     tool_size: float,
     key_dof: float,
     kp: float,
+    joint_lower: float = -0.2,
+    joint_upper: float = 0.3,
 ) -> str:
     return f"""<mujoco model="IsaacGymFixedVariant">
   <worldbody>
     <geom name="floor" type="plane" size="1 1 0.1"/>
     <body name="tool" pos="0 0 0.3">
-      <joint name="tool_pitch" type="hinge" axis="0 1 0"/>
+      <joint name="tool_pitch" type="hinge" axis="0 1 0"
+             range="{joint_lower} {joint_upper}"/>
       <geom name="handle" type="box" size="{tool_size} {tool_size} {tool_size}"
             mass="{tool_mass}"/>
     </body>
@@ -55,6 +58,8 @@ def _write_variants(root: Path, *, count: int = 3) -> tuple[Path, ...]:
                 tool_size=0.05 + 0.01 * index,
                 key_dof=0.1 * index,
                 kp=20.0 + 10.0 * index,
+                joint_lower=-0.2 - 0.1 * index,
+                joint_upper=0.3 + 0.1 * index,
             ),
             encoding="utf-8",
         )
@@ -130,6 +135,12 @@ def test_fixed_variant_plan_reaches_worker_and_advertises_capabilities(
             assert tables["body_joint_column"] == [7]
         fields = payload["variant_dof_fields"]
         assert [row["stiffness"] for row in fields] == [[20.0], [30.0], [40.0]]
+        np.testing.assert_allclose(
+            [row["lower"] for row in fields], [[-0.2], [-0.3], [-0.4]], rtol=1e-6
+        )
+        np.testing.assert_allclose(
+            [row["upper"] for row in fields], [[0.3], [0.4], [0.5]], rtol=1e-6
+        )
         np.testing.assert_allclose(
             payload["variant_keyframe_qpos"],
             [
