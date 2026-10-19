@@ -145,7 +145,7 @@ def test_packed_plan_publishes_synthetic_tracked_body_views(backend, monkeypatch
         )
     )
     views = plan.read_state_sensors()
-    np.testing.assert_allclose(views["angle"].numpy(), backend.host_read_sensor("angle"))
+    np.testing.assert_allclose(views["angle"].numpy(), backend._host_read_sensor("angle"))
     np.testing.assert_allclose(
         views["track_pos_w_pelvis"].numpy(),
         np.arange(18, dtype=np.float64).reshape(3, 2, 3)[:, 0, :],
@@ -197,12 +197,12 @@ def test_packed_lifecycle_and_semantic_transfer_counts(backend, device_name):
     )
     np.testing.assert_allclose(
         views["angle"].detach().cpu().numpy(),
-        backend.host_read_sensor("angle"),
+        backend._host_read_sensor("angle"),
         atol=1e-6,
     )
     np.testing.assert_allclose(
         views["speed"].detach().cpu().numpy(),
-        backend.host_read_sensor("speed"),
+        backend._host_read_sensor("speed"),
         atol=1e-6,
     )
     first_pointers = {name: view.data_ptr() for name, view in views.items()}
@@ -285,7 +285,7 @@ def test_selected_read_before_full_read_preserves_all_rows_or_fails_closed(backe
         )
     for name in ("angle", "speed"):
         np.testing.assert_allclose(
-            updated[name].detach().numpy(), backend.host_read_sensor(name), atol=1e-6
+            updated[name].detach().numpy(), backend._host_read_sensor(name), atol=1e-6
         )
 
 
@@ -353,7 +353,7 @@ def test_native_generalized_tensor_parity_and_persistent_counters(tmp_path):
         qvel = initial["qvel"][rows].copy()
         qpos[:, 0] = [0.12, -0.08]
         qvel[:, 0] = [0.4, -0.3]
-        reference.host_set_state(rows, qpos.copy(), qvel.copy())
+        reference._host_set_state(rows, qpos.copy(), qvel.copy())
         plan.apply_reset(
             torch.tensor(rows, dtype=torch.int64),
             torch.tensor(qpos, dtype=torch.float32),
@@ -364,7 +364,7 @@ def test_native_generalized_tensor_parity_and_persistent_counters(tmp_path):
         np.testing.assert_allclose(selected["qvel"].detach().numpy()[rows], qvel, atol=1e-6)
 
         ctrl = np.asarray([[0.05], [-0.04], [0.03]], dtype=np.float32)
-        reference.host_step(ctrl, 2)
+        reference._host_step(ctrl, 2)
         plan.write_control(torch.from_numpy(ctrl.copy()))
         plan.step(2)
         views = plan.read_state_sensors()
@@ -381,7 +381,7 @@ def test_native_generalized_tensor_parity_and_persistent_counters(tmp_path):
                 views[name].detach().numpy(), candidate.get_sensor_data(name), atol=1e-6
             )
             np.testing.assert_allclose(
-                candidate.get_sensor_data(name), reference.host_read_sensor(name), atol=1e-5
+                candidate.get_sensor_data(name), reference._host_read_sensor(name), atol=1e-5
             )
 
         assert plan.transfer_stats["d2h_count"] == 2
@@ -491,7 +491,7 @@ def test_direct_tensor_apis_match_numpy_state(backend):
     expected = {"qpos": backend._state_qpos(), "qvel": backend._state_qvel()}
     for name in state:
         np.testing.assert_allclose(state[name].numpy(), expected[name], atol=1e-6)
-    np.testing.assert_allclose(angle.numpy(), backend.host_read_sensor("angle"), atol=1e-6)
+    np.testing.assert_allclose(angle.numpy(), backend._host_read_sensor("angle"), atol=1e-6)
 
     before = {"qpos": backend._state_qpos(), "qvel": backend._state_qvel()}
     qpos = before["qpos"][[1, 2]].copy()

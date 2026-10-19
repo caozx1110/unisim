@@ -3197,7 +3197,7 @@ class GenesisBackend(SimBackend):
             self._entity_faulted = True
             raise
 
-    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
         """Reset public state, including state-only visual mirror roots."""
 
         rows = (
@@ -3215,7 +3215,7 @@ class GenesisBackend(SimBackend):
             np.asarray(self.get_init_qvel(), dtype=np.float32),
             (rows.size, self._metadata.nv),
         )
-        self.host_set_state(rows, qpos.copy(), qvel.copy())
+        self._host_set_state(rows, qpos.copy(), qvel.copy())
         from unisim.entities import EntityStatePatch, SceneResetRequest
 
         patches = tuple(
@@ -3297,7 +3297,7 @@ class GenesisBackend(SimBackend):
             self._raise_if_viewer_closed(exc)
             raise
 
-    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
+    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
         self._require_state("step")
         if isinstance(nsteps, bool) or int(nsteps) <= 0:
             raise ValueError(f"nsteps must be a positive integer, got {nsteps!r}")
@@ -3362,7 +3362,7 @@ class GenesisBackend(SimBackend):
         "set_state_internal_gap_ms",
     )
 
-    def host_set_state(
+    def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -4357,7 +4357,7 @@ class GenesisBackend(SimBackend):
         parts = layout.split_state(state_array)
         # The split columns are strided views; the native set_state path hands
         # its inputs to torch batch writers that expect contiguous rows.
-        self.host_set_state(
+        self._host_set_state(
             np.arange(self._num_envs, dtype=np.intp),
             np.ascontiguousarray(parts.qpos),
             np.ascontiguousarray(parts.qvel),
@@ -4407,15 +4407,15 @@ class GenesisBackend(SimBackend):
                 "currently validated only for floating-base layouts."
             )
 
-    def host_get_base_pos(self) -> np.ndarray:
+    def _host_get_base_pos(self) -> np.ndarray:
         self._require_free_root("get_base_pos")
         return self._links_pos_cache[1][:, self._base_link_idx, :]
 
-    def host_get_base_quat(self) -> np.ndarray:
+    def _host_get_base_quat(self) -> np.ndarray:
         self._require_free_root("get_base_quat")
         return self._links_quat_cache[1][:, self._base_link_idx, :]
 
-    def host_get_base_lin_vel(self) -> np.ndarray:
+    def _host_get_base_lin_vel(self) -> np.ndarray:
         self._require_free_root("get_base_lin_vel")
         if self._portable_mode:
             layout = self.get_root_state_layout(self._base_name or "")
@@ -4424,37 +4424,37 @@ class GenesisBackend(SimBackend):
         # valid immediately after set_state (REPORT §5.6).
         return self._qvel_cache[1][:, 0:3]
 
-    def host_get_base_ang_vel(self) -> np.ndarray:
+    def _host_get_base_ang_vel(self) -> np.ndarray:
         self._require_free_root("get_base_ang_vel")
         if self._portable_mode:
             layout = self.get_root_state_layout(self._base_name or "")
             return np_quat_apply_batched(
-                self.host_get_base_quat(),
+                self._host_get_base_quat(),
                 self._qvel_cache[1][:, list(layout.qvel_indices[3:6])],
             )
         # qvel[3:6] is body-frame angular velocity; the contract wants world
         # frame.  Deriving it from qvel keeps the value fresh after reset
         # (genesis link velocity getters only refresh across a step barrier,
         # REPORT §5.6); it equals get_links_ang(root) after a step.
-        return np_quat_apply_batched(self.host_get_base_quat(), self._qvel_cache[1][:, 3:6])
+        return np_quat_apply_batched(self._host_get_base_quat(), self._qvel_cache[1][:, 3:6])
 
-    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_state("get_body_pos_w")
         return self._links_pos_cache[1][:, np.asarray(body_ids, dtype=np.intp), :]
 
-    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_state("get_body_quat_w")
         return self._links_quat_cache[1][:, np.asarray(body_ids, dtype=np.intp), :]
 
-    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_state("get_body_lin_vel_w")
         return self._links_vel_cache[1][:, np.asarray(body_ids, dtype=np.intp), :]
 
-    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_state("get_body_ang_vel_w")
         return self._links_ang_cache[1][:, np.asarray(body_ids, dtype=np.intp), :]
 
-    def host_read_sensor(self, name: str) -> np.ndarray:
+    def _host_read_sensor(self, name: str) -> np.ndarray:
         self._require_state(f"get_sensor_data({name!r})")
         try:
             address, dimension = self._sensor_slots[name]

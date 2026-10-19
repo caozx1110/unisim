@@ -1482,24 +1482,24 @@ class SimBackend(abc.ABC):
             f"{self.get_tensor_execution()}"
         )
 
-    def host_get_state(
+    def _host_get_state(
         self, fields: tuple[str, ...] | str | None = None
     ) -> Mapping[str, np.ndarray]:
-        """Read generalized host state through the documented adapter protocol."""
+        """Read generalized state through the documented protected adapter protocol."""
         raise NotImplementedError(f"{self.__class__.__name__} has no host state read")
 
-    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
-        """Reset all or selected environments through the documented adapter protocol."""
+    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
+        """Reset all or selected environments through the protected adapter protocol."""
         raise NotImplementedError(f"{self.__class__.__name__} has no host reset")
 
-    def host_set_state(
+    def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
         randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
-        """Write selected host state through the documented adapter protocol.
+        """Write selected state through the documented protected adapter protocol.
 
         ``randomization`` is the unified torch-first
         :class:`TensorResetRandomizationPayload` carrying host-plane
@@ -1508,7 +1508,7 @@ class SimBackend(abc.ABC):
         """
         raise NotImplementedError(f"{self.__class__.__name__} has no host state write")
 
-    def host_reset_default(self, env_ids: np.ndarray | None = None) -> None:
+    def _host_reset_default(self, env_ids: np.ndarray | None = None) -> None:
         """Reset selected environments to construction defaults on the host plane."""
         ids = (
             np.arange(self.num_envs, dtype=np.int32)
@@ -1521,7 +1521,7 @@ class SimBackend(abc.ABC):
         default_qvel = self.get_init_qvel()
         qpos = np.broadcast_to(default_qpos, (ids.size, default_qpos.size)).copy()
         qvel = np.broadcast_to(default_qvel, (ids.size, default_qvel.size)).copy()
-        self.host_set_state(ids, qpos, qvel)
+        self._host_set_state(ids, qpos, qvel)
 
     # ------------------------------------------------------------------ #
     # Properties                                                           #

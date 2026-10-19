@@ -119,7 +119,7 @@ def test_adoption_maps_real_noncontiguous_native_ids_and_preserves_public_com_ou
     assert set(runtime.pending_dofs) == {1, 3, 6, 8}
 
 
-def testhost_reset_codec_delegates_to_same_runtime_and_preserves_control_targets():
+def test_host_reset_codec_delegates_to_same_runtime_and_preserves_control_targets():
     ctx, runtime, model_file = _adopt()
     runtime.refresh()
     ctx.scene_worker = runtime
@@ -225,10 +225,10 @@ def test_native_post_reset_body_state_matches_mujoco_fk(tmp_path):
         mujoco.mj_resetDataKeyframe(model, data, key)
         pos, quat, _, _ = reference(data.qpos.copy(), np.zeros(model.nv))
         np.testing.assert_allclose(
-            backend.host_get_body_pos_w(ids), np.tile(pos, (2, 1, 1)), atol=1e-5
+            backend._host_get_body_pos_w(ids), np.tile(pos, (2, 1, 1)), atol=1e-5
         )
         np.testing.assert_allclose(
-            np.abs(np.sum(backend.host_get_body_quat_w(ids) * quat[None, :, :], axis=-1)),
+            np.abs(np.sum(backend._host_get_body_quat_w(ids) * quat[None, :, :], axis=-1)),
             1.0,
             atol=1e-5,
         )
@@ -237,32 +237,32 @@ def test_native_post_reset_body_state_matches_mujoco_fk(tmp_path):
         # root COM distinguishes link-origin from COM velocity conventions.
         qpos = np.array([0.1, -0.05, 1.2, np.sqrt(0.5), 0, np.sqrt(0.5), 0, 0.35, -0.5])
         qvel = np.array([0.2, -0.1, 0.05, 0.3, -0.2, 0.4, 0.6, -0.7])
-        backend.host_set_state(
+        backend._host_set_state(
             np.array([0, 1], dtype=np.int32),
             np.tile(qpos, (2, 1)).astype(np.float32),
             np.tile(qvel, (2, 1)).astype(np.float32),
         )
         pos, quat, lin_com, ang = reference(qpos, qvel)
         np.testing.assert_allclose(
-            backend.host_get_body_pos_w(ids), np.tile(pos, (2, 1, 1)), atol=1e-5
+            backend._host_get_body_pos_w(ids), np.tile(pos, (2, 1, 1)), atol=1e-5
         )
         np.testing.assert_allclose(
-            np.abs(np.sum(backend.host_get_body_quat_w(ids) * quat[None, :, :], axis=-1)),
+            np.abs(np.sum(backend._host_get_body_quat_w(ids) * quat[None, :, :], axis=-1)),
             1.0,
             atol=1e-5,
         )
         np.testing.assert_allclose(
-            backend.host_get_body_lin_vel_w(ids), np.tile(lin_com, (2, 1, 1)), atol=1e-5
+            backend._host_get_body_lin_vel_w(ids), np.tile(lin_com, (2, 1, 1)), atol=1e-5
         )
         np.testing.assert_allclose(
-            backend.host_get_body_ang_vel_w(ids), np.tile(ang, (2, 1, 1)), atol=1e-5
+            backend._host_get_body_ang_vel_w(ids), np.tile(ang, (2, 1, 1)), atol=1e-5
         )
 
         # The first physics step replaces the overlay with native PhysX state;
         # the published pose must stay continuous with the pre-step FK rows.
-        before = backend.host_get_body_pos_w(ids).copy()
-        backend.host_step(np.zeros((2, 2), dtype=np.float32))
-        after = backend.host_get_body_pos_w(ids)
+        before = backend._host_get_body_pos_w(ids).copy()
+        backend._host_step(np.zeros((2, 2), dtype=np.float32))
+        after = backend._host_get_body_pos_w(ids)
         np.testing.assert_allclose(after, before, atol=0.02)
     finally:
         backend.close()
@@ -310,29 +310,29 @@ def test_native_model_file_shapes_names_passive_targets_and_repeated_reset(tmp_p
             atol=1e-6,
         )
         controls = np.tile([0.2, 0.9], (3, 1)).astype(np.float32)
-        backend.host_step(controls)
+        backend._host_step(controls)
         qpos = np.tile([0, 0, 2, np.sqrt(0.5), 0, 0, np.sqrt(0.5), 0.3, -0.4], (2, 1)).astype(
             np.float32
         )
         qpos[:, 2] = [2.0, 3.0]
         qvel = np.tile([0.2, 0.3, 0.4, 1, 0, 0, 0.1, 0.2], (2, 1)).astype(np.float32)
-        backend.host_set_state(np.array([2, 0], dtype=np.int32), qpos, qvel)
-        np.testing.assert_allclose(backend.host_get_base_pos()[[2, 0]], qpos[:, :3], atol=1e-6)
-        np.testing.assert_allclose(backend.host_get_base_lin_vel()[[2, 0]], qvel[:, :3], atol=1e-6)
+        backend._host_set_state(np.array([2, 0], dtype=np.int32), qpos, qvel)
+        np.testing.assert_allclose(backend._host_get_base_pos()[[2, 0]], qpos[:, :3], atol=1e-6)
+        np.testing.assert_allclose(backend._host_get_base_lin_vel()[[2, 0]], qvel[:, :3], atol=1e-6)
         np.testing.assert_allclose(
-            backend.host_get_base_ang_vel()[[2, 0]], [[0, 1, 0], [0, 1, 0]], atol=1e-6
+            backend._host_get_base_ang_vel()[[2, 0]], [[0, 1, 0], [0, 1, 0]], atol=1e-6
         )
         np.testing.assert_allclose(
             backend.get_state_views("qpos")["qpos"].cpu().numpy()[[2, 0]],
             qpos[:, 7:],
             atol=1e-6,
         )
-        np.testing.assert_array_equal(backend.host_get_state("ctrl")["ctrl"], controls)
+        np.testing.assert_array_equal(backend._host_get_state("ctrl")["ctrl"], controls)
         qpos1 = qpos[[0]].copy()
         qpos1[:, 2] = 4
-        backend.host_set_state(np.array([1]), qpos1, qvel[[0]])
-        backend.host_step(controls)
-        assert np.all(backend.host_get_base_pos()[:, 2] > [2.99, 3.99, 1.99])
-        np.testing.assert_array_equal(backend.host_get_state("ctrl")["ctrl"], controls)
+        backend._host_set_state(np.array([1]), qpos1, qvel[[0]])
+        backend._host_step(controls)
+        assert np.all(backend._host_get_base_pos()[:, 2] > [2.99, 3.99, 1.99])
+        np.testing.assert_array_equal(backend._host_get_state("ctrl")["ctrl"], controls)
     finally:
         backend.close()

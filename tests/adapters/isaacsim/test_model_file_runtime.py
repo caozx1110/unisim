@@ -140,7 +140,7 @@ def test_model_file_cold_adoption_preserves_metadata_and_actual_view_maps(model_
     assert np.shares_memory(ctx.slots["ctrl"], model_file["ctrl"])
 
 
-def testhost_step_uses_scene_runtime_and_preserves_historical_d_wide_actions(
+def test_host_step_uses_scene_runtime_and_preserves_historical_d_wide_actions(
     model_file_context,
 ):
     ctx, model_file, log, _, _ = model_file_context
@@ -158,7 +158,7 @@ def testhost_step_uses_scene_runtime_and_preserves_historical_d_wide_actions(
     assert sum(entry[0] == "upload" for entry in log) == 2
 
 
-def testhost_reset_routes_one_native_commit_and_converts_nonidentity_root(
+def test_host_reset_routes_one_native_commit_and_converts_nonidentity_root(
     model_file_context, monkeypatch
 ):
     ctx, model_file, log, _, _ = model_file_context

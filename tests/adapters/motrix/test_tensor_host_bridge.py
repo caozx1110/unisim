@@ -88,7 +88,7 @@ def test_public_state_widths_match_tensor_reset_layout(backend: MotrixBackend) -
     """The public width contract must agree with packed reset validation."""
 
     widths = backend.get_public_state_widths()
-    state = backend.host_get_state()
+    state = backend._host_get_state()
 
     assert widths.nq == state["qpos"].shape[1]
     assert widths.nv == state["qvel"].shape[1]
@@ -126,7 +126,7 @@ def test_packed_lifecycle_and_semantic_transfer_counts(
     plan.write_control(torch.zeros((3, 1), dtype=torch.float32, device=device))
     plan.step(2)
     views = plan.read_state_sensors()
-    expected_state = backend.host_get_state()
+    expected_state = backend._host_get_state()
     np.testing.assert_allclose(
         views["qpos"].detach().cpu().numpy(), expected_state["qpos"], atol=1e-6
     )
@@ -135,19 +135,19 @@ def test_packed_lifecycle_and_semantic_transfer_counts(
     )
     np.testing.assert_allclose(
         views["angle"].detach().cpu().numpy(),
-        backend.host_read_sensor("angle"),
+        backend._host_read_sensor("angle"),
         atol=1e-6,
     )
     np.testing.assert_allclose(
         views["speed"].detach().cpu().numpy(),
-        backend.host_read_sensor("speed"),
+        backend._host_read_sensor("speed"),
         atol=1e-6,
     )
     first_pointers = {name: view.data_ptr() for name, view in views.items()}
     plan.read_state_sensors()
     assert {name: view.data_ptr() for name, view in views.items()} == first_pointers
 
-    state = backend.host_get_state()
+    state = backend._host_get_state()
     rows = torch.tensor([1, 0], dtype=torch.int64, device=device)
     qpos = state["qpos"][[1, 0]].copy()
     qvel = state["qvel"][[1, 0]].copy()
@@ -228,7 +228,7 @@ def test_selected_read_before_full_read_preserves_all_rows_or_fails_closed(
         )
     for name in ("angle", "speed"):
         np.testing.assert_allclose(
-            updated[name].detach().numpy(), backend.host_read_sensor(name), atol=1e-6
+            updated[name].detach().numpy(), backend._host_read_sensor(name), atol=1e-6
         )
 
 
@@ -281,23 +281,23 @@ def test_selected_physical_sensors_use_one_batched_read(
         qvel,
     )
 
-    original_sensor_rows_batch = backend.host_read_sensor_rows_batch
+    original_sensor_rows_batch = backend._host_read_sensor_rows_batch
     calls: list[Sequence[str]] = []
 
     def tracking_sensor_rows_batch(names: Sequence[str], env_ids):
         calls.append(tuple(names))
         return original_sensor_rows_batch(names, env_ids)
 
-    monkeypatch.setattr(backend, "host_read_sensor_rows_batch", tracking_sensor_rows_batch)
+    monkeypatch.setattr(backend, "_host_read_sensor_rows_batch", tracking_sensor_rows_batch)
 
     def fail_base_read(*args: object, name: str = "") -> None:
         raise AssertionError(f"{name} should not be read after apply_reset")
 
     for name in (
-        "host_get_base_pos",
-        "host_get_base_quat",
-        "host_get_base_lin_vel",
-        "host_get_base_ang_vel",
+        "_host_get_base_pos",
+        "_host_get_base_quat",
+        "_host_get_base_lin_vel",
+        "_host_get_base_ang_vel",
     ):
         monkeypatch.setattr(backend, name, partial(fail_base_read, name=name))
     selected = plan.read_selected_state_sensors()
@@ -323,7 +323,7 @@ def test_selected_reset_payload_matches_canonical_reread(backend: MotrixBackend)
             device="cpu",
         )
     )
-    state = backend.host_get_state()
+    state = backend._host_get_state()
     rows = np.asarray((2, 0), dtype=np.int64)
     qpos = state["qpos"][rows].copy()
     qvel = state["qvel"][rows].copy()
@@ -337,16 +337,16 @@ def test_selected_reset_payload_matches_canonical_reread(backend: MotrixBackend)
     )
 
     selected = plan.read_selected_state_sensors()
-    canonical = backend.host_get_state()
+    canonical = backend._host_get_state()
 
     for name, expected_rows in (("qpos", qpos), ("qvel", qvel)):
         np.testing.assert_allclose(selected[name].numpy()[rows], expected_rows, atol=1e-6)
         np.testing.assert_allclose(selected[name].numpy()[rows], canonical[name][rows], atol=1e-6)
     np.testing.assert_allclose(
-        selected["angle"].numpy()[rows], backend.host_read_sensor("angle")[rows], atol=1e-6
+        selected["angle"].numpy()[rows], backend._host_read_sensor("angle")[rows], atol=1e-6
     )
     np.testing.assert_allclose(
-        selected["speed"].numpy()[rows], backend.host_read_sensor("speed")[rows], atol=1e-6
+        selected["speed"].numpy()[rows], backend._host_read_sensor("speed")[rows], atol=1e-6
     )
 
 
@@ -364,7 +364,7 @@ def test_selected_read_does_not_compute_unselected_rows(
     )
     plan.write_control(torch.zeros((3, 1), dtype=torch.float32))
     plan.step()
-    state = backend.host_get_state()
+    state = backend._host_get_state()
     rows = np.asarray([2], dtype=np.int64)
     qpos = state["qpos"][[2]].copy()
     qvel = state["qvel"][[2]].copy()
@@ -376,7 +376,7 @@ def test_selected_read_does_not_compute_unselected_rows(
         torch.tensor(qvel, dtype=torch.float32),
     )
 
-    original_state = backend.host_get_state
+    original_state = backend._host_get_state
 
     def reject_full_body_state(body_ids):
         raise AssertionError("selected read computed full-batch body state")
@@ -385,8 +385,8 @@ def test_selected_read_does_not_compute_unselected_rows(
         raise AssertionError("selected read computed full-batch public state")
 
     with monkeypatch.context() as patch:
-        patch.setattr(backend, "host_get_body_state_w", reject_full_body_state)
-        patch.setattr(backend, "host_get_state", reject_full_state)
+        patch.setattr(backend, "_host_get_body_state_w", reject_full_body_state)
+        patch.setattr(backend, "_host_get_state", reject_full_state)
         selected = plan.read_selected_state_sensors()
 
     expected = original_state(("qpos", "qvel"))
@@ -417,7 +417,7 @@ def test_selected_body_read_matches_full_world_views(backend: MotrixBackend) -> 
     plan.step(2)
     full = plan.read_state_sensors()
     body_ids = backend.get_body_ids(("base", "link"))
-    positions, quaternions, linear_velocities, angular_velocities = backend.host_get_body_state_w(
+    positions, quaternions, linear_velocities, angular_velocities = backend._host_get_body_state_w(
         body_ids
     )
     link_index = 1
@@ -431,7 +431,7 @@ def test_selected_body_read_matches_full_world_views(backend: MotrixBackend) -> 
     for name, values in expected.items():
         np.testing.assert_allclose(full[name].detach().numpy(), values, atol=1e-6)
 
-    state = backend.host_get_state()
+    state = backend._host_get_state()
     rows = np.asarray([1, 2], dtype=np.int64)
     qpos = state["qpos"][rows].copy()
     qvel = state["qvel"][rows].copy()
@@ -442,7 +442,7 @@ def test_selected_body_read_matches_full_world_views(backend: MotrixBackend) -> 
         torch.tensor(qvel, dtype=torch.float32),
     )
     selected = plan.read_selected_state_sensors()
-    reference = backend.host_get_body_state_w(body_ids)
+    reference = backend._host_get_body_state_w(body_ids)
     for index, name in enumerate(
         (
             "track_pos_w_base",
@@ -485,7 +485,7 @@ def test_cuda_packed_hot_path_avoids_hidden_cpu_detours(
         )
         plan.write_control(torch.zeros((3, 1), dtype=torch.float32, device="cuda"))
         plan.step(1)
-        state = backend.host_get_state()
+        state = backend._host_get_state()
         rows = torch.tensor([1, 2], dtype=torch.int64, device="cuda")
         plan.apply_reset(
             rows,
@@ -502,7 +502,7 @@ def test_cuda_packed_hot_path_avoids_hidden_cpu_detours(
 
 def test_direct_tensor_apis_use_public_contract(backend: MotrixBackend) -> None:
     state_views = backend.get_state_views(("qpos", "qvel", "ctrl"))
-    expected_state = backend.host_get_state()
+    expected_state = backend._host_get_state()
     np.testing.assert_allclose(
         state_views["qpos"].detach().numpy(), expected_state["qpos"], atol=1e-6
     )
@@ -512,7 +512,7 @@ def test_direct_tensor_apis_use_public_contract(backend: MotrixBackend) -> None:
     assert state_views["ctrl"].shape == (3, backend.num_actuators)
     np.testing.assert_allclose(
         backend.get_sensor_view("angle").detach().numpy(),
-        backend.host_read_sensor("angle"),
+        backend._host_read_sensor("angle"),
         atol=1e-6,
     )
 
@@ -525,7 +525,7 @@ def test_direct_tensor_apis_use_public_contract(backend: MotrixBackend) -> None:
     assert direct_plan is not None
     assert backend.step_tensor(torch.full((3, 1), 0.1, dtype=torch.float32)) is not None
     assert backend._direct_host_bridge_plan is direct_plan
-    before = backend.host_get_state()
+    before = backend._host_get_state()
     selected_rows = np.asarray([2, 1], dtype=np.int64)
     qpos = before["qpos"][selected_rows].copy()
     qvel = before["qvel"][selected_rows].copy()
@@ -548,7 +548,7 @@ def test_direct_tensor_apis_use_public_contract(backend: MotrixBackend) -> None:
         "h2d_bytes": 0,
         "synchronization_count": 0,
     }
-    after = backend.host_get_state()
+    after = backend._host_get_state()
     np.testing.assert_allclose(after["qpos"][selected_rows], qpos, atol=1e-6)
     np.testing.assert_allclose(after["qvel"][selected_rows], qvel, atol=1e-6)
     np.testing.assert_allclose(after["qpos"][0], before["qpos"][0], atol=1e-6)
@@ -584,7 +584,7 @@ def test_portable_generalized_tensor_parity_and_persistent_counters(
         qvel = initial["qvel"][rows].copy()
         qpos[:, 0] = [0.08, -0.06]
         qvel[:, 0] = [0.2, -0.3]
-        reference.host_set_state(rows, qpos.copy(), qvel.copy())
+        reference._host_set_state(rows, qpos.copy(), qvel.copy())
         plan.apply_reset(
             torch.tensor(rows, dtype=torch.int64),
             torch.tensor(qpos, dtype=torch.float32),
@@ -599,7 +599,7 @@ def test_portable_generalized_tensor_parity_and_persistent_counters(
         ctrl = np.asarray([[0.05], [-0.04], [0.03]], dtype=np.float32)
         plan.write_control(torch.from_numpy(ctrl.copy()))
         plan.step(2)
-        reference.host_step(ctrl, 2)
+        reference._host_step(ctrl, 2)
         views = plan.read_state_sensors()
         expected_state = motrix_tensor._canonical_states(candidate, ("qpos", "qvel"))
         reference_state = motrix_tensor._canonical_states(reference, ("qpos", "qvel"))
@@ -613,7 +613,7 @@ def test_portable_generalized_tensor_parity_and_persistent_counters(
                 views[name].detach().numpy(), candidate.get_sensor_data(name), atol=1e-6
             )
             np.testing.assert_allclose(
-                candidate.get_sensor_data(name), reference.host_read_sensor(name), atol=1e-5
+                candidate.get_sensor_data(name), reference._host_read_sensor(name), atol=1e-5
             )
 
         assert plan.transfer_stats["d2h_count"] == 2
@@ -638,7 +638,7 @@ def test_packed_reset_validation_is_bounded_timed_and_producer_owned(
     assert plan.last_timing["tensor_control_packed_d2h_bytes"] == float(nonfinite_ctrl.numel() * 4)
     plan.write_control(finite_ctrl)
 
-    before_state = backend.host_get_state()
+    before_state = backend._host_get_state()
     nan_qpos = before_state["qpos"].copy()
     nan_qpos[1, 0] = np.nan
     result = plan.apply_reset(
@@ -647,8 +647,8 @@ def test_packed_reset_validation_is_bounded_timed_and_producer_owned(
         torch.tensor(before_state["qvel"][[1]], dtype=torch.float32),
     )
     assert result is not None
-    assert np.isnan(backend.host_get_state()["qpos"][1, 0])
-    after_nan_state = backend.host_get_state()
+    assert np.isnan(backend._host_get_state()["qpos"][1, 0])
+    after_nan_state = backend._host_get_state()
 
     before_stats = dict(plan.transfer_stats)
     with pytest.raises(ValueError, match=r"in \[0"):
@@ -664,7 +664,7 @@ def test_packed_reset_validation_is_bounded_timed_and_producer_owned(
             torch.tensor(before_state["qvel"][:2], dtype=torch.float32),
         )
     assert plan.transfer_stats == before_stats
-    np.testing.assert_array_equal(backend.host_get_state()["qpos"], after_nan_state["qpos"])
+    np.testing.assert_array_equal(backend._host_get_state()["qpos"], after_nan_state["qpos"])
 
     original_validate = motrix_tensor._validate_reset_rows
 
@@ -684,7 +684,7 @@ def test_packed_reset_validation_is_bounded_timed_and_producer_owned(
 
 def test_body_state_sensor_aliases_use_public_world_views(backend: MotrixBackend) -> None:
     body_ids = backend.get_body_ids(("base", "link"))
-    positions, quaternions, linear_velocities, angular_velocities = backend.host_get_body_state_w(
+    positions, quaternions, linear_velocities, angular_velocities = backend._host_get_body_state_w(
         body_ids
     )
     link_index = int(np.flatnonzero(body_ids == backend.get_body_ids(("link",))[0])[0])
@@ -726,7 +726,7 @@ def test_body_state_sensor_aliases_use_public_world_views(backend: MotrixBackend
         )
     )
     views = plan.read_state_sensors()
-    positions, quaternions, linear_velocities, angular_velocities = backend.host_get_body_state_w(
+    positions, quaternions, linear_velocities, angular_velocities = backend._host_get_body_state_w(
         body_ids
     )
     np.testing.assert_allclose(
@@ -793,7 +793,7 @@ def test_direct_tensor_apis_fail_closed_with_fixed_variants(tmp_path: Path) -> N
         base_name="robot/base",
     )
     try:
-        state = backend.host_get_state()
+        state = backend._host_get_state()
         qpos = torch.tensor(state["qpos"][[1]], dtype=torch.float32)
         qvel = torch.tensor(state["qvel"][[1]], dtype=torch.float32)
 
@@ -899,19 +899,19 @@ def test_packed_reads_do_not_reread_sensor_layout(
         )
     )
     calls: list[str] = []
-    original_get_sensor_data = backend.host_read_sensor
+    original_get_sensor_data = backend._host_read_sensor
 
     def tracking_get_sensor_data(name: str) -> np.ndarray:
         calls.append(name)
         return original_get_sensor_data(name)
 
-    monkeypatch.setattr(backend, "host_read_sensor", tracking_get_sensor_data)
+    monkeypatch.setattr(backend, "_host_read_sensor", tracking_get_sensor_data)
     plan.write_control(torch.zeros((3, 1), dtype=torch.float32))
     plan.step()
     for _ in range(3):
         plan.read_state_sensors()
 
-    state = backend.host_get_state()
+    state = backend._host_get_state()
     rows = torch.tensor([0, 2], dtype=torch.int64)
     plan.apply_reset(
         rows,
@@ -929,7 +929,7 @@ def test_compile_fails_closed_on_sensor_layout_drift(
 ) -> None:
     """A sensor width that drifts before compile validation fails closed."""
 
-    original_get_sensor_data = backend.host_read_sensor
+    original_get_sensor_data = backend._host_read_sensor
     calls = 0
 
     def drifting_get_sensor_data(name: str) -> np.ndarray:
@@ -940,7 +940,7 @@ def test_compile_fails_closed_on_sensor_layout_drift(
             return values.reshape(backend.num_envs, -1)[:, :-1]
         return values
 
-    monkeypatch.setattr(backend, "host_read_sensor", drifting_get_sensor_data)
+    monkeypatch.setattr(backend, "_host_read_sensor", drifting_get_sensor_data)
     with pytest.raises(RuntimeError, match="layout changed after compilation"):
         backend.bind_host_bridge_io(
             TensorIOSpec(

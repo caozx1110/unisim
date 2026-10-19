@@ -379,7 +379,7 @@ class DrakeHostBridgeTransferPlan(HostBridgeTransferPlan):
         if not self._control_ready:
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
-        result = self._backend.host_step(self._buffers().host_ctrl.numpy(), nsteps)
+        result = self._backend._host_step(self._buffers().host_ctrl.numpy(), nsteps)
         timing = dict(self.last_timing)
         timing.update(dict((result or {}).get("timing", {})))
         return {"timing": timing}
@@ -479,7 +479,7 @@ class DrakeHostBridgeTransferPlan(HostBridgeTransferPlan):
         self._validate_reset_rows(rows)
         elapsed = (time.perf_counter() - started) * 1000.0
 
-        self._backend.host_set_state(
+        self._backend._host_set_state(
             rows, host_qpos.astype(np.float64), host_qvel.astype(np.float64)
         )
         self._last_reset_rows_host = rows

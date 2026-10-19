@@ -2214,7 +2214,7 @@ class MuJoCoBackend(SimBackend):
     def get_init_qvel(self) -> np.ndarray:
         return np.zeros((self.nv,), dtype=self._np_dtype)
 
-    def host_get_state(
+    def _host_get_state(
         self, fields: tuple[str, ...] | str | None = None
     ) -> Mapping[str, np.ndarray]:
         """Return detached full generalized-state snapshots.
@@ -2372,7 +2372,7 @@ class MuJoCoBackend(SimBackend):
 
         self._require_entity_healthy()
         target = torch.device(device) if device is not None else torch.device("cpu")
-        host_state = self.host_get_state(fields)
+        host_state = self._host_get_state(fields)
         result = {
             name: torch.from_numpy(np.ascontiguousarray(value)).to(
                 target, non_blocking=bool(target.type == "cuda")
@@ -2389,13 +2389,13 @@ class MuJoCoBackend(SimBackend):
 
         self._require_entity_healthy()
         target = torch.device(device) if device is not None else torch.device("cpu")
-        value = np.array(self.host_read_sensor(name), dtype=self._np_dtype, order="C", copy=True)
+        value = np.array(self._host_read_sensor(name), dtype=self._np_dtype, order="C", copy=True)
         result = torch.from_numpy(value).to(target, non_blocking=bool(target.type == "cuda"))
         if target.type == "cuda":
             torch.cuda.current_stream(target).synchronize()
         return result
 
-    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
         """Reset each world to its own fixed variant's compiler default."""
         self._require_entity_healthy()
         if self._entity_layout is not None:
@@ -2426,7 +2426,7 @@ class MuJoCoBackend(SimBackend):
             )
             return
         if self._fixed_variant_build is None:
-            self.host_reset_default(env_ids)
+            self._host_reset_default(env_ids)
             return
         ids = selected_rows(
             (np.arange(self.num_envs, dtype=np.int32) if env_ids is None else np.asarray(env_ids)),
@@ -2437,7 +2437,7 @@ class MuJoCoBackend(SimBackend):
             self._fixed_variant_build.default_qpos[variants], dtype=self._np_dtype
         ).copy()
         qvel = np.zeros((ids.size, self.nv), dtype=self._np_dtype)
-        self.host_set_state(ids, qpos, qvel)
+        self._host_set_state(ids, qpos, qvel)
 
     def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         qpos, qvel = self._compiled_index.free_root_layout(root_body_name)
@@ -2635,7 +2635,7 @@ class MuJoCoBackend(SimBackend):
     # Simulation control                                                 #
     # ------------------------------------------------------------------ #
 
-    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict | None:
+    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict | None:
         self._require_entity_healthy()
         if self._entity_layout is None:
             return self._step_native(ctrl, nsteps)
@@ -2673,7 +2673,7 @@ class MuJoCoBackend(SimBackend):
             torch.cuda.current_stream(ctrl.device).synchronize()
         ctrl_host = ctrl.detach().cpu().numpy()
         d2h_ms = (time.perf_counter() - t0) * 1000.0
-        result = self.host_step(ctrl_host, nsteps)
+        result = self._host_step(ctrl_host, nsteps)
         if result is None:
             result = {}
         timing = dict(result.get("timing", {}))
@@ -2793,7 +2793,7 @@ class MuJoCoBackend(SimBackend):
             }
         }
 
-    def host_reset_randomization_dict(
+    def _host_reset_randomization_dict(
         self, randomization: TensorResetRandomizationPayload | None
     ) -> dict[str, np.ndarray] | None:
         """Validate a torch-first reset payload and convert it to host NumPy.
@@ -2822,7 +2822,7 @@ class MuJoCoBackend(SimBackend):
             )
         return reset_payload_to_host_dict(randomization)
 
-    def host_set_state(
+    def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -2847,7 +2847,7 @@ class MuJoCoBackend(SimBackend):
                     raise NotImplementedError(
                         f"MuJoCo reset randomization does not support terms: {sorted(unsupported)}"
                     )
-        host_randomization = self.host_reset_randomization_dict(randomization)
+        host_randomization = self._host_reset_randomization_dict(randomization)
         self._require_entity_healthy()
         timing: dict[str, float] = {
             "set_state_mask_ms": 0.0,
@@ -2939,7 +2939,7 @@ class MuJoCoBackend(SimBackend):
             raise ValueError("MuJoCo reset tensors must share one device")
         if env_indices.shape[0] == 0:
             rows = env_indices.detach().cpu().numpy()
-            return self.host_set_state(
+            return self._host_set_state(
                 rows, qpos[:0].cpu().numpy(), qvel[:0].cpu().numpy(), randomization
             )
         if source_device.type == "cuda":
@@ -2955,7 +2955,7 @@ class MuJoCoBackend(SimBackend):
         rows = env_indices.detach().cpu().numpy()
         positions = qpos.detach().cpu().numpy()
         velocities = qvel.detach().cpu().numpy()
-        return self.host_set_state(rows, positions, velocities, randomization)
+        return self._host_set_state(rows, positions, velocities, randomization)
 
     def set_state_tensor_mask(
         self,
@@ -3025,7 +3025,7 @@ class MuJoCoBackend(SimBackend):
                 if value.device != source_device:
                     raise ValueError("MuJoCo tensor mask reset values must share one device")
             # Rows are selected on the payload's device; the host NumPy
-            # conversion happens once at the host_set_state boundary.
+            # conversion happens once at the _host_set_state boundary.
             selected_randomization = TensorResetRandomizationPayload(
                 **{
                     field: value.index_select(0, selected_rows_tensor)
@@ -3042,7 +3042,7 @@ class MuJoCoBackend(SimBackend):
         if rows.size:
             positions = qpos.index_select(0, selected_rows_tensor).detach().cpu().numpy()
             velocities = qvel.index_select(0, selected_rows_tensor).detach().cpu().numpy()
-            result = self.host_set_state(rows, positions, velocities, selected_randomization)
+            result = self._host_set_state(rows, positions, velocities, selected_randomization)
             if result is None:
                 result = {}
             timing.update(result.get("timing", {}))
@@ -3590,19 +3590,19 @@ class MuJoCoBackend(SimBackend):
     # Base kinematics                                                    #
     # ------------------------------------------------------------------ #
 
-    def host_get_base_pos(self) -> np.ndarray:
+    def _host_get_base_pos(self) -> np.ndarray:
         self._require_entity_healthy()
         return self._base_pos_view
 
-    def host_get_base_quat(self) -> np.ndarray:
+    def _host_get_base_quat(self) -> np.ndarray:
         self._require_entity_healthy()
         return self._base_quat_view
 
-    def host_get_base_lin_vel(self) -> np.ndarray:
+    def _host_get_base_lin_vel(self) -> np.ndarray:
         self._require_entity_healthy()
         return self._base_lin_vel_view
 
-    def host_get_base_ang_vel(self) -> np.ndarray:
+    def _host_get_base_ang_vel(self) -> np.ndarray:
         self._require_entity_healthy()
         return self._base_ang_vel_view
 
@@ -3627,15 +3627,15 @@ class MuJoCoBackend(SimBackend):
         self._sync_tracked_body_state(env_ids)
         return mapped_indices  # type: ignore[no-any-return]
 
-    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_entity_healthy()
         return self._tracked_pos_w_all[:, self._get_mapped_indices(body_ids), :]  # type: ignore[no-any-return]
 
-    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_entity_healthy()
         return self._tracked_quat_w_all[:, self._get_mapped_indices(body_ids), :]  # type: ignore[no-any-return]
 
-    def host_get_body_pose_w_rows(
+    def _host_get_body_pose_w_rows(
         self, env_ids: np.ndarray, body_ids: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         self._require_entity_healthy()
@@ -3645,29 +3645,29 @@ class MuJoCoBackend(SimBackend):
             rows[:, None], mapped
         ]
 
-    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_entity_healthy()
         return self._tracked_linvel_w_all[:, self._get_mapped_indices(body_ids), :]  # type: ignore[no-any-return]
 
-    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_entity_healthy()
         return self._tracked_angvel_w_all[:, self._get_mapped_indices(body_ids), :]  # type: ignore[no-any-return]
 
-    def host_get_body_lin_vel_w_rows(
+    def _host_get_body_lin_vel_w_rows(
         self, env_ids: np.ndarray, body_ids: np.ndarray
     ) -> np.ndarray:
         self._require_entity_healthy()
         rows = np.asarray(env_ids, dtype=np.intp)
         return self._tracked_linvel_w_all[rows[:, None], self._get_mapped_indices(body_ids, rows)]  # type: ignore[no-any-return]
 
-    def host_get_body_ang_vel_w_rows(
+    def _host_get_body_ang_vel_w_rows(
         self, env_ids: np.ndarray, body_ids: np.ndarray
     ) -> np.ndarray:
         self._require_entity_healthy()
         rows = np.asarray(env_ids, dtype=np.intp)
         return self._tracked_angvel_w_all[rows[:, None], self._get_mapped_indices(body_ids, rows)]  # type: ignore[no-any-return]
 
-    def host_get_body_state_w(
+    def _host_get_body_state_w(
         self, body_ids: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         mapped = self._get_mapped_indices(body_ids)
@@ -3678,7 +3678,7 @@ class MuJoCoBackend(SimBackend):
             self._tracked_angvel_w_all[:, mapped, :],
         )
 
-    def host_copy_body_state_w(
+    def _host_copy_body_state_w(
         self,
         body_ids: np.ndarray,
         out_pos: np.ndarray,
@@ -3708,7 +3708,7 @@ class MuJoCoBackend(SimBackend):
     # Sensors                                                            #
     # ------------------------------------------------------------------ #
 
-    def host_read_sensor(self, name: str) -> np.ndarray:
+    def _host_read_sensor(self, name: str) -> np.ndarray:
         self._require_entity_healthy()
         try:
             return self._sensor_views[name]
@@ -3718,11 +3718,11 @@ class MuJoCoBackend(SimBackend):
                 f"available sensors: {', '.join(sorted(self._sensor_views))}"
             ) from exc
 
-    def host_read_sensor_rows(self, name: str, env_ids: np.ndarray) -> np.ndarray:
+    def _host_read_sensor_rows(self, name: str, env_ids: np.ndarray) -> np.ndarray:
         self._require_entity_healthy()
         return self._sensor_views[name][np.asarray(env_ids, dtype=np.intp)]
 
-    def host_read_sensor_batch(self, names: Sequence[str]) -> np.ndarray:
+    def _host_read_sensor_batch(self, names: Sequence[str]) -> np.ndarray:
         self._require_entity_healthy()
         sensor_names = tuple(names)
         if not sensor_names:

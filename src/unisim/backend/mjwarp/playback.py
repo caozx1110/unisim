@@ -1,6 +1,6 @@
 """Cold-path MuJoCo offline playback bridge for ``mjwarp``.
 
-The implementation lives in :mod:`unisim.backend.playback_common` so other
+The implementation lives in :mod:`unisim.backend.playback` so other
 snapshot-based adapters (Newton) share one offline MuJoCo pipeline; the
 wrappers below keep the historical mjwarp names, signatures, and messages.
 """
@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 import numpy as np
 
 from unisim.backend.base import CameraCfg, DebugOverlayGetter, validate_debug_overlays
-from unisim.backend.playback_common import (
+from unisim.backend.playback import (
     run_offline_snapshot_playback,
     validate_offline_visual_model,
 )
@@ -191,7 +191,7 @@ def _run_interactive(
     if model.nmocap != backend.get_physics_state_layout().nmocap:
         raise ValueError("mjwarp interactive visual model mocap layout is incompatible.")
     getter = frame_state_getter or env.get_physics_state_snapshot
-    from unisim.backend.playback_common import env_cfg_value
+    from unisim.backend.playback import env_cfg_value
 
     ctrl_dt = float(env_cfg_value(env, "ctrl_dt", 1 / 60))
 

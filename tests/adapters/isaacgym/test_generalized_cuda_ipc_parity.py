@@ -307,9 +307,9 @@ def _reference_snapshot(
     step_index: int,
     control: np.ndarray,
 ) -> RolloutSnapshot:
-    state = backend.host_get_state(("qpos", "qvel"))
+    state = backend._host_get_state(("qpos", "qvel"))
     sensors = {
-        name: np.asarray(backend.host_read_sensor(name), dtype=np.float32).copy()
+        name: np.asarray(backend._host_read_sensor(name), dtype=np.float32).copy()
         for name in _sensor_names()
     }
     return RolloutSnapshot(

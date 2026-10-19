@@ -785,13 +785,13 @@ class TestInteractiveOverlayInjection:
 
 class TestOnFrameCallback:
     def test_none_passthrough(self) -> None:
-        from unisim.backend.playback_common import apply_on_frame_callback
+        from unisim.backend.playback import apply_on_frame_callback
 
         frames = [np.zeros((4, 4, 3), dtype=np.uint8)]
         assert apply_on_frame_callback(frames, None, backend_label="test") is frames
 
     def test_replacement_and_keep(self) -> None:
-        from unisim.backend.playback_common import apply_on_frame_callback
+        from unisim.backend.playback import apply_on_frame_callback
 
         frames = [np.zeros((4, 4, 3), dtype=np.uint8) for _ in range(3)]
         calls: list[int] = []
@@ -808,7 +808,7 @@ class TestOnFrameCallback:
         assert out[1].min() == 255
 
     def test_bad_replacement_fails_closed(self) -> None:
-        from unisim.backend.playback_common import apply_on_frame_callback
+        from unisim.backend.playback import apply_on_frame_callback
 
         frames = [np.zeros((4, 4, 3), dtype=np.uint8)]
         with pytest.raises(ValueError, match="on_frame must return None"):

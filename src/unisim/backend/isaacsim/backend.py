@@ -36,7 +36,7 @@ from unisim.backend.base import (
     validate_torch_device,
 )
 from unisim.backend.isaacgym.backend import IsaacGymWorkerError
-from unisim.backend.playback_common import display_available
+from unisim.backend.playback import display_available
 from unisim.backend.subprocess_ipc import protocol
 from unisim.backend.subprocess_ipc.backend import (
     MjcfSubprocessBackend,
@@ -919,9 +919,9 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             return
         self._pre_step_control_fn = fn
 
-    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
+    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
         if self._entity_scene is None or self._pre_step_control_fn is None:
-            result = super().host_step(ctrl, nsteps)
+            result = super()._host_step(ctrl, nsteps)
         else:
             self._require_state("step")
             if isinstance(nsteps, bool) or int(nsteps) <= 0:
@@ -1028,7 +1028,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             self._staged_body_wrench.fill(0.0)
             self._body_wrench_pending = False
 
-    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
         if self._tensor_cuda_ipc_requested and self._entity_scene is not None:
             if env_ids is not None:
                 raise NotImplementedError(
@@ -1052,7 +1052,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             )
             self.set_state_tensor(rows, qpos, qvel)
             return
-        super().host_reset(env_ids)
+        super()._host_reset(env_ids)
         if self._entity_scene is None:
             return
         rows = np.arange(self._num_envs) if env_ids is None else np.asarray(env_ids)
@@ -1861,7 +1861,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             del resolved[name]
         return resolved
 
-    def host_read_sensor(self, name: str) -> np.ndarray:
+    def _host_read_sensor(self, name: str) -> np.ndarray:
         mapped = self._sensor_map.get(name)
         if (
             mapped is not None
@@ -1873,7 +1873,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             if spec.sensor_index is None:
                 raise self._worker_error("IsaacSim contact-force sensor row is unresolved")
             return self._slots["contact_sensor_force"][:, spec.sensor_index, :].copy()
-        return super().host_read_sensor(name)
+        return super()._host_read_sensor(name)
 
     def _bind_sensor_data_reader(self, names: tuple[str, ...]) -> Callable[[], np.ndarray]:
         """Bind the cold-path NumPy shape contract over CUDA sensor views."""
@@ -2939,7 +2939,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         parts = layout.split_state(state_array)
         # The split columns are strided views; the shared-memory reset upload
         # expects contiguous rows.
-        self.host_set_state(
+        self._host_set_state(
             np.arange(self._num_envs, dtype=np.intp),
             np.ascontiguousarray(parts.qpos),
             np.ascontiguousarray(parts.qvel),
@@ -2966,14 +2966,14 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             return str(Path(self._scene.model_file).expanduser())
         return super().get_playback_model(env_index)
 
-    def host_set_state(
+    def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
         randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, dict[str, float]]:
-        result = super().host_set_state(env_indices, qpos, qvel, randomization)
+        result = super()._host_set_state(env_indices, qpos, qvel, randomization)
         # A full state write restarts the playback clock for its rows,
         # matching the mujoco backend's reset-world time clear.  This also
         # covers reset(), which the base class implements through set_state.

@@ -112,7 +112,7 @@ def test_mujoco_packed_reset_merges_pd_columns_and_promotes_baseline(tmp_path: P
 
 def test_mujoco_packed_reset_selected_state_and_persistent_channels(tmp_path: Path) -> None:
     backend = _backend(tmp_path)
-    backend.host_step(np.full((3, 2), 0.5), nsteps=2)
+    backend._host_step(np.full((3, 2), 0.5), nsteps=2)
     transaction = backend.bind_packed_reset(device="cpu")
     rows = torch.tensor([2], dtype=torch.int64)
     qpos = torch.tensor([[0.25, -0.1]], dtype=torch.float32)
@@ -133,7 +133,7 @@ def test_mujoco_mask_tensor_reset_preserves_false_rows(tmp_path: Path) -> None:
     assert capabilities.mask_selected_reset
     assert capabilities.mask_selected_reset_full_refresh
 
-    backend.host_step(np.full((4, 2), 0.5), nsteps=2)
+    backend._host_step(np.full((4, 2), 0.5), nsteps=2)
     before = backend.get_state_views(("qpos", "qvel"), device="cpu")
     old_time = backend._time_view.copy()
     mask = torch.tensor([False, True, False, True], dtype=torch.bool)
@@ -335,7 +335,7 @@ def test_mujoco_packed_reset_commits_selected_mocap_poses(tmp_path: Path) -> Non
     assert capabilities.packed_reset_mocap
 
     transaction = backend.bind_packed_reset(device="cpu")
-    state = backend.host_get_state()
+    state = backend._host_get_state()
     transaction.set_state_default(
         torch.as_tensor(state["qpos"][0], dtype=torch.float32),
         torch.as_tensor(state["qvel"][0], dtype=torch.float32),

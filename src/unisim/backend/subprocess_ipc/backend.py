@@ -39,7 +39,7 @@ from unisim.backend.base import (
     normalize_play_render_mode,
     unsupported_debug_overlay_error,
 )
-from unisim.backend.playback_common import display_available
+from unisim.backend.playback import display_available
 from unisim.backend.subprocess_ipc.scene_materialization import (
     PreparedWorkerScene,
     body_sphere_radii_close,
@@ -565,7 +565,7 @@ class MjcfSubprocessBackend(SimBackend):
             self._slots["entity_root_state"][:, index],
         )
 
-    def host_get_state(
+    def _host_get_state(
         self, fields: tuple[str, ...] | str | None = None
     ) -> Mapping[str, np.ndarray]:
         if self._entity_scene is None:
@@ -575,7 +575,7 @@ class MjcfSubprocessBackend(SimBackend):
                 else ((fields,) if isinstance(fields, str) else tuple(fields))
             )
             result = dict(
-                super().host_get_state(tuple(name for name in requested if name != "ctrl"))
+                super()._host_get_state(tuple(name for name in requested if name != "ctrl"))
             )
             if "ctrl" in requested:
                 self._require_state("control snapshot")
@@ -755,9 +755,9 @@ class MjcfSubprocessBackend(SimBackend):
             f"{self.__class__.__name__} does not support reset property mutation readback"
         )
 
-    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
         if self._entity_scene is None:
-            return self.host_reset_default(env_ids)
+            return self._host_reset_default(env_ids)
         ids = np.arange(self._num_envs) if env_ids is None else np.asarray(env_ids)
         if ids.ndim != 1 or ids.dtype.kind not in "iu":
             raise ValueError("reset env_ids must be one-dimensional integers")
@@ -2227,7 +2227,7 @@ class MjcfSubprocessBackend(SimBackend):
             )
         self._pre_step_control_fn = None
 
-    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
+    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
         self._require_state("step")
         if isinstance(nsteps, bool) or int(nsteps) <= 0:
             raise ValueError(f"nsteps must be a positive integer, got {nsteps!r}")
@@ -2266,7 +2266,7 @@ class MjcfSubprocessBackend(SimBackend):
     def _after_step(self, payload: dict[str, Any]) -> None:
         """Consume adapter-owned data after a successful worker STEP."""
 
-    def host_set_state(
+    def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -2539,16 +2539,16 @@ class MjcfSubprocessBackend(SimBackend):
         self._require_state("state read")
         return self._slots["body_state"]
 
-    def host_get_base_pos(self) -> np.ndarray:
+    def _host_get_base_pos(self) -> np.ndarray:
         return self._root_slot()[:, 0:3]
 
-    def host_get_base_quat(self) -> np.ndarray:
+    def _host_get_base_quat(self) -> np.ndarray:
         return self._root_slot()[:, 3:7]
 
-    def host_get_base_lin_vel(self) -> np.ndarray:
+    def _host_get_base_lin_vel(self) -> np.ndarray:
         return self._root_slot()[:, 7:10]
 
-    def host_get_base_ang_vel(self) -> np.ndarray:
+    def _host_get_base_ang_vel(self) -> np.ndarray:
         return self._root_slot()[:, 10:13]
 
     def _selected_body_state(self, body_ids: np.ndarray) -> np.ndarray:
@@ -2564,23 +2564,23 @@ class MjcfSubprocessBackend(SimBackend):
             )
         return self._body_slot()[:, ids, :]
 
-    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._selected_body_state(body_ids)[:, :, 0:3]
 
-    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._selected_body_state(body_ids)[:, :, 3:7]
 
-    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._selected_body_state(body_ids)[:, :, 7:10]
 
-    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._selected_body_state(body_ids)[:, :, 10:13]
 
     # ------------------------------------------------------------------ #
     # Sensors
     # ------------------------------------------------------------------ #
 
-    def host_read_sensor(self, name: str) -> np.ndarray:
+    def _host_read_sensor(self, name: str) -> np.ndarray:
         """Compute one mapped scene sensor from the shm state caches.
 
         See ``sensors.py`` for the MJCF-sensor → tensor-quantity mapping table.

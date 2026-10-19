@@ -2790,7 +2790,7 @@ class MotrixBackend(SimBackend):
         parts = layout.split_state(state_array)
         # The split columns are strided views; the native set_state path hands
         # its inputs to motrixsim batch writers that expect contiguous rows.
-        self.host_set_state(
+        self._host_set_state(
             np.arange(self._num_envs, dtype=np.intp),
             np.ascontiguousarray(parts.qpos),
             np.ascontiguousarray(parts.qvel),
@@ -2890,7 +2890,7 @@ class MotrixBackend(SimBackend):
             self._portable_faulted = True
             raise
 
-    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict | None:
+    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict | None:
         if self._portable_mode:
             self._require_portable_healthy("step")
             ctrl_array = np.asarray(ctrl)
@@ -2988,7 +2988,7 @@ class MotrixBackend(SimBackend):
             }
         }
 
-    def host_reset_randomization_dict(
+    def _host_reset_randomization_dict(
         self, randomization: TensorResetRandomizationPayload | None
     ) -> dict[str, np.ndarray] | None:
         """Validate a torch-first reset payload and convert it to host NumPy.
@@ -3017,7 +3017,7 @@ class MotrixBackend(SimBackend):
             )
         return reset_payload_to_host_dict(randomization)
 
-    def host_set_state(
+    def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -3042,7 +3042,7 @@ class MotrixBackend(SimBackend):
                     raise NotImplementedError(
                         f"Motrix reset randomization does not support terms: {sorted(unsupported)}"
                     )
-        host_randomization = self.host_reset_randomization_dict(randomization)
+        host_randomization = self._host_reset_randomization_dict(randomization)
         if self._portable_mode:
             return self._portable_set_state(
                 env_indices, qpos, qvel, randomization=host_randomization
@@ -3293,7 +3293,7 @@ class MotrixBackend(SimBackend):
             self._apply_portable_reset_randomization(portable_randomization, rows)
         return {"timing": {}}
 
-    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
         if not self._portable_mode:
             rows = (
                 np.arange(self._num_envs, dtype=np.intp)
@@ -3311,7 +3311,7 @@ class MotrixBackend(SimBackend):
                     np.asarray(self.get_init_qvel(), dtype=np.float32),
                     (rows.size, nv),
                 )
-                self.host_set_state(rows, qpos.copy(), qvel.copy())
+                self._host_set_state(rows, qpos.copy(), qvel.copy())
             return
         self._require_portable_healthy("reset")
         rows = (
@@ -3924,7 +3924,7 @@ class MotrixBackend(SimBackend):
     # Base kinematics                                                    #
     # ------------------------------------------------------------------ #
 
-    def host_get_base_pos(self) -> np.ndarray:
+    def _host_get_base_pos(self) -> np.ndarray:
         if self._portable_mode:
             native_id = int(self._body_link.index)
             return self._link_poses[:, native_id, :3].copy()
@@ -3932,7 +3932,7 @@ class MotrixBackend(SimBackend):
             return self._body_floatingbase.get_translation(self._data)  # type: ignore[no-any-return]
         return self._body_link.get_pose(self._data)[:, :3]  # type: ignore[no-any-return]
 
-    def host_get_base_quat(self) -> np.ndarray:
+    def _host_get_base_quat(self) -> np.ndarray:
         if self._portable_mode:
             native_id = int(self._body_link.index)
             return self._xyzw_to_wxyz(self._link_poses[:, native_id, 3:]).copy()
@@ -3942,7 +3942,7 @@ class MotrixBackend(SimBackend):
             quat = self._body_link.get_rotation(self._data)
         return self._xyzw_to_wxyz(quat)
 
-    def host_get_base_lin_vel(self) -> np.ndarray:
+    def _host_get_base_lin_vel(self) -> np.ndarray:
         if self._portable_mode:
             native_id = int(self._body_link.index)
             return self._ensure_link_velocity_cache()[:, native_id, :3].copy()
@@ -3950,7 +3950,7 @@ class MotrixBackend(SimBackend):
             return self._body_floatingbase.get_global_linear_velocity(self._data)  # type: ignore[no-any-return]
         return self._body_link.get_linear_velocity(self._data)  # type: ignore[no-any-return]
 
-    def host_get_base_ang_vel(self) -> np.ndarray:
+    def _host_get_base_ang_vel(self) -> np.ndarray:
         if self._portable_mode:
             native_id = int(self._body_link.index)
             return self._ensure_link_velocity_cache()[:, native_id, 3:].copy()
@@ -3962,7 +3962,7 @@ class MotrixBackend(SimBackend):
     # DOF state                                                          #
     # ------------------------------------------------------------------ #
 
-    def host_get_state(
+    def _host_get_state(
         self, fields: tuple[str, ...] | str | None = None
     ) -> Mapping[str, np.ndarray]:
         """Return detached public qpos/qvel snapshots assembled on the host.
@@ -3999,8 +3999,8 @@ class MotrixBackend(SimBackend):
             )
             result["qpos"] = np.concatenate(
                 (
-                    np.asarray(self.host_get_base_pos(), dtype=self._np_dtype),
-                    np.asarray(self.host_get_base_quat(), dtype=self._np_dtype),
+                    np.asarray(self._host_get_base_pos(), dtype=self._np_dtype),
+                    np.asarray(self._host_get_base_quat(), dtype=self._np_dtype),
                     np.asarray(self._data.dof_pos, dtype=self._np_dtype)[:, qpos_indices],
                 ),
                 axis=1,
@@ -4013,8 +4013,8 @@ class MotrixBackend(SimBackend):
             )
             result["qvel"] = np.concatenate(
                 (
-                    np.asarray(self.host_get_base_lin_vel(), dtype=self._np_dtype),
-                    np.asarray(self.host_get_base_ang_vel(), dtype=self._np_dtype),
+                    np.asarray(self._host_get_base_lin_vel(), dtype=self._np_dtype),
+                    np.asarray(self._host_get_base_ang_vel(), dtype=self._np_dtype),
                     np.asarray(self._data.dof_vel, dtype=self._np_dtype)[:, qvel_indices],
                 ),
                 axis=1,
@@ -4036,26 +4036,26 @@ class MotrixBackend(SimBackend):
             return native_values.astype(np.int32, copy=False)
         return values
 
-    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._get_link_poses_w(body_ids)[:, :, :3]
 
-    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._xyzw_to_wxyz(self._get_link_poses_w(body_ids)[:, :, 3:])
 
-    def host_get_body_pose_w_rows(
+    def _host_get_body_pose_w_rows(
         self, env_ids: np.ndarray, body_ids: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         rows = np.asarray(env_ids, dtype=np.intp)
         poses_w = self._link_poses[rows[:, None], self._as_body_ids(body_ids), :]
         return poses_w[:, :, :3], self._xyzw_to_wxyz(poses_w[:, :, 3:])
 
-    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._get_link_lin_vel_w(body_ids)
 
-    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._get_link_ang_vel_w(body_ids)
 
-    def host_get_body_state_w(
+    def _host_get_body_state_w(
         self, body_ids: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         # Allocating counterpart of copy_body_state_w: both share the fused
@@ -4068,7 +4068,7 @@ class MotrixBackend(SimBackend):
         out_quat = np.empty((self._num_envs, num_bodies, 4), dtype=dtype)
         out_lin_vel = np.empty((self._num_envs, num_bodies, 3), dtype=dtype)
         out_ang_vel = np.empty((self._num_envs, num_bodies, 3), dtype=dtype)
-        return self.host_copy_body_state_w(body_ids, out_pos, out_quat, out_lin_vel, out_ang_vel)
+        return self._host_copy_body_state_w(body_ids, out_pos, out_quat, out_lin_vel, out_ang_vel)
 
     def _fused_body_state_into(
         self,
@@ -4109,7 +4109,7 @@ class MotrixBackend(SimBackend):
         out_lin_vel[...] = lin_vel
         out_ang_vel[...] = ang_vel
 
-    def host_copy_body_state_w(
+    def _host_copy_body_state_w(
         self,
         body_ids: np.ndarray,
         out_pos: np.ndarray,
@@ -4194,13 +4194,13 @@ class MotrixBackend(SimBackend):
             )
         return out_pos, out_quat, out_lin_vel, out_ang_vel
 
-    def host_get_body_lin_vel_w_rows(
+    def _host_get_body_lin_vel_w_rows(
         self, env_ids: np.ndarray, body_ids: np.ndarray
     ) -> np.ndarray:
         rows = np.asarray(env_ids, dtype=np.intp)
         return self._ensure_link_velocity_cache()[rows[:, None], self._as_body_ids(body_ids), :3]  # type: ignore[no-any-return]
 
-    def host_get_body_ang_vel_w_rows(
+    def _host_get_body_ang_vel_w_rows(
         self, env_ids: np.ndarray, body_ids: np.ndarray
     ) -> np.ndarray:
         rows = np.asarray(env_ids, dtype=np.intp)
@@ -4222,7 +4222,7 @@ class MotrixBackend(SimBackend):
             raise KeyError(f"Unknown Motrix sensor(s) {missing}; available sensors: {available}")
         return sensor_names
 
-    def host_read_sensor(self, name: str) -> np.ndarray:
+    def _host_read_sensor(self, name: str) -> np.ndarray:
         self._validate_sensor_names((name,))
         if self._portable_mode:
             self._require_portable_healthy("get_sensor_data")
@@ -4232,10 +4232,10 @@ class MotrixBackend(SimBackend):
             (name,),
         )
 
-    def host_read_sensor_rows(self, name: str, env_ids: np.ndarray) -> np.ndarray:
-        return self.host_read_sensor_rows_batch((name,), env_ids)
+    def _host_read_sensor_rows(self, name: str, env_ids: np.ndarray) -> np.ndarray:
+        return self._host_read_sensor_rows_batch((name,), env_ids)
 
-    def host_read_sensor_rows_batch(self, names: Sequence[str], env_ids: np.ndarray) -> np.ndarray:
+    def _host_read_sensor_rows_batch(self, names: Sequence[str], env_ids: np.ndarray) -> np.ndarray:
         sensor_names = self._validate_sensor_names(names)
         rows = np.asarray(env_ids, dtype=np.intp)
         if rows.ndim != 1 or np.any(rows < 0) or np.any(rows >= self._num_envs):
@@ -4253,7 +4253,7 @@ class MotrixBackend(SimBackend):
         selected_values = self._sensor_values_public_quat_order(selected_values, sensor_names)
         return selected_values[np.searchsorted(selected_rows, rows)]
 
-    def host_read_sensor_batch(self, names: Sequence[str]) -> np.ndarray:
+    def _host_read_sensor_batch(self, names: Sequence[str]) -> np.ndarray:
         sensor_names = self._validate_sensor_names(names)
         if not sensor_names:
             return np.empty((self._num_envs, 0), dtype=self._np_dtype)
@@ -4858,7 +4858,7 @@ class MotrixBackend(SimBackend):
         ):
             return
         lookat = tracking_camera_lookat(
-            self.host_get_base_pos(),
+            self._host_get_base_pos(),
             self._render_tracking_camera,
             self._render_offsets_np,
         )
@@ -4923,7 +4923,7 @@ class MotrixBackend(SimBackend):
         use_configured_camera = capture or camera_kwargs is not None
         camera_view = None
         if use_configured_camera:
-            base_positions = self.host_get_base_pos() if camera.cam_tracking else None
+            base_positions = self._host_get_base_pos() if camera.cam_tracking else None
             camera_view = resolve_system_camera_view(
                 self._num_envs,
                 base_positions,

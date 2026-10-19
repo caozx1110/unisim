@@ -37,7 +37,7 @@ from unisim.backend.base import (
     TensorRuntimeDiagnostic,
     normalize_play_render_mode,
 )
-from unisim.backend.playback_common import (
+from unisim.backend.playback import (
     run_offline_snapshot_playback,
     validate_offline_visual_model,
 )
@@ -2001,7 +2001,7 @@ class NewtonBackend(SimBackend):
         # the next sensor read instead of forcing an immediate projection.
         self._tensor_body_state_stale = True
 
-    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
+    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
         self._require_state("step")
         if isinstance(nsteps, bool) or not isinstance(nsteps, int) or nsteps <= 0:
             raise ValueError(f"nsteps must be a positive integer, got {nsteps!r}")
@@ -2101,7 +2101,7 @@ class NewtonBackend(SimBackend):
         self._solver.reset(self._state, warp_mask, flags=0)
         self._upload_control_state()
 
-    def host_set_state(
+    def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -2547,7 +2547,7 @@ class NewtonBackend(SimBackend):
                 f"newton physics snapshot must use [time, qpos, qvel] layout with shape "
                 f"{expected}, got {state_array.shape}"
             )
-        self.host_set_state(
+        self._host_set_state(
             np.arange(self._num_envs, dtype=np.intp),
             state_array[:, 1 : 1 + nq],
             state_array[:, 1 + nq :],
@@ -2583,7 +2583,7 @@ class NewtonBackend(SimBackend):
             self._playback_model_validated = True
         return self._scene_visual_model_file
 
-    def host_get_base_pos(self) -> np.ndarray:
+    def _host_get_base_pos(self) -> np.ndarray:
         self._require_state("get_base_pos")
         if self._portable_mode:
             assert self._entity_layout is not None
@@ -2593,7 +2593,7 @@ class NewtonBackend(SimBackend):
             return self._qpos_cache[:, entity.root_qpos_indices[:3]]
         return self._qpos_cache[:, :3]
 
-    def host_get_base_quat(self) -> np.ndarray:
+    def _host_get_base_quat(self) -> np.ndarray:
         self._require_state("get_base_quat")
         if self._portable_mode:
             assert self._entity_layout is not None
@@ -2603,7 +2603,7 @@ class NewtonBackend(SimBackend):
             return self._qpos_cache[:, entity.root_qpos_indices[3:7]]
         return self._qpos_cache[:, 3:7]
 
-    def host_get_base_lin_vel(self) -> np.ndarray:
+    def _host_get_base_lin_vel(self) -> np.ndarray:
         self._require_state("get_base_lin_vel")
         if self._portable_mode:
             assert self._entity_layout is not None
@@ -2613,7 +2613,7 @@ class NewtonBackend(SimBackend):
             return self._qvel_cache[:, entity.root_qvel_indices[:3]]
         return self._qvel_cache[:, :3]
 
-    def host_get_base_ang_vel(self) -> np.ndarray:
+    def _host_get_base_ang_vel(self) -> np.ndarray:
         self._require_state("get_base_ang_vel")
         if self._portable_mode:
             assert self._entity_layout is not None
@@ -2633,23 +2633,23 @@ class NewtonBackend(SimBackend):
             raise ValueError("body_ids must be one-dimensional and in range")
         return ids
 
-    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_state("get_body_pos_w")
         return self._body_pos_cache[:, self._ids(body_ids)]
 
-    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_state("get_body_quat_w")
         return self._body_quat_cache[:, self._ids(body_ids)]
 
-    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_state("get_body_lin_vel_w")
         return self._body_lin_vel_cache[:, self._ids(body_ids)]
 
-    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         self._require_state("get_body_ang_vel_w")
         return self._body_ang_vel_cache[:, self._ids(body_ids)]
 
-    def host_read_sensor(self, name: str) -> np.ndarray:
+    def _host_read_sensor(self, name: str) -> np.ndarray:
         self._require_state("get_sensor_data")
         try:
             address, dim = self._sensor_slots[name]

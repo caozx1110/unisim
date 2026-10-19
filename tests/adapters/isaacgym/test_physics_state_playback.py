@@ -150,12 +150,12 @@ def test_model_file_scene_playback_contract_end_to_end(tmp_path: Path) -> None:
         # The mock worker's initial state carries unit wxyz root quaternions.
         np.testing.assert_allclose(parts.qpos[:, 3], 1.0, rtol=1e-6)
 
-        backend.host_step(np.zeros((_NUM_ENVS, 2), dtype=np.float32), nsteps=4)
+        backend._host_step(np.zeros((_NUM_ENVS, 2), dtype=np.float32), nsteps=4)
         parts = layout.split_state(backend.get_physics_state())
         np.testing.assert_allclose(parts.time, 4 * _SIM_DT, rtol=1e-5)
 
         # Selected resets restart the clock on their rows only.
-        backend.host_reset(np.array([1], dtype=np.int32))
+        backend._host_reset(np.array([1], dtype=np.int32))
         parts = layout.split_state(backend.get_physics_state())
         assert parts.time[1] == 0.0
         np.testing.assert_allclose(parts.time[[0, 2]], 4 * _SIM_DT, rtol=1e-5)
@@ -341,10 +341,10 @@ def test_mapped_scene_playback_contract_end_to_end(tmp_path: Path) -> None:
         with pytest.raises(IndexError):
             backend.get_playback_mocap_state(_NUM_ENVS)
 
-        backend.host_step(np.zeros((_NUM_ENVS, 0), dtype=np.float32), nsteps=3)
+        backend._host_step(np.zeros((_NUM_ENVS, 0), dtype=np.float32), nsteps=3)
         parts = layout.split_state(backend.get_physics_state())
         np.testing.assert_allclose(parts.time, 3 * _SIM_DT, rtol=1e-5)
-        backend.host_reset(np.array([0, 2], dtype=np.int32))
+        backend._host_reset(np.array([0, 2], dtype=np.int32))
         parts = layout.split_state(backend.get_physics_state())
         np.testing.assert_allclose(parts.time[[0, 2]], 0.0, atol=0.0)
         np.testing.assert_allclose(parts.time[1], 3 * _SIM_DT, rtol=1e-5)

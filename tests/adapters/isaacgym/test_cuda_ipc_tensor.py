@@ -522,11 +522,11 @@ def test_numpy_hot_paths_fail_closed_while_cuda_ipc_plan_is_open() -> None:
     backend = _fake_gpu_backend()
     backend._cuda_ipc_plan = object()
     with pytest.raises(RuntimeError, match="NumPy step"):
-        backend.host_step(None)
+        backend._host_step(None)
     with pytest.raises(RuntimeError, match="NumPy reset"):
-        backend.host_reset()
+        backend._host_reset()
     with pytest.raises(RuntimeError, match="host-plane state writes"):
-        backend.host_set_state(None, None, None)
+        backend._host_set_state(None, None, None)
     with pytest.raises(RuntimeError, match="host-plane entity reset"):
         backend.reset_entities(None)
 

@@ -16,7 +16,7 @@ from typing import Any, TypeVar
 import numpy as np
 
 from unisim.backend.base import CameraCfg
-from unisim.backend.playback_common import display_available, env_cfg_value, write_playback_video
+from unisim.backend.playback import display_available, env_cfg_value, write_playback_video
 
 ObsT = TypeVar("ObsT")
 

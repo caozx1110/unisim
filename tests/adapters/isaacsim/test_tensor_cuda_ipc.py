@@ -347,7 +347,7 @@ def test_manager_shaped_public_tensor_lifecycle_needs_no_readiness_step(
     assert requests == ["reset"]
 
 
-def testhost_step_moves_only_command_metadata_over_pipe(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_host_step_moves_only_command_metadata_over_pipe(monkeypatch: pytest.MonkeyPatch) -> None:
     log: list[Any] = []
     backend, _arena, ctrl = _make_backend_and_arena(log)
     monkeypatch.setattr(
@@ -1021,7 +1021,7 @@ def test_worker_control_and_state_projection_stay_on_device_tensors(
         ctx.step_cuda_ipc({"nsteps": 1, "body_wrench": b"x"})
 
 
-def test_cuda_ipc_fullhost_reset_uses_selected_tensor_reset(monkeypatch):
+def test_cuda_ipc_full_host_reset_uses_selected_tensor_reset(monkeypatch):
     backend = IsaacSimBackend.__new__(IsaacSimBackend)
     backend._tensor_cuda_ipc_requested = True
     backend._entity_scene = SimpleNamespace(
@@ -1054,14 +1054,14 @@ def test_cuda_ipc_fullhost_reset_uses_selected_tensor_reset(monkeypatch):
         lambda: SimpleNamespace(qpos=FakeTensor(np.empty((0, 1), dtype=np.float32))),
     )
     monkeypatch.setattr(backend, "set_state_tensor", set_state_tensor)
-    backend.host_reset()
+    backend._host_reset()
     assert len(calls) == 1
     rows, qpos, qvel = calls[0]
     assert tuple(rows.shape) == (2,)
     np.testing.assert_allclose(qpos.values, [[1.0], [2.0]])
     np.testing.assert_allclose(qvel.values, [[3.0], [4.0]])
     with pytest.raises(NotImplementedError, match="use set_state_tensor"):
-        backend.host_reset(np.asarray([0]))
+        backend._host_reset(np.asarray([0]))
 
 
 def test_cuda_ipc_sensor_descriptors_resolve_entity_local_names() -> None:

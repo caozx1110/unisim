@@ -101,7 +101,7 @@ def test_default_path_leaves_worker_pool_untouched(tmp_path: Path) -> None:
     try:
         assert backend.cpu_ids is None
         init.assert_not_called()
-        backend.host_step(np.zeros((1, 1)))
+        backend._host_step(np.zeros((1, 1)))
     finally:
         backend.close()
 
@@ -160,7 +160,7 @@ backend = create_backend(
     cpu_ids=ids,
 )
 try:
-    backend.host_step(np.zeros((4, 1), dtype=np.float32))
+    backend._host_step(np.zeros((4, 1), dtype=np.float32))
     pinned = []
     for task in Path("/proc/self/task").iterdir():
         try:

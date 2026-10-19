@@ -122,7 +122,7 @@ def _canonical_states(backend: MotrixBackend, fields: tuple[str, ...]) -> dict[s
         if "qvel" in fields:
             values["qvel"] = backend._portable_state_qvel()
         return values
-    return dict(backend.host_get_state(fields))
+    return dict(backend._host_get_state(fields))
 
 
 def _normalize_device(value: Any | None, *, label: str = "tensor I/O") -> Any:
@@ -194,7 +194,7 @@ def _resolve_sensor_names(
             None,
         )
         if match is None:
-            source = np.asarray(backend.host_read_sensor(name), dtype=np.float32)
+            source = np.asarray(backend._host_read_sensor(name), dtype=np.float32)
             physical_widths[name] = int(source.reshape(backend.num_envs, -1).shape[1])
             physical.append(name)
             continue
@@ -229,7 +229,7 @@ def _read_sensor_sources(
     sources: dict[str, np.ndarray] = {}
     if resolved.body_names:
         positions, quaternions, linear_velocities, angular_velocities = (
-            backend.host_get_body_state_w(resolved.body_ids)
+            backend._host_get_body_state_w(resolved.body_ids)
         )
         arrays_by_prefix = {
             "track_pos_w_": positions,
@@ -241,7 +241,7 @@ def _read_sensor_sources(
             sources[name] = np.asarray(arrays_by_prefix[prefix][:, body_index, :], dtype=np.float32)
     if resolved.physical:
         values = np.asarray(
-            backend.host_read_sensor_batch(resolved.physical), dtype=np.float32
+            backend._host_read_sensor_batch(resolved.physical), dtype=np.float32
         ).reshape(backend.num_envs, -1)
         cursor = 0
         for name in resolved.physical:
@@ -296,7 +296,7 @@ def _read_selected_sensor_sources(
             sources[name] = np.asarray(arrays_by_prefix[prefix][:, body_index, :], dtype=np.float32)
     if resolved.physical:
         values = np.asarray(
-            backend.host_read_sensor_rows_batch(resolved.physical, selected_rows),
+            backend._host_read_sensor_rows_batch(resolved.physical, selected_rows),
             dtype=np.float32,
         )
         cursor = 0
@@ -332,15 +332,15 @@ def _read_selected_states(
     if "qpos" in fields:
         dof_qpos = backend._data.dof_pos[np.ix_(selected_rows, qpos_indices)]
         qpos = np.empty((selected_rows.size, dof_qpos.shape[1] + 7), dtype=np.float32)
-        qpos[:, :3] = backend.host_get_base_pos()[selected_rows]
-        qpos[:, 3:7] = backend.host_get_base_quat()[selected_rows]
+        qpos[:, :3] = backend._host_get_base_pos()[selected_rows]
+        qpos[:, 3:7] = backend._host_get_base_quat()[selected_rows]
         qpos[:, 7:] = dof_qpos
         output["qpos"] = qpos
     if "qvel" in fields:
         dof_qvel = backend._data.dof_vel[np.ix_(selected_rows, qvel_indices)]
         qvel = np.empty((selected_rows.size, dof_qvel.shape[1] + 6), dtype=np.float32)
-        qvel[:, :3] = backend.host_get_base_lin_vel()[selected_rows]
-        qvel[:, 3:6] = backend.host_get_base_ang_vel()[selected_rows]
+        qvel[:, :3] = backend._host_get_base_lin_vel()[selected_rows]
+        qvel[:, 3:6] = backend._host_get_base_ang_vel()[selected_rows]
         qvel[:, 6:] = dof_qvel
         output["qvel"] = qvel
     return output
@@ -549,7 +549,7 @@ def set_state_tensor(
             positions = np.ascontiguousarray(positions[order])
             velocities = np.ascontiguousarray(velocities[order])
             # Reorder payload rows on their device to match the sorted host
-            # rows; ``host_set_state`` converts to host NumPy once at the
+            # rows; ``_host_set_state`` converts to host NumPy once at the
             # boundary.
             order_device = torch.as_tensor(order, dtype=torch.int64, device=source_device)
             randomization = TensorResetRandomizationPayload(
@@ -559,7 +559,7 @@ def set_state_tensor(
                     if (value := getattr(randomization, field)) is not None
                 }
             )
-        return backend.host_set_state(rows, positions, velocities, randomization)
+        return backend._host_set_state(rows, positions, velocities, randomization)
     plan = backend._direct_host_bridge_plan
     if plan is None or plan.device != target:
         if plan is not None:
@@ -632,7 +632,7 @@ def set_state_tensor_mask(
             if value.device != source_device:
                 raise ValueError("MotrixSim tensor mask reset values must share one device")
         # Rows are selected on the payload's device; the host NumPy conversion
-        # happens once at the host_set_state boundary.
+        # happens once at the _host_set_state boundary.
         selected_randomization = TensorResetRandomizationPayload(
             **{
                 field: value.index_select(0, selected_rows)
@@ -646,7 +646,7 @@ def set_state_tensor_mask(
     rows = selected_rows.detach().cpu().numpy()
     host_qpos = qpos.index_select(0, selected_rows).detach().cpu().numpy()
     host_qvel = qvel.index_select(0, selected_rows).detach().cpu().numpy()
-    result = backend.host_set_state(rows, host_qpos, host_qvel, selected_randomization)
+    result = backend._host_set_state(rows, host_qpos, host_qvel, selected_randomization)
     for plan in backend._host_bridge_plans:
         if isinstance(plan, MotrixHostBridgeTransferPlan):
             plan._publish_mask_reset_rows(selected_rows, host_qpos, host_qvel)
@@ -801,7 +801,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
                 if width != _BODY_VIEW_WIDTHS[prefix]:
                     raise RuntimeError(f"MotrixSim body sensor {name!r} width changed")
             else:
-                source = self._backend.host_read_sensor(name)
+                source = self._backend._host_read_sensor(name)
                 expected_sensor = (self._backend.num_envs, width)
                 if np.asarray(source).reshape(expected_sensor[0], -1).shape != expected_sensor:
                     raise RuntimeError(
@@ -900,7 +900,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         if not self._control_ready:
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
-        self._backend.host_step(self._buffers().host_ctrl.numpy(), nsteps)
+        self._backend._host_step(self._buffers().host_ctrl.numpy(), nsteps)
         return {"timing": dict(self.last_timing)}
 
     def read_state_sensors(self) -> Mapping[str, Any]:
@@ -1000,7 +1000,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         rows_device = env_indices.detach().clone()
         rows_device = rows_device[torch.argsort(rows_device)]
 
-        self._backend.host_set_state(
+        self._backend._host_set_state(
             rows,
             host_qpos.astype(self._backend._np_dtype),
             host_qvel.astype(self._backend._np_dtype),
@@ -1056,7 +1056,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         states = None
         if self._last_reset_qpos_host is not None and self._last_reset_qvel_host is not None:
             # Reset randomization currently changes dynamics terms only, and the
-            # qpos conversion used by `host_set_state` is an exact quaternion
+            # qpos conversion used by `_host_set_state` is an exact quaternion
             # round-trip. The committed reset payload therefore equals a canonical
             # re-read. If state commit ever mutates qpos/qvel, publish that state
             # here instead so this cache cannot diverge from canonical state.

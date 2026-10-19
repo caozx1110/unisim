@@ -96,16 +96,17 @@ def test_normalized_backend_contract_names_are_exported() -> None:
     assert not hasattr(base, "BackendMocapPoseBinding")
 
 
-def test_documented_host_protocol_is_not_private() -> None:
+def test_documented_host_protocol_remains_protected() -> None:
     from unisim.backend.base import SimBackend
 
     for name in (
-        "host_get_state",
-        "host_reset",
-        "host_set_state",
-        "host_reset_default",
+        "_host_get_state",
+        "_host_reset",
+        "_host_set_state",
+        "_host_reset_default",
     ):
         assert hasattr(SimBackend, name)
+        assert not hasattr(SimBackend, name.removeprefix("_"))
 
 
 def test_backend_namespace_does_not_reexport_implementation_imports() -> None:

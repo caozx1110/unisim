@@ -703,8 +703,8 @@ def test_newton_cuda_graphs_match_eager_for_odd_even_and_repeated_steps(
             pytest.skip(graph_diagnostic.disable_reason)
         ctrl = np.full((2, eager.num_actuators), 0.25, dtype=np.float32)
         for nsteps in (1, 2, 3):
-            eager.host_step(ctrl, nsteps=nsteps)
-            graph.host_step(ctrl, nsteps=nsteps)
+            eager._host_step(ctrl, nsteps=nsteps)
+            graph._host_step(ctrl, nsteps=nsteps)
             np.testing.assert_allclose(
                 graph.get_physics_state(),
                 eager.get_physics_state(),
@@ -712,8 +712,8 @@ def test_newton_cuda_graphs_match_eager_for_odd_even_and_repeated_steps(
                 atol=2e-5,
             )
 
-        graph.host_step(ctrl, nsteps=2)
-        eager.host_step(ctrl, nsteps=2)
+        graph._host_step(ctrl, nsteps=2)
+        eager._host_step(ctrl, nsteps=2)
         np.testing.assert_allclose(
             graph.get_physics_state(),
             eager.get_physics_state(),
@@ -741,8 +741,8 @@ def test_newton_cuda_graph_replay_survives_set_state(tmp_path: Path) -> None:
         graph.set_physics_state(snapshot)
         eager.set_physics_state(snapshot)
         ctrl = np.zeros((2, graph.num_actuators), dtype=np.float32)
-        graph.host_step(ctrl, nsteps=3)
-        eager.host_step(ctrl, nsteps=3)
+        graph._host_step(ctrl, nsteps=3)
+        eager._host_step(ctrl, nsteps=3)
         assert _cuda_graph_diagnostic(graph).enabled
         np.testing.assert_allclose(
             graph.get_physics_state(),
@@ -772,7 +772,7 @@ def test_newton_pre_step_control_callback_uses_eager_path(
         monkeypatch.setattr(graph, "_replay_cuda_graph_substep", _reject_replay)
         graph.set_pre_step_control(lambda backend, ctrl: ctrl)
         ctrl = np.zeros((2, graph.num_actuators), dtype=np.float32)
-        graph.host_step(ctrl, nsteps=2)
+        graph._host_step(ctrl, nsteps=2)
         assert _cuda_graph_diagnostic(graph).enabled
     finally:
         graph.close()
@@ -843,7 +843,7 @@ def test_newton_physics_state_roundtrip_when_cuda_runtime_is_available(
         capacity_check_steps=1,
     )
     ctrl = np.zeros((2, backend.num_actuators), dtype=np.float32)
-    backend.host_step(ctrl, nsteps=3)
+    backend._host_step(ctrl, nsteps=3)
     snapshot = backend.get_physics_state()
     assert snapshot.dtype == np.float32
     assert snapshot.shape == (2, 1 + 8 + 7)
@@ -856,7 +856,7 @@ def test_newton_physics_state_roundtrip_when_cuda_runtime_is_available(
     np.testing.assert_array_equal(parts.qpos, snapshot[:, 1:9])
     assert parts.mocap_pos is None and parts.mocap_quat is None
 
-    backend.host_step(ctrl, nsteps=3)
+    backend._host_step(ctrl, nsteps=3)
     backend.set_physics_state(snapshot)
     restored = backend.get_physics_state()
     np.testing.assert_allclose(restored, snapshot, rtol=1e-5, atol=1e-5)
