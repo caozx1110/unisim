@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
     CameraCfg,
     DebugPrimitive,
+    PlayCapabilities,
     validate_debug_overlays,
 )
 from unisim.fake import FakeBackend
@@ -172,8 +172,8 @@ class TestCameraCfg:
 
 class TestPlayCapabilities:
     def test_default_is_false(self) -> None:
-        assert not BackendPlayCapabilities().supports_debug_overlay
-        assert not BackendPlayCapabilities().supports_interactive_debug_overlay
+        assert not PlayCapabilities().supports_debug_overlay
+        assert not PlayCapabilities().supports_interactive_debug_overlay
 
     def test_fake_backend_default(self) -> None:
         capabilities = FakeBackend().get_play_capabilities()

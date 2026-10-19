@@ -77,7 +77,7 @@ _DISTRIBUTIONS = {
 }
 _DEVICE_RESIDENT_PHASES = ("step", "reset", "sensors")
 _SUPERDEX_PHASES = (
-    "compile_host_bridge_io",
+    "bind_host_bridge_io",
     "write_control",
     "step",
     "read_state_sensors",
@@ -337,8 +337,8 @@ def _superdex_operations(
         device="cuda",
     )
 
-    def compile_host_bridge_io() -> Any:
-        compiled = backend.compile_host_bridge_io(spec)
+    def bind_host_bridge_io() -> Any:
+        compiled = backend.bind_host_bridge_io(spec)
         compiled.close()
         return None
 
@@ -351,7 +351,7 @@ def _superdex_operations(
         return result
 
     return {
-        "compile_host_bridge_io": compile_host_bridge_io,
+        "bind_host_bridge_io": bind_host_bridge_io,
         "write_control": lambda: plan.write_control(ctrl),
         "step": packed_step,
         "read_state_sensors": plan.read_state_sensors,
@@ -387,12 +387,12 @@ def _run_superdex(args: argparse.Namespace, model_file: Path) -> dict[str, Any]:
     )
     plan = None
     try:
-        if backend.tensor_execution() is not TensorExecution.HOST_BRIDGE:
+        if backend.get_tensor_execution() is not TensorExecution.HOST_BRIDGE:
             raise RuntimeError(
-                f"superdex did not expose HOST_BRIDGE tensors; got {backend.tensor_execution()}"
+                f"superdex did not expose HOST_BRIDGE tensors; got {backend.get_tensor_execution()}"
             )
         runtime_diagnostics = _tensor_runtime_diagnostics(backend)
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=tuple(args.sensor_name),
@@ -700,10 +700,10 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             use_cuda_graph=args.use_cuda_graph,
         )
         try:
-            if backend.tensor_execution() is not TensorExecution.DEVICE_RESIDENT:
+            if backend.get_tensor_execution() is not TensorExecution.DEVICE_RESIDENT:
                 raise RuntimeError(
                     f"{args.backend} did not expose DEVICE_RESIDENT tensors; "
-                    f"got {backend.tensor_execution()}"
+                    f"got {backend.get_tensor_execution()}"
                 )
             backend.materialize()
             runtime_diagnostics = _tensor_runtime_diagnostics(backend)

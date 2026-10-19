@@ -16,7 +16,7 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    tensor_device_matches,
+    torch_device_matches,
 )
 from unisim.dr.types import TensorResetRandomizationPayload
 
@@ -35,7 +35,7 @@ _TRACKED_SENSOR_PREFIXES = {
 }
 
 
-def drake_tensor_capabilities(backend: DrakeBackend) -> TensorLifecycleCapabilities:
+def tensor_capabilities(backend: DrakeBackend) -> TensorLifecycleCapabilities:
     """Return the initial, fail-closed Drake tensor capability matrix."""
 
     del backend
@@ -353,7 +353,7 @@ class DrakeHostBridgeTransferPlan(HostBridgeTransferPlan):
             raise ValueError(f"Drake packed ctrl must have shape {expected}")
         if ctrl.dtype != torch.float32 or not bool(ctrl.is_contiguous()):
             raise TypeError("Drake packed ctrl must be contiguous float32")
-        if not tensor_device_matches(
+        if not torch_device_matches(
             (str(self.device),), ctrl.device, current_device=self.device.index
         ):
             raise ValueError(f"Drake packed ctrl must live on {self.device}, got {ctrl.device}")
@@ -379,7 +379,7 @@ class DrakeHostBridgeTransferPlan(HostBridgeTransferPlan):
         if not self._control_ready:
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
-        result = self._backend._host_step(self._buffers().host_ctrl.numpy(), nsteps)
+        result = self._backend.host_step(self._buffers().host_ctrl.numpy(), nsteps)
         timing = dict(self.last_timing)
         timing.update(dict((result or {}).get("timing", {})))
         return {"timing": timing}
@@ -446,13 +446,13 @@ class DrakeHostBridgeTransferPlan(HostBridgeTransferPlan):
             raise ValueError(f"Drake packed reset qvel must have shape {(count, model.nv)}")
         if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
             raise TypeError("Drake packed reset qpos and qvel must be float32")
-        if not tensor_device_matches(
+        if not torch_device_matches(
             (str(self.device),), env_indices.device, current_device=self.device.index
-        ) or not tensor_device_matches(
+        ) or not torch_device_matches(
             (str(self.device),), qpos.device, current_device=self.device.index
         ):
             raise ValueError(f"Drake packed reset tensors must live on {self.device}")
-        if not tensor_device_matches(
+        if not torch_device_matches(
             (str(self.device),), qvel.device, current_device=self.device.index
         ):
             raise ValueError(f"Drake packed reset tensors must live on {self.device}")
@@ -479,7 +479,7 @@ class DrakeHostBridgeTransferPlan(HostBridgeTransferPlan):
         self._validate_reset_rows(rows)
         elapsed = (time.perf_counter() - started) * 1000.0
 
-        self._backend._host_set_state(
+        self._backend.host_set_state(
             rows, host_qpos.astype(np.float64), host_qvel.astype(np.float64)
         )
         self._last_reset_rows_host = rows
@@ -535,7 +535,7 @@ class DrakeHostBridgeTransferPlan(HostBridgeTransferPlan):
 
 __all__ = [
     "DrakeHostBridgeTransferPlan",
-    "drake_tensor_capabilities",
+    "tensor_capabilities",
     "require_drake_tensor_runtime",
     "resolve_drake_tensor_device",
 ]

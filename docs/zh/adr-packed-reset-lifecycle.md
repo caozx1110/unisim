@@ -16,7 +16,7 @@ UniLab 完成 Torch-only Manager 收尾后，`ResetStateTransaction` 是最后�
 
 UniSim 拥有 backend-neutral 的 staged packed reset 事务：
 
-- `SimBackend.begin_packed_reset(device=None)` 返回 backend-owned `TorchPackedResetComposer`，否则快速失败。
+- `SimBackend.bind_packed_reset(device=None)` 返回 backend-owned `PackedResetTransaction`，否则快速失败。
 - `TensorLifecycleCapabilities` 新增 `packed_reset`、`packed_reset_fields` 与 `packed_reset_mocap`。不支持的生命周期不得声明它们。
 - 事务持有全宽、device-resident 的已提交 baseline，并由 backend 的权威（fixed-variant aware）`get_reset_term_default()` 初始化。
 - 固定宽度路径保持同样的全宽 staging：`begin_state_mask(mask)`、`write_state_mask(mask, ...)` 与 `commit_state_mask(mask, ...)` 消费全宽 bool mask，保留 false rows，并把 selected-row 语义委托给公开 backend mask 边界。这样避免 owner 侧 `nonzero()` 压缩，同时不改变上述 staged-row 契约。
@@ -43,7 +43,7 @@ UniSim 拥有 backend-neutral 的 staged packed reset 事务：
 
 ### Delta 项
 
-- 自 UniLab issue #2410 起，`base_mass_delta` 与 `base_com_offset` 是单一 torch payload 家族的一等字段；原先的 host-only 限制与 `PACKED_RESET_HOST_ONLY_FIELDS` 已移除。composer stage 采样得到的 delta，并在 commit 时与权威 baseline（由冷 NumPy metadata leaf `get_reset_term_default()` 提供）在 torch 中合成为最终绝对的 `body_mass` / `body_ipos` 表：`final = baseline + delta`。adapter 内部的 delta merge 可作为 adapter 私有实现保留，但公开 payload 不再限制 delta 字段。
+- 自 UniLab issue #2410 起，`base_mass_delta` 与 `base_com_offset` 是单一 torch payload 家族的一等字段；原先的 host-only 限制与 `PACKED_RESET_HOST_ONLY_FIELDS` 已移除。transaction stage 采样得到的 delta，并在 commit 时与权威 baseline（由冷 NumPy metadata leaf `get_reset_term_default()` 提供）在 torch 中合成为最终绝对的 `body_mass` / `body_ipos` 表：`final = baseline + delta`。adapter 内部的 delta merge 可作为 adapter 私有实现保留，但公开 payload 不再限制 delta 字段。
 
 ## 影响
 

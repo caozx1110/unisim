@@ -31,14 +31,15 @@ import numpy as np
 
 from unisim.backend.base import (
     _NATIVE_RENDERER_PLAY_CAPABILITIES,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
     CameraCfg,
+    PlayRenderPlan,
     RenderClosedError,
+    RootStateLayout,
     SimBackend,
     normalize_play_render_mode,
     unsupported_debug_overlay_error,
 )
+from unisim.backend.playback_common import display_available
 from unisim.backend.subprocess_ipc.scene_materialization import (
     PreparedWorkerScene,
     body_sphere_radii_close,
@@ -104,12 +105,6 @@ _ROOT_QVEL_DIM = 6
 # PhysX clamps |force| <= dof effort; MJCF forcerange "0 0" (or absent) means
 # unlimited, mapped to a finite stand-in (float32-safe) for the dof property.
 _UNLIMITED_DOF_EFFORT = 1e20
-
-
-def _display_available() -> bool:
-    """Return whether a display is reachable for an interactive worker viewer."""
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-
 
 def _single_precision_equal(reported: Any, requested: Any) -> bool:
     """Match values that only differ by the engine's float32 storage rounding."""
@@ -472,7 +467,7 @@ class MjcfSubprocessBackend(SimBackend):
         self._closed = False
         # Native rendering state (worker-owned viewer/camera; see the play
         # contract section below).  ``_render_config`` pins the first
-        # init_renderer(headless, capture) pair like the Motrix backend.
+        # bind_renderer(headless, capture) pair like the Motrix backend.
         self._graphics_enabled = False
         self._render_config: tuple[bool, bool] | None = None
         self._viewer_open = False
@@ -570,7 +565,7 @@ class MjcfSubprocessBackend(SimBackend):
             self._slots["entity_root_state"][:, index],
         )
 
-    def _host_get_state(
+    def host_get_state(
         self, fields: tuple[str, ...] | str | None = None
     ) -> Mapping[str, np.ndarray]:
         if self._entity_scene is None:
@@ -580,7 +575,7 @@ class MjcfSubprocessBackend(SimBackend):
                 else ((fields,) if isinstance(fields, str) else tuple(fields))
             )
             result = dict(
-                super()._host_get_state(tuple(name for name in requested if name != "ctrl"))
+                super().host_get_state(tuple(name for name in requested if name != "ctrl"))
             )
             if "ctrl" in requested:
                 self._require_state("control snapshot")
@@ -760,9 +755,9 @@ class MjcfSubprocessBackend(SimBackend):
             f"{self.__class__.__name__} does not support reset property mutation readback"
         )
 
-    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
         if self._entity_scene is None:
-            return self._host_reset_default(env_ids)
+            return self.host_reset_default(env_ids)
         ids = np.arange(self._num_envs) if env_ids is None else np.asarray(env_ids)
         if ids.ndim != 1 or ids.dtype.kind not in "iu":
             raise ValueError("reset env_ids must be one-dimensional integers")
@@ -2109,13 +2104,13 @@ class MjcfSubprocessBackend(SimBackend):
             return self._entity_scene.qvel[0].copy()
         return np.zeros((_ROOT_QVEL_DIM + self._num_dof(),), dtype=np.float32)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if self._entity_scene is not None:
             for entity in self._entity_scene.layout.entities:
                 if root_body_name == entity.name + "/" + entity.root_body:
                     if entity.root_mode != "floating":
                         raise NotImplementedError("entity root has no generalized coordinates")
-                    return BackendRootStateLayout(
+                    return RootStateLayout(
                         entity.root_qpos_indices, entity.root_qvel_indices
                     )
             raise ValueError(f"unknown entity root body {root_body_name!r}")
@@ -2135,7 +2130,7 @@ class MjcfSubprocessBackend(SimBackend):
                 f"backend '{self._BACKEND_LABEL}' capability 'root-state layout' requires "
                 f"{root_body_name!r} to be the actor root body {root_name!r}"
             )
-        return BackendRootStateLayout(
+        return RootStateLayout(
             qpos_indices=tuple(range(_ROOT_QPOS_DIM)),
             qvel_indices=tuple(range(_ROOT_QVEL_DIM)),
         )
@@ -2232,7 +2227,7 @@ class MjcfSubprocessBackend(SimBackend):
             )
         self._pre_step_control_fn = None
 
-    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
+    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
         self._require_state("step")
         if isinstance(nsteps, bool) or int(nsteps) <= 0:
             raise ValueError(f"nsteps must be a positive integer, got {nsteps!r}")
@@ -2271,7 +2266,7 @@ class MjcfSubprocessBackend(SimBackend):
     def _after_step(self, payload: dict[str, Any]) -> None:
         """Consume adapter-owned data after a successful worker STEP."""
 
-    def _host_set_state(
+    def host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -2357,14 +2352,14 @@ class MjcfSubprocessBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | os.PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         mode = normalize_play_render_mode(play_render_mode)
         if mode == "auto":
             # The interactive viewer needs a reachable display; headless hosts
             # fall back to offscreen camera-sensor recording.
-            mode = "interactive" if _display_available() else "record"
+            mode = "interactive" if display_available() else "record"
         if mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=mode,
                 headless=True,
                 record_video=False,
@@ -2372,7 +2367,7 @@ class MjcfSubprocessBackend(SimBackend):
                 output_video=None,
             )
         if mode == "interactive":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=mode,
                 headless=False,
                 record_video=False,
@@ -2389,7 +2384,7 @@ class MjcfSubprocessBackend(SimBackend):
             raise ValueError(
                 f"{self._BACKEND_LABEL} record playback requires an output video path."
             )
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode=mode,
             headless=True,
             record_video=True,
@@ -2397,7 +2392,7 @@ class MjcfSubprocessBackend(SimBackend):
             output_video=output_video,
         )
 
-    def init_renderer(
+    def bind_renderer(
         self,
         spacing: float = 1.0,
         *,
@@ -2453,7 +2448,7 @@ class MjcfSubprocessBackend(SimBackend):
     def render(self) -> None:
         """Draw one interactive viewer frame through the worker."""
         if not self._viewer_open:
-            self.init_renderer(
+            self.bind_renderer(
                 headless=False,
                 width=self._render_width,
                 height=self._render_height,
@@ -2466,7 +2461,7 @@ class MjcfSubprocessBackend(SimBackend):
     def capture_video_frame(self) -> np.ndarray:
         """Capture one RGB frame from the worker's camera sensor."""
         if not self._capture_ready:
-            self.init_renderer(
+            self.bind_renderer(
                 headless=True,
                 capture=True,
                 width=self._render_width,
@@ -2544,16 +2539,16 @@ class MjcfSubprocessBackend(SimBackend):
         self._require_state("state read")
         return self._slots["body_state"]
 
-    def _host_get_base_pos(self) -> np.ndarray:
+    def host_get_base_pos(self) -> np.ndarray:
         return self._root_slot()[:, 0:3]
 
-    def _host_get_base_quat(self) -> np.ndarray:
+    def host_get_base_quat(self) -> np.ndarray:
         return self._root_slot()[:, 3:7]
 
-    def _host_get_base_lin_vel(self) -> np.ndarray:
+    def host_get_base_lin_vel(self) -> np.ndarray:
         return self._root_slot()[:, 7:10]
 
-    def _host_get_base_ang_vel(self) -> np.ndarray:
+    def host_get_base_ang_vel(self) -> np.ndarray:
         return self._root_slot()[:, 10:13]
 
     def _selected_body_state(self, body_ids: np.ndarray) -> np.ndarray:
@@ -2569,23 +2564,23 @@ class MjcfSubprocessBackend(SimBackend):
             )
         return self._body_slot()[:, ids, :]
 
-    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._selected_body_state(body_ids)[:, :, 0:3]
 
-    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._selected_body_state(body_ids)[:, :, 3:7]
 
-    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._selected_body_state(body_ids)[:, :, 7:10]
 
-    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._selected_body_state(body_ids)[:, :, 10:13]
 
     # ------------------------------------------------------------------ #
     # Sensors
     # ------------------------------------------------------------------ #
 
-    def _host_read_sensor(self, name: str) -> np.ndarray:
+    def host_read_sensor(self, name: str) -> np.ndarray:
         """Compute one mapped scene sensor from the shm state caches.
 
         See ``sensors.py`` for the MJCF-sensor → tensor-quantity mapping table.

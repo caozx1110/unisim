@@ -98,7 +98,7 @@ def backend(tmp_path):
 def test_tensor_capability_matrix_is_narrow_and_fail_closed(backend):
     capabilities = backend.get_tensor_capabilities()
     _assert_tensor_platform_capabilities("superdex", capabilities)
-    assert backend.tensor_execution() is TensorExecution.HOST_BRIDGE
+    assert backend.get_tensor_execution() is TensorExecution.HOST_BRIDGE
     assert capabilities.execution is TensorExecution.HOST_BRIDGE
     assert capabilities.state_fields == frozenset({"qpos", "qvel", "ctrl"})
     assert capabilities.sensor_views
@@ -117,7 +117,7 @@ def test_public_state_widths_match_tensor_reset_layout(backend):
     """The public width contract must agree with packed reset validation."""
 
     widths = backend.get_public_state_widths()
-    state = backend._host_get_state()
+    state = backend.host_get_state()
 
     assert widths.nq == state["qpos"].shape[1]
     assert widths.nv == state["qvel"].shape[1]
@@ -131,7 +131,7 @@ def test_public_state_widths_match_tensor_reset_layout(backend):
 
 
 def test_packed_plan_supports_declared_ctrl_state_field(backend):
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(state_fields=("qpos", "qvel", "ctrl"), device="cpu")
     )
     ctrl = torch.full((backend.num_envs, backend.num_actuators), 0.25, dtype=torch.float32)
@@ -150,7 +150,7 @@ def test_packed_lifecycle_and_semantic_transfer_counts(backend, device_name):
     if device_name == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
     device = torch.device(device_name)
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("angle", "speed"),
@@ -168,7 +168,7 @@ def test_packed_lifecycle_and_semantic_transfer_counts(backend, device_name):
     plan.write_control(torch.zeros((3, 1), dtype=torch.float32, device=device))
     plan.step(2)
     views = plan.read_state_sensors()
-    expected_state = backend._host_get_state()
+    expected_state = backend.host_get_state()
     np.testing.assert_allclose(
         views["qpos"].detach().cpu().numpy(), expected_state["qpos"], atol=1e-6
     )
@@ -176,17 +176,17 @@ def test_packed_lifecycle_and_semantic_transfer_counts(backend, device_name):
         views["qvel"].detach().cpu().numpy(), expected_state["qvel"], atol=1e-6
     )
     np.testing.assert_allclose(
-        views["angle"].detach().cpu().numpy(), backend._host_read_sensor("angle"), atol=1e-6
+        views["angle"].detach().cpu().numpy(), backend.host_read_sensor("angle"), atol=1e-6
     )
     np.testing.assert_allclose(
-        views["speed"].detach().cpu().numpy(), backend._host_read_sensor("speed"), atol=1e-6
+        views["speed"].detach().cpu().numpy(), backend.host_read_sensor("speed"), atol=1e-6
     )
     first_pointers = {name: view.data_ptr() for name, view in views.items()}
     plan.read_state_sensors()
     assert {name: view.data_ptr() for name, view in views.items()} == first_pointers
 
-    state = backend._host_get_state()
-    sensors = {name: backend._host_read_sensor(name) for name in ("angle", "speed")}
+    state = backend.host_get_state()
+    sensors = {name: backend.host_read_sensor(name) for name in ("angle", "speed")}
     rows = torch.tensor([1, 0], dtype=torch.int64, device=device)
     qpos = state["qpos"][[1, 0]].copy()
     qvel = state["qvel"][[1, 0]].copy()
@@ -233,7 +233,7 @@ def test_selected_read_before_full_read_preserves_all_rows_or_fails_closed(backe
             return original_empty(*args, **kwargs).fill_(-123.0)
 
         patch.setattr(torch, "empty", sentinel_empty)
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=("angle", "speed"),
@@ -258,7 +258,7 @@ def test_selected_read_before_full_read_preserves_all_rows_or_fails_closed(backe
         )
     for name in ("angle", "speed"):
         np.testing.assert_allclose(
-            updated[name].detach().numpy(), backend._host_read_sensor(name), atol=1e-6
+            updated[name].detach().numpy(), backend.host_read_sensor(name), atol=1e-6
         )
 
 
@@ -273,7 +273,7 @@ def test_cuda_packed_hot_path_avoids_hidden_cpu_detours(backend, monkeypatch):
         patch.setattr(torch.Tensor, "cpu", lambda self, *a, **k: fail_detour("cpu"))
         patch.setattr(torch.Tensor, "item", lambda self, *a, **k: fail_detour("item"))
         patch.setattr(torch.Tensor, "tolist", lambda self, *a, **k: fail_detour("tolist"))
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=("angle", "speed"),
@@ -282,7 +282,7 @@ def test_cuda_packed_hot_path_avoids_hidden_cpu_detours(backend, monkeypatch):
         )
         plan.write_control(torch.zeros((3, 1), dtype=torch.float32, device="cuda"))
         plan.step(1)
-        state = backend._host_get_state()
+        state = backend.host_get_state()
         rows = torch.tensor([1, 2], dtype=torch.int64, device="cuda")
         plan.apply_reset(
             rows,
@@ -298,7 +298,7 @@ def test_cuda_packed_hot_path_avoids_hidden_cpu_detours(backend, monkeypatch):
 
 
 def test_packed_reset_validation_is_bounded_timed_and_producer_owned(backend, monkeypatch):
-    plan = backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel"), device="cpu"))
+    plan = backend.bind_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel"), device="cpu"))
     finite_ctrl = torch.zeros((backend.num_envs, backend.num_actuators), dtype=torch.float32)
     plan.write_control(finite_ctrl)
     before_stats = dict(plan.transfer_stats)
@@ -309,7 +309,7 @@ def test_packed_reset_validation_is_bounded_timed_and_producer_owned(backend, mo
     assert plan.last_timing["tensor_control_packed_d2h_bytes"] == float(nonfinite_ctrl.numel() * 4)
     plan.write_control(finite_ctrl)
 
-    before_state = backend._host_get_state()
+    before_state = backend.host_get_state()
     nan_qpos = before_state["qpos"].copy()
     nan_qvel = before_state["qvel"].copy()
     nan_qpos[1, 0] = np.nan
@@ -335,7 +335,7 @@ def test_packed_reset_validation_is_bounded_timed_and_producer_owned(backend, mo
                 torch.zeros((len(rows), backend.model.nv), dtype=torch.float32),
             )
     assert plan.transfer_stats == before_stats
-    np.testing.assert_array_equal(backend._host_get_state()["qpos"], before_state["qpos"])
+    np.testing.assert_array_equal(backend.host_get_state()["qpos"], before_state["qpos"])
 
     original_validate = plan._validate_reset_rows
 
@@ -360,7 +360,7 @@ def test_generalized_tensor_parity_and_persistent_counters(tmp_path):
     reference = create_backend("superdex", SceneCfg(model), 4, 0.002)
     candidate = create_backend("superdex", SceneCfg(model), 4, 0.002)
     try:
-        plan = candidate.compile_host_bridge_io(
+        plan = candidate.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=("base_pos", "angle", "speed"),
@@ -372,7 +372,7 @@ def test_generalized_tensor_parity_and_persistent_counters(tmp_path):
         qvel = before["qvel"][rows].copy()
         qpos[:, 0] = [0.12, -0.08]
         qvel[:, 0] = [0.4, -0.3]
-        reference._host_set_state(
+        reference.host_set_state(
             rows,
             qpos.copy(),
             qvel.copy(),
@@ -387,7 +387,7 @@ def test_generalized_tensor_parity_and_persistent_counters(tmp_path):
         np.testing.assert_allclose(selected["qvel"].detach().numpy()[rows], qvel, atol=1e-6)
 
         ctrl = np.asarray([[0.2], [-0.1], [0.0], [0.3]], dtype=np.float32)
-        reference._host_step(ctrl, 2)
+        reference.host_step(ctrl, 2)
         plan.write_control(torch.from_numpy(ctrl.copy()))
         plan.step(2)
         views = plan.read_state_sensors()
@@ -396,14 +396,14 @@ def test_generalized_tensor_parity_and_persistent_counters(tmp_path):
                 views[name].detach().numpy(), candidate.get_state()[name], atol=1e-6
             )
             np.testing.assert_allclose(
-                candidate.get_state()[name], reference._host_get_state()[name], atol=1e-5
+                candidate.get_state()[name], reference.host_get_state()[name], atol=1e-5
             )
         for name in plan.spec.sensor_names:
             np.testing.assert_allclose(
                 views[name].detach().numpy(), candidate.get_sensor_data(name), atol=1e-6
             )
             np.testing.assert_allclose(
-                candidate.get_sensor_data(name), reference._host_read_sensor(name), atol=1e-5
+                candidate.get_sensor_data(name), reference.host_read_sensor(name), atol=1e-5
             )
         assert plan.transfer_stats["d2h_count"] == 2
         assert plan.transfer_stats["h2d_count"] == 2
@@ -425,7 +425,7 @@ def test_packed_tracked_body_sensors_match_public_body_state(tmp_path):
     )
     try:
         body_ids = {name: candidate.get_body_ids((name,))[0] for name in ("base", "arm")}
-        plan = candidate.compile_host_bridge_io(
+        plan = candidate.bind_host_bridge_io(
             TensorIOSpec(state_fields=("qpos", "qvel"), sensor_names=sensor_names)
         )
         before = candidate.get_state()
@@ -489,9 +489,9 @@ def test_accelerometer_sensor_binding_fails_closed(tmp_path):
     backend = create_backend("superdex", SceneCfg(str(source)), 1, 0.002)
     try:
         with pytest.raises(NotImplementedError, match="no substitute is published"):
-            backend._host_read_sensor("acceleration")
+            backend.host_read_sensor("acceleration")
         with pytest.raises(NotImplementedError, match="no substitute is published"):
-            backend.compile_host_bridge_io(
+            backend.bind_host_bridge_io(
                 TensorIOSpec(
                     state_fields=("qpos", "qvel"), sensor_names=("acceleration",), device="cpu"
                 )
@@ -502,19 +502,19 @@ def test_accelerometer_sensor_binding_fails_closed(tmp_path):
 
 def test_packed_compile_and_hot_path_capabilities_fail_closed(backend, monkeypatch):
     with pytest.raises(ValueError, match="SuperDex packed state I/O supports only"):
-        backend.compile_host_bridge_io(
+        backend.bind_host_bridge_io(
             TensorIOSpec(state_fields=("time",), sensor_names=("angle",), device="cpu")
         )
     with pytest.raises(KeyError, match="unknown SuperDex sensor"):
-        backend.compile_host_bridge_io(
+        backend.bind_host_bridge_io(
             TensorIOSpec(state_fields=("qpos", "qvel"), sensor_names=("missing",), device="cpu")
         )
     monkeypatch.setattr(backend, "_variant_assignment", np.zeros(backend.num_envs), raising=False)
     with pytest.raises(NotImplementedError, match="fixed variants"):
-        backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel"), device="cpu"))
+        backend.bind_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel"), device="cpu"))
     monkeypatch.setattr(backend, "_variant_assignment", None)
 
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(state_fields=("qpos", "qvel"), sensor_names=("angle",), device="cpu")
     )
     monkeypatch.setattr(backend, "_pre_step_control_fn", lambda state, ctrl: ctrl)
@@ -544,7 +544,7 @@ def test_packed_compile_and_hot_path_capabilities_fail_closed(backend, monkeypat
 
 
 def test_packed_plan_close_releases_staging_and_fails_closed(backend):
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(state_fields=("qpos", "qvel"), sensor_names=("angle",), device="cpu")
     )
     buffers = plan._buffers()
@@ -562,7 +562,7 @@ def test_packed_plan_close_releases_staging_and_fails_closed(backend):
 
 
 def test_backend_close_invalidates_live_packed_plan(backend):
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(state_fields=("qpos", "qvel"), sensor_names=("angle",), device="cpu")
     )
     buffers = plan._buffers()
@@ -585,12 +585,12 @@ def test_direct_tensor_apis_match_numpy_state(backend):
     state = backend.get_state_views(("qpos", "qvel", "ctrl"))
     angle = backend.get_sensor_view("angle")
     assert all(isinstance(value, torch.Tensor) for value in (*state.values(), angle))
-    expected = backend._host_get_state(("qpos", "qvel", "ctrl"))
+    expected = backend.host_get_state(("qpos", "qvel", "ctrl"))
     for name in state:
         np.testing.assert_allclose(state[name].numpy(), expected[name], atol=1e-6)
-    np.testing.assert_allclose(angle.numpy(), backend._host_read_sensor("angle"), atol=1e-6)
+    np.testing.assert_allclose(angle.numpy(), backend.host_read_sensor("angle"), atol=1e-6)
 
-    before = backend._host_get_state()
+    before = backend.host_get_state()
     qpos = before["qpos"][[1, 2]].copy()
     qvel = before["qvel"][[1, 2]].copy()
     qpos[:, 0] = [0.3, -0.4]
@@ -600,7 +600,7 @@ def test_direct_tensor_apis_match_numpy_state(backend):
         torch.tensor(qpos, dtype=torch.float32),
         torch.tensor(qvel, dtype=torch.float32),
     )
-    after = backend._host_get_state()
+    after = backend.host_get_state()
     np.testing.assert_allclose(after["qpos"][[1, 2]], qpos, atol=1e-6)
     np.testing.assert_allclose(after["qvel"][[1, 2]], qvel, atol=1e-6)
     np.testing.assert_allclose(after["qpos"][0], before["qpos"][0])

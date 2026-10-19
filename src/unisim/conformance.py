@@ -27,8 +27,8 @@ def assert_backend_conformance(backend: SimBackend) -> None:
         materialize()
     assert backend.num_envs > 0
     assert backend.num_actuators > 0
-    assert BackendCapability.RESET in backend.capabilities
-    assert BackendCapability.STATE_READ in backend.capabilities
+    assert BackendCapability.RESET in backend.capability_flags
+    assert BackendCapability.STATE_READ in backend.capability_flags
     if backend.get_play_capabilities().supports_physics_state_playback:
         assert_physics_state_playback_conformance(backend)
     if backend.get_tensor_capabilities().packed_reset:
@@ -89,7 +89,7 @@ def assert_reset_randomization_conformance(backend: SimBackend) -> None:
 
     expected = torch.as_tensor(written, dtype=torch.float32)
     if tensor_capabilities.packed_reset:
-        transaction = backend.begin_packed_reset(device=device)
+        transaction = backend.bind_packed_reset(device=device)
         baseline = transaction.baseline(term)
         assert baseline.shape[0] == backend.num_envs
         torch.testing.assert_close(baseline[0].detach().cpu(), expected, rtol=1e-4, atol=1e-5)
@@ -121,7 +121,7 @@ def assert_packed_reset_conformance(backend: SimBackend) -> None:
     else:
         return
 
-    transaction = backend.begin_packed_reset(device=device)
+    transaction = backend.bind_packed_reset(device=device)
     state = backend.get_state_views(("qpos", "qvel"), device=device)
     qpos = state["qpos"][0].detach().to(device=device, dtype=torch.float32).clone()
     qvel = state["qvel"][0].detach().to(device=device, dtype=torch.float32).clone()

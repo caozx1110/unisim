@@ -169,8 +169,8 @@ def test_mirror_pose_writes_are_row_local_and_collision_suppression_is_physical(
             overlap_backend.reset_entities(
                 SceneResetRequest((1, 2), (EntityStatePatch("mirror", root_pose=overlap_target),))
             )
-            far_backend._host_step(controls)
-            overlap_backend._host_step(controls)
+            far_backend.host_step(controls)
+            overlap_backend.host_step(controls)
 
             overlap_object = overlap_backend.get_entity_state("object")
             overlap_object_history.append(overlap_object)
@@ -182,10 +182,10 @@ def test_mirror_pose_writes_are_row_local_and_collision_suppression_is_physical(
                 }
             )
             found_history.append(
-                np.asarray(overlap_backend._host_read_sensor("object_mirror_found")).copy()
+                np.asarray(overlap_backend.host_read_sensor("object_mirror_found")).copy()
             )
             force_history.append(
-                np.asarray(overlap_backend._host_read_sensor("object_mirror_force")).copy()
+                np.asarray(overlap_backend.host_read_sensor("object_mirror_force")).copy()
             )
 
             mirror_state = overlap_backend.get_entity_state("mirror")
@@ -290,10 +290,10 @@ def test_fixed_variant_mirror_identity_and_pose_routing(tmp_path):
         backend.reset_entities(
             SceneResetRequest((0, 1), (EntityStatePatch("mirror", root_pose=poses),))
         )
-        backend._host_step(np.zeros((2, backend.num_actuators), dtype=np.float32), 5)
+        backend.host_step(np.zeros((2, backend.num_actuators), dtype=np.float32), 5)
         mirror_pose = backend.get_entity_state("mirror")["root_pose"]
         np.testing.assert_allclose(mirror_pose, poses, rtol=0.0, atol=0.0)
-        backend._host_reset((0,))
+        backend.host_reset((0,))
         mirror_pose = backend.get_entity_state("mirror")["root_pose"]
         np.testing.assert_allclose(mirror_pose[0], default_pose[0], rtol=0.0, atol=0.0)
         np.testing.assert_allclose(mirror_pose[1], poses[1], rtol=0.0, atol=0.0)

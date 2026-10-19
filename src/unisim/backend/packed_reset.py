@@ -30,7 +30,7 @@ def _expand_mask(mask: Any, ndim: int) -> Any:
     return mask if ndim == 1 else mask.reshape(mask.shape + (1,) * (ndim - 1))
 
 
-class TorchPackedResetComposer:
+class PackedResetTransaction:
     """Compose device-resident model-field writes and commit them once."""
 
     def __init__(self, backend: Any, *, device: Any | None = None) -> None:
@@ -281,7 +281,7 @@ class TorchPackedResetComposer:
 
         Values have the full environment width. False rows preserve the staged
         state, while true rows consume the supplied columns. No true-row tensor
-        is materialized by the composer.
+        is materialized by the transaction.
         """
         mask = self._validate_state_mask(reset_mask)
         qpos, qvel = self.state_views()

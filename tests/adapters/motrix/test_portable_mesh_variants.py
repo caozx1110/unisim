@@ -88,9 +88,9 @@ def test_uniform_mesh_variants_persist_across_reset_and_step(tmp_path: Path) -> 
         assert len(backend._model.mesh_variant_sets[geom.mesh_variant_set]) == 3
         np.testing.assert_array_equal(geom.get_mesh_variant_override(backend._data), assignment)
 
-        backend._host_reset()
+        backend.host_reset()
         np.testing.assert_array_equal(geom.get_mesh_variant_override(backend._data), assignment)
-        backend._host_step(np.zeros((4, backend.num_actuators), dtype=np.float32), nsteps=3)
+        backend.host_step(np.zeros((4, backend.num_actuators), dtype=np.float32), nsteps=3)
         np.testing.assert_array_equal(geom.get_mesh_variant_override(backend._data), assignment)
     finally:
         backend.close()
@@ -100,11 +100,11 @@ def test_uniform_mesh_variants_match_single_env_runtimes(tmp_path: Path) -> None
     batch = MotrixBackend(_scene(tmp_path, (2, 0, 1)), 3, 0.002, base_name="object/base")
     independent: list[MotrixBackend] = []
     try:
-        qpos = batch._host_get_state(("qpos",))["qpos"].copy()
-        qvel = np.zeros_like(batch._host_get_state(("qvel",))["qvel"])
-        batch._host_reset()
+        qpos = batch.host_get_state(("qpos",))["qpos"].copy()
+        qvel = np.zeros_like(batch.host_get_state(("qvel",))["qvel"])
+        batch.host_reset()
         ctrl = np.zeros((3, batch.num_actuators), dtype=np.float32)
-        batch._host_step(ctrl, nsteps=10)
+        batch.host_step(ctrl, nsteps=10)
 
         for variant in (2, 0, 1):
             single = MotrixBackend(
@@ -114,18 +114,18 @@ def test_uniform_mesh_variants_match_single_env_runtimes(tmp_path: Path) -> None
                 base_name="object/base",
             )
             independent.append(single)
-            single._host_set_state(np.asarray((0,)), qpos[[variant]], qvel[[variant]])
-            single._host_step(ctrl[[variant]], nsteps=10)
+            single.host_set_state(np.asarray((0,)), qpos[[variant]], qvel[[variant]])
+            single.host_step(ctrl[[variant]], nsteps=10)
 
         np.testing.assert_allclose(
-            batch._host_get_state(("qpos",))["qpos"],
-            np.stack([single._host_get_state(("qpos",))["qpos"][0] for single in independent]),
+            batch.host_get_state(("qpos",))["qpos"],
+            np.stack([single.host_get_state(("qpos",))["qpos"][0] for single in independent]),
             rtol=2e-6,
             atol=2e-7,
         )
         np.testing.assert_allclose(
-            batch._host_get_state(("qvel",))["qvel"],
-            np.stack([single._host_get_state(("qvel",))["qvel"][0] for single in independent]),
+            batch.host_get_state(("qvel",))["qvel"],
+            np.stack([single.host_get_state(("qvel",))["qvel"][0] for single in independent]),
             rtol=2e-6,
             atol=2e-7,
         )
@@ -171,7 +171,7 @@ def test_uniform_mesh_variant_optional_slot_fails_closed(tmp_path: Path) -> None
 def test_uniform_mesh_variant_renderer_shows_distinct_native_identities(tmp_path: Path) -> None:
     backend = MotrixBackend(_scene(tmp_path, (0, 1)), 2, 0.002, base_name="object/base")
     try:
-        backend.init_renderer(
+        backend.bind_renderer(
             spacing=1.0,
             headless=True,
             capture=True,

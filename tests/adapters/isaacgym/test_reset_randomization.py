@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from unisim.backend.base import BackendPlayCapabilities
+from unisim.backend.base import PlayCapabilities
 from unisim.backend.isaacgym.backend import IsaacGymBackend, IsaacGymWorkerError
 from unisim.capabilities import SupportLevel, backend_capabilities
 from unisim.dr.interval import (
@@ -113,7 +113,7 @@ def _mapped_backend() -> IsaacGymBackend:
     backend._worker_dead_error = None
     backend._slots = {"ctrl": np.zeros((_NUM_ENVS, _LAYOUT.nu), dtype=np.float32)}
     backend._import_report = SimpleNamespace(profile="default")
-    backend._play_capabilities = BackendPlayCapabilities()
+    backend._play_capabilities = PlayCapabilities()
     return backend
 
 
@@ -452,7 +452,7 @@ def test_mock_worker_roundtrip_applies_reset_randomization(tmp_path: Path) -> No
             dof_frictionloss=np.zeros((num_envs, layout.nv)),
             geom_friction=np.tile(np.array([0.9, 0.9, 0.0]), (num_envs, layout.ngeom, 1)),
         )
-        backend._host_set_state(np.arange(num_envs), qpos, qvel, randomization=randomization)
+        backend.host_set_state(np.arange(num_envs), qpos, qvel, randomization=randomization)
         record = backend._native_entity_records["robot"]
         np.testing.assert_allclose(record["body_mass"], 3.0)
         np.testing.assert_allclose(record["dof_stiffness"], 42.0)
@@ -473,7 +473,7 @@ def test_mock_worker_roundtrip_applies_reset_randomization(tmp_path: Path) -> No
                 )
             )
         )
-        backend._host_step(np.zeros((num_envs, layout.nu), dtype=np.float32))
+        backend.host_step(np.zeros((num_envs, layout.nu), dtype=np.float32))
         assert not backend._body_wrench_pending
     finally:
         backend.close()
@@ -499,7 +499,7 @@ def test_mock_worker_rejects_unsupported_term_before_wire(tmp_path: Path) -> Non
         qpos[:, 3] = 1.0
         qvel = np.zeros((num_envs, layout.nv), dtype=np.float32)
         with pytest.raises(NotImplementedError, match="gravity"):
-            backend._host_set_state(
+            backend.host_set_state(
                 np.arange(num_envs),
                 qpos,
                 qvel,

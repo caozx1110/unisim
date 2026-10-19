@@ -7,7 +7,7 @@
 | MuJoCo | `unisim.MuJoCoBackend` | `uv sync --extra mujoco` (mjbatch runtime) | available |
 | Motrix | `unisim.MotrixBackend` | `uv sync --extra motrix` | available |
 | Drake | `unisim.DrakeBackend` | `uv sync --extra drake` (`drake-uni`) plus its native batch extension | available |
-| MJWarp | `unisim.MJWarpBackend` | `uv sync --extra mjwarp`, CUDA | available |
+| MJWarp | `unisim.MjwarpBackend` | `uv sync --extra mjwarp`, CUDA | available |
 | Genesis | `unisim.GenesisBackend` | `uv sync --extra genesis` (`genesis-world==1.3.3`) | available (CPU; narrow CUDA tensor profile) |
 | Newton | `unisim.NewtonBackend` | `uv sync --extra newton`, Newton 1.5.1 and MuJoCo-Warp 3.11.0 | available (CUDA) |
 | SuperDex | `unisim.SuperDexBackend` | `uv sync --extra superdex`, CPython 3.12 or 3.13, SuperDex 1.3.0 | experimental CPU; see the [profile](superdex.md) |

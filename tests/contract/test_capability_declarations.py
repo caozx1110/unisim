@@ -17,7 +17,7 @@ from unisim import (
     FakeBackend,
     SupportLevel,
 )
-from unisim.backend.base import BackendPlayCapabilities
+from unisim.backend.base import PlayCapabilities
 from unisim.dr.types import DomainRandomizationCapabilities, FixedVariantLayout
 
 
@@ -214,7 +214,7 @@ def test_aggregation_tracks_authoritative_sources() -> None:
         supports_fixed_variants=True,
         supported_fixed_variant_layouts=frozenset({FixedVariantLayout.SAME_LAYOUT}),
     )
-    backend._play_capabilities = BackendPlayCapabilities(supports_debug_overlay=True)
+    backend._play_capabilities = PlayCapabilities(supports_debug_overlay=True)
     assert_aggregate_matches_sources(backend)
     assert before.get("dr.reset.gravity").support is SupportLevel.UNSUPPORTED
     assert backend.get_capabilities().get("dr.reset.gravity").support is SupportLevel.EXACT

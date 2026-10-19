@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from unisim.backend.materialization_common import TemporarySceneCleanup
+from unisim.backend.scene_cleanup import TemporarySceneCleanup
 from unisim.scene import SceneCfg
 
 
@@ -19,7 +19,7 @@ class MjwarpSceneContext:
     tracked_body_names: tuple[str, ...] = ()
 
 
-def materialize_mjwarp_scene(
+def materialize_scene(
     scene: SceneCfg,
     *,
     add_body_sensors: bool = False,
@@ -71,9 +71,9 @@ def materialize_mjwarp_scene(
         temp_paths.append(source_model_file)
 
     if add_body_sensors:
-        from unisim.backend.mujoco.xml import inject_mujoco_tracking_sensors
+        from unisim.backend.mujoco.xml import bind_tracking_sensors
 
-        source_model_file, _tracked_body_ids, valid_bnames = inject_mujoco_tracking_sensors(
+        source_model_file, _tracked_body_ids, valid_bnames = bind_tracking_sensors(
             source_model_file
         )
         temp_paths.append(source_model_file)

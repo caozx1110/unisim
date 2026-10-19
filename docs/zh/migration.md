@@ -25,14 +25,14 @@ Motrix 是第二个进程内适配器。它在相同的公共状态、控制和�
 | 1.7.16 移除项 | 公共替代 |
 | --- | --- |
 | `step()` | `step_tensor()` |
-| `reset()` 与选中行 `set_state()` | `set_state_tensor()`；对声明支持的 adapter 使用 `begin_packed_reset()` 与 packed transaction |
+| `reset()` 与选中行 `set_state()` | `set_state_tensor()`；对声明支持的 adapter 使用 `bind_packed_reset()` 与 packed transaction |
 | `get_state()` | `get_state_views()` |
 | base 与 DoF getter | `get_state_views()` 的对应列；tracked root/body 状态使用 `get_tracked_body_views()` |
 | body getter 与 `copy_body_state_w()` | `get_tracked_body_views()` |
 | 具名 sensor getter | `get_sensor_view()` / `bind_sensor_data()` |
-| 每次传输的 host I/O | `compile_host_bridge_io()` |
+| 每次传输的 host I/O | `bind_host_bridge_io()` |
 
-旧训练生命周期不再存在于 `SimBackend`，包括 concrete CPU adapter。Adapter 私有 `_host_*`、`_wire_*`、`_model_file_*` 与 `_playback_*` 名称描述 owner 边界，UniLab 不得调用。冷 metadata/layout/default 表、mapped entity transaction、playback/render 与 serialization 保留各自显式 NumPy 契约。公开 DR payload 为 torch-only——`TensorResetRandomizationPayload` 与 `TensorIntervalPayload`，由 payload 设备选择 host 或 device 平面——NumPy 转换位于 adapter 私有的 `unisim.dr._host` helper 之后；见 [torch-first DR payload ADR](adr-dr-torch-first-payloads.md)。见[legacy NumPy removal ADR](adr-legacy-numpy-removal.md)。
+旧训练生命周期不再存在于 `SimBackend`，包括 concrete CPU adapter。`host_*` 是文档化的 adapter 协议；`_wire_*`、`_model_file_*` 与 `_playback_*` 仍为 adapter 私有。UniLab 必须使用公共 tensor 生命周期，不得直接调用这两个家族。冷 metadata/layout/default 表、mapped entity transaction、playback/render 与 serialization 保留各自显式 NumPy 契约。公开 DR payload 为 torch-only——`TensorResetRandomizationPayload` 与 `TensorIntervalPayload`，由 payload 设备选择 host 或 device 平面——NumPy 转换位于 adapter 私有的 `unisim.dr._host` helper 之后；见 [torch-first DR payload ADR](adr-dr-torch-first-payloads.md)。见[legacy NumPy removal ADR](adr-legacy-numpy-removal.md)。
 
 ## 语义要求
 

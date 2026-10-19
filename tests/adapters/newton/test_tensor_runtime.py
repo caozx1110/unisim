@@ -80,7 +80,7 @@ def test_newton_declares_partial_device_resident_tensor_lifecycle(
     torch = pytest.importorskip("torch")
     backend = _cuda_backend(tmp_path)
     try:
-        assert backend.tensor_execution().value == "device_resident"
+        assert backend.get_tensor_execution().value == "device_resident"
         capabilities = backend.get_tensor_capabilities()
         _assert_tensor_platform_capabilities("newton", capabilities)
         assert capabilities.process_topology.value == "in_process"
@@ -138,7 +138,7 @@ def test_newton_portable_multi_entity_tensor_lifecycle_fails_closed() -> None:
     torch = pytest.importorskip("torch")
     backend = _portable_fake(2)
 
-    assert backend.tensor_execution().value == "unsupported"
+    assert backend.get_tensor_execution().value == "unsupported"
     capabilities = backend.get_tensor_capabilities()
     assert capabilities.execution.value == "unsupported"
     assert not capabilities.state_views
@@ -330,19 +330,19 @@ def test_newton_tensor_selected_reset_preserves_unselected_updated_rows(
             device=views["qpos"].device,
         )
         backend.step_tensor(ctrl)
-        reference._host_step(ctrl.cpu().numpy())
+        reference.host_step(ctrl.cpu().numpy())
 
         legacy_views = reference.get_state_views()
         legacy_qpos = legacy_views["qpos"].clone()
         legacy_qvel = legacy_views["qvel"].clone()
         legacy_qpos[0, 2] += 0.2
         legacy_qvel[0, 0] = 0.3
-        reference._host_set_state(
+        reference.host_set_state(
             np.array([0]),
             legacy_qpos[:1].cpu().numpy(),
             legacy_qvel[:1].cpu().numpy(),
         )
-        backend._host_set_state(
+        backend.host_set_state(
             np.array([0]),
             legacy_qpos[:1].cpu().numpy(),
             legacy_qvel[:1].cpu().numpy(),
@@ -359,7 +359,7 @@ def test_newton_tensor_selected_reset_preserves_unselected_updated_rows(
             reset_qpos[1:2],
             reset_qvel[1:2],
         )
-        reference._host_set_state(
+        reference.host_set_state(
             np.array([1]),
             reset_qpos[1:2].cpu().numpy(),
             reset_qvel[1:2].cpu().numpy(),
@@ -431,7 +431,7 @@ def test_newton_packed_mask_reset_preserves_false_rows_and_gains(
     try:
         capabilities = backend.get_tensor_capabilities()
         assert capabilities.packed_reset
-        transaction = backend.begin_packed_reset()
+        transaction = backend.bind_packed_reset()
         default_qpos = torch.asarray(backend.get_default_qpos(), device=backend._device)
         default_qvel = torch.asarray(backend.get_init_qvel(), device=backend._device)
         transaction.set_state_default(default_qpos, default_qvel)
@@ -522,19 +522,19 @@ def test_newton_tensor_sensor_views_match_host_and_selected_reset(
             device=device,
         )
         backend.step_tensor(ctrl, nsteps=2)
-        host._host_step(ctrl.detach().cpu().numpy(), nsteps=2)
+        host.host_step(ctrl.detach().cpu().numpy(), nsteps=2)
 
         def assert_sensor_parity() -> None:
             for name in ("pelvis_local_linvel", "torso_gyro", "torso_upvector"):
                 actual = backend.get_sensor_view(name, device=device)
-                expected = host._host_read_sensor(name)
+                expected = host.host_read_sensor(name)
                 np.testing.assert_allclose(actual.detach().cpu().numpy(), expected, atol=2e-5)
             body_ids = host.get_body_ids(("base", "arm"))
             expected = (
-                host._host_get_body_pos_w(body_ids),
-                host._host_get_body_quat_w(body_ids),
-                host._host_get_body_lin_vel_w(body_ids),
-                host._host_get_body_ang_vel_w(body_ids),
+                host.host_get_body_pos_w(body_ids),
+                host.host_get_body_quat_w(body_ids),
+                host.host_get_body_lin_vel_w(body_ids),
+                host.host_get_body_ang_vel_w(body_ids),
             )
             for body_name, body_id in zip(("base", "arm"), body_ids.tolist(), strict=True):
                 actual = (
@@ -562,7 +562,7 @@ def test_newton_tensor_sensor_views_match_host_and_selected_reset(
         reset_qpos[1, 7] = 0.4
         reset_qvel[1, 3] = -0.2
         backend.set_state_tensor(rows, reset_qpos[1:2], reset_qvel[1:2])
-        host._host_set_state(
+        host.host_set_state(
             rows.detach().cpu().numpy(),
             reset_qpos[1:2].detach().cpu().numpy(),
             reset_qvel[1:2].detach().cpu().numpy(),
@@ -596,7 +596,7 @@ def test_newton_tensor_step_and_reset_avoid_host_cache_refresh(
         assert result is not None
         assert result["timing"]["tensor_host_cache_refresh_ms"] == 0.0
 
-        host._host_step(np.full((2, host.num_actuators), 0.2, dtype=np.float32), nsteps=2)
+        host.host_step(np.full((2, host.num_actuators), 0.2, dtype=np.float32), nsteps=2)
         host_state = host.get_physics_state()
         host_qpos = host_state[:, 1 : 1 + host._metadata.nq]
         host_qvel = host_state[:, 1 + host._metadata.nq :]
@@ -611,7 +611,7 @@ def test_newton_tensor_step_and_reset_avoid_host_cache_refresh(
         backend.set_state_tensor(rows, reset_qpos[:1], reset_qvel[:1])
         assert views["qpos"][1, 2].item() == pytest.approx(reset_qpos[0, 2].item(), abs=1e-6)
         assert views["qvel"][1, 0].item() == pytest.approx(0.25, abs=1e-6)
-        host._host_set_state(
+        host.host_set_state(
             rows.cpu().numpy(), reset_qpos[:1].cpu().numpy(), reset_qvel[:1].cpu().numpy()
         )
         host_state = host.get_physics_state()

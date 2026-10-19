@@ -15,7 +15,7 @@ from unisim.backend.base import (  # noqa: E402
 from unisim.backend.packed_reset import (  # noqa: E402
     PACKED_RESET_MODEL_FIELDS,
     PACKED_RESET_PERSISTENT_CHANNELS,
-    TorchPackedResetComposer,
+    PackedResetTransaction,
 )
 from unisim.dr.types import (  # noqa: E402
     RESET_TERM_BASE_COM,
@@ -82,7 +82,7 @@ class _ComposerBackend:
 def test_packed_reset_defaults_fail_closed() -> None:
     backend = FakeBackend()
     with pytest.raises(NotImplementedError, match="does not support packed reset"):
-        backend.begin_packed_reset()
+        backend.bind_packed_reset()
     capabilities = backend.get_tensor_capabilities()
     assert not capabilities.packed_reset
     assert not capabilities.packed_reset_fields
@@ -108,7 +108,7 @@ def test_unsupported_tensor_lifecycle_rejects_packed_reset_declaration() -> None
 
 def test_composer_merges_columns_and_promotes_baselines() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     assert transaction.baseline(RESET_TERM_KP).shape == (4, 3)
 
     rows = torch.tensor([1, 3], dtype=torch.int64)
@@ -138,7 +138,7 @@ def test_composer_merges_columns_and_promotes_baselines() -> None:
 
 def test_composer_discard_and_persistent_channels() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     transaction.write_model_field(
         RESET_TERM_KD,
         torch.tensor([0], dtype=torch.int64),
@@ -154,7 +154,7 @@ def test_composer_discard_and_persistent_channels() -> None:
 
 def test_composer_stages_delta_terms_and_merges_in_torch_at_commit() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     rows = torch.tensor([1, 3], dtype=torch.int64)
     transaction.write_model_field(
         RESET_TERM_BASE_MASS,
@@ -179,7 +179,7 @@ def test_composer_stages_delta_terms_and_merges_in_torch_at_commit() -> None:
 
 def test_composer_mask_commit_merges_delta_terms() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     mask = torch.tensor([False, True, False, True])
     transaction.write_model_field_mask(
         RESET_TERM_BASE_COM,
@@ -200,7 +200,7 @@ def test_composer_mask_commit_merges_delta_terms() -> None:
 
 def test_composer_mask_commit_emits_no_completion_receipt() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     mask = torch.tensor([False, True, False, True])
     qpos = torch.zeros((4, 2), dtype=torch.float32)
     qvel = torch.zeros((4, 2), dtype=torch.float32)
@@ -215,10 +215,10 @@ def test_composer_mask_commit_emits_no_completion_receipt() -> None:
 
 def test_composer_stages_merges_and_commits_mocap_poses() -> None:
     backend = _ComposerBackend(packed_reset_mocap=True)
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
 
     with pytest.raises(NotImplementedError, match="does not support packed reset mocap"):
-        TorchPackedResetComposer(_ComposerBackend()).write_mocap_pose(
+        PackedResetTransaction(_ComposerBackend()).write_mocap_pose(
             "palm", torch.empty(0, dtype=torch.int64), torch.empty(0, 7)
         )
 
@@ -255,7 +255,7 @@ def test_composer_stages_merges_and_commits_mocap_poses() -> None:
 
 def test_composer_promotes_only_committed_rows() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     transaction.write_model_field(
         RESET_TERM_KP,
         torch.tensor([3], dtype=torch.int64),
@@ -281,7 +281,7 @@ def test_composer_promotes_only_committed_rows() -> None:
 
 def test_composer_merges_tailed_columns_and_stages_state() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     rows = torch.tensor([0, 2], dtype=torch.int64)
     transaction.write_model_field(
         "body_ipos",
@@ -315,7 +315,7 @@ def test_composer_merges_tailed_columns_and_stages_state() -> None:
 
 def test_composer_mask_lifecycle_stays_full_width_and_preserves_false_rows() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     transaction.set_state_default(
         torch.tensor([1.0, 2.0], dtype=torch.float32),
         torch.tensor([3.0, 4.0], dtype=torch.float32),
@@ -356,7 +356,7 @@ def test_composer_mask_lifecycle_stays_full_width_and_preserves_false_rows() -> 
 
 def test_composer_mask_lifecycle_validates_layout() -> None:
     backend = _ComposerBackend()
-    transaction = TorchPackedResetComposer(backend)
+    transaction = PackedResetTransaction(backend)
     transaction.set_state_default(
         torch.tensor([1.0, 2.0], dtype=torch.float32),
         torch.tensor([3.0, 4.0], dtype=torch.float32),

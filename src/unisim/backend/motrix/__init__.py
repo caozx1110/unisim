@@ -11,9 +11,9 @@ def __getattr__(name: str):
             return MOTRIX_AVAILABLE
         return MotrixBackend
     if name in {
-        "add_motrix_tracking_frame_sensors",
-        "materialize_motrix_hfield_attached_scene",
-        "materialize_motrix_scene",
+        "add_tracking_frame_sensors",
+        "materialize_hfield_attached_scene",
+        "materialize_scene",
     }:
         from . import scene
 
@@ -28,8 +28,8 @@ def __getattr__(name: str):
 __all__ = [
     "MOTRIX_AVAILABLE",
     "MotrixBackend",
-    "add_motrix_tracking_frame_sensors",
-    "materialize_motrix_hfield_attached_scene",
-    "materialize_motrix_scene",
+    "add_tracking_frame_sensors",
+    "materialize_hfield_attached_scene",
+    "materialize_scene",
     "run_motrix_playback",
 ]

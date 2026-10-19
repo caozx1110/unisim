@@ -110,9 +110,9 @@ def test_portable_batch_matches_independent_single_env_runtimes(tmp_path: Path) 
         batch_control = np.full((5, 1), 0.45, dtype=np.float32)
         single_control = np.full((1, 1), 0.45, dtype=np.float32)
         for _ in range(10):
-            batch._host_step(batch_control)
+            batch.host_step(batch_control)
             for single in singles:
-                single._host_step(single_control)
+                single.host_step(single_control)
 
         for row, single in enumerate(singles):
             for entity in ("robot", "passive", "object", "table"):

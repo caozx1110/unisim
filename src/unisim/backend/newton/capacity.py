@@ -34,11 +34,6 @@ class NewtonCapacitySample:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
 
-    @property
-    def peak_nj(self) -> int:
-        """Compatibility spelling for the MuJoCo ``nefc`` constraint count."""
-        return self.peak_nefc
-
 
 @dataclass(frozen=True, slots=True)
 class NewtonCapacityReport:

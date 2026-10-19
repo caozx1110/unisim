@@ -12,7 +12,7 @@ from unisim import (
     PhysicsStateLayout,
     assert_backend_conformance,
 )
-from unisim.backend.base import BackendPlayCapabilities
+from unisim.backend.base import PlayCapabilities
 
 MODEL_XML = (
     "<mujoco><worldbody><body name='base'><joint name='slide' type='slide'/>"
@@ -74,7 +74,7 @@ def test_split_state_rejects_wrong_width() -> None:
 class _PlaybackFakeBackend(FakeBackend):
     """Fake backend declaring the physics-state playback contract."""
 
-    _play_capabilities = BackendPlayCapabilities(supports_physics_state_playback=True)
+    _play_capabilities = PlayCapabilities(supports_physics_state_playback=True)
 
     def __init__(self, model_file: str, **kwargs: int) -> None:
         super().__init__(**kwargs)
@@ -103,7 +103,7 @@ class _PlaybackFakeBackend(FakeBackend):
 
 
 class _MocapPlaybackFakeBackend(_PlaybackFakeBackend):
-    _play_capabilities = BackendPlayCapabilities(
+    _play_capabilities = PlayCapabilities(
         supports_physics_state_playback=True,
         supports_mocap_playback=True,
     )
@@ -131,7 +131,7 @@ class _MocapPlaybackFakeBackend(_PlaybackFakeBackend):
 
 
 class _UndeclaredMocapFakeBackend(_MocapPlaybackFakeBackend):
-    _play_capabilities = BackendPlayCapabilities(supports_physics_state_playback=True)
+    _play_capabilities = PlayCapabilities(supports_physics_state_playback=True)
 
 
 def _write_model(tmp_path: Path) -> str:

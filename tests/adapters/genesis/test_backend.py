@@ -77,7 +77,7 @@ def test_genesis_motion_body_ids_follow_mjcf_worldbody_zero_convention(
         lambda: GenesisDependencies(genesis=_StubGenesis, torch=_StubTorch, mujoco=mujoco),
     )
     monkeypatch.setattr(materialization, "init_genesis_session", lambda *a, **k: None)
-    monkeypatch.setattr(materialization, "build_genesis_scene", lambda *a, **k: _StubScene())
+    monkeypatch.setattr(materialization, "build_scene", lambda *a, **k: _StubScene())
     model_file = tmp_path / "genesis.xml"
     model_file.write_text(_MODEL, encoding="utf-8")
     backend = GenesisBackend(

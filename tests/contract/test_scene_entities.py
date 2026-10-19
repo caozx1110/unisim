@@ -622,8 +622,8 @@ def test_mutated_scene_is_revalidated_at_factory_boundary() -> None:
 
 def test_unimplemented_entity_operations_preserve_existing_backend_state() -> None:
     backend = unisim.create_backend("fake", num_envs=2)
-    backend._host_step(np.array([[0.25], [-0.5]]))
-    before = backend._host_get_state()
+    backend.host_step(np.array([[0.25], [-0.5]]))
+    before = backend.host_get_state()
     request = SceneResetRequest((1,), (EntityStatePatch("object", root_pose=_pose(1)),))
     with pytest.raises(NotImplementedError, match="fake.*physical entities"):
         backend.get_entity_names()
@@ -631,7 +631,7 @@ def test_unimplemented_entity_operations_preserve_existing_backend_state() -> No
         backend.get_entity_state("object")
     with pytest.raises(NotImplementedError, match="fake.*entity reset"):
         backend.reset_entities(request)
-    after = backend._host_get_state()
+    after = backend.host_get_state()
     assert before.keys() == after.keys()
     for field in before:
         np.testing.assert_array_equal(after[field], before[field])

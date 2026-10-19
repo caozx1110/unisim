@@ -43,7 +43,7 @@ def run_motrix_playback(
             if render_spacing is not None
             else float(env_cfg_value(env, "render_spacing", 1.0))
         )
-        backend.init_renderer(
+        backend.bind_renderer(
             spacing=effective_spacing,
             offset_mode=str(render_offset_mode) if render_offset_mode is not None else "grid",
             headless=headless,
@@ -75,7 +75,7 @@ def run_motrix_playback(
         if render_spacing is not None
         else float(env_cfg_value(env, "render_spacing", 1.0))
     )
-    backend.init_renderer(
+    backend.bind_renderer(
         spacing=effective_spacing,
         offset_mode=str(render_offset_mode) if render_offset_mode is not None else "grid",
     )

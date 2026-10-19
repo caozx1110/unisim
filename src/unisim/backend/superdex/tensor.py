@@ -16,7 +16,7 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    tensor_device_matches,
+    torch_device_matches,
 )
 from unisim.dr.types import TensorResetRandomizationPayload
 
@@ -29,7 +29,7 @@ _STREAM_OWNERSHIP = "caller-stream-per-packed-boundary; stream synchronized at C
 _SUPPORTED_STATE_FIELDS = frozenset({"qpos", "qvel", "ctrl"})
 
 
-def superdex_tensor_capabilities(backend: SuperDexBackend) -> TensorLifecycleCapabilities:
+def tensor_capabilities(backend: SuperDexBackend) -> TensorLifecycleCapabilities:
     """Return the initial, fail-closed SuperDex tensor capability matrix."""
     return TensorLifecycleCapabilities(
         execution=TensorExecution.HOST_BRIDGE,
@@ -101,7 +101,7 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
         }
 
         require_superdex_tensor_runtime(backend, require_callback_free=True)
-        if backend.tensor_execution() is not TensorExecution.HOST_BRIDGE:
+        if backend.get_tensor_execution() is not TensorExecution.HOST_BRIDGE:
             raise RuntimeError("SuperDex packed tensor I/O requires the host-bridge lifecycle")
         unsupported = set(spec.state_fields) - _SUPPORTED_STATE_FIELDS
         if unsupported:
@@ -306,7 +306,7 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
             raise ValueError(f"SuperDex packed ctrl must have shape {expected}")
         if ctrl.dtype != torch.float32 or not bool(ctrl.is_contiguous()):
             raise TypeError("SuperDex packed ctrl must be contiguous float32")
-        if not tensor_device_matches(
+        if not torch_device_matches(
             (str(self.device),), ctrl.device, current_device=self.device.index
         ):
             raise ValueError(f"SuperDex packed ctrl must live on {self.device}, got {ctrl.device}")
@@ -333,7 +333,7 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
         buffers = self._buffers()
-        self._backend._host_step(buffers.host_ctrl.numpy(), nsteps, _producer_owns_finite=True)
+        self._backend.host_step(buffers.host_ctrl.numpy(), nsteps, _producer_owns_finite=True)
         return {"timing": dict(self.last_timing)}
 
     def read_state_sensors(self) -> Mapping[str, Any]:
@@ -403,7 +403,7 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
         if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
             raise TypeError("SuperDex packed reset qpos and qvel must be float32")
         if any(
-            not tensor_device_matches(
+            not torch_device_matches(
                 (str(self.device),), value.device, current_device=self.device.index
             )
             for value in (env_indices, qpos, qvel)
@@ -432,7 +432,7 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
         self._validate_reset_rows(rows)
         elapsed = (time.perf_counter() - started) * 1000.0
 
-        self._backend._host_set_state(
+        self._backend.host_set_state(
             rows,
             host_qpos.astype(self._backend._dtype),
             host_qvel.astype(self._backend._dtype),
@@ -492,5 +492,5 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
 __all__ = [
     "SuperDexHostBridgeTransferPlan",
     "require_superdex_tensor_runtime",
-    "superdex_tensor_capabilities",
+    "tensor_capabilities",
 ]

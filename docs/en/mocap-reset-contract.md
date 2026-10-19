@@ -6,7 +6,7 @@ Status: accepted. This decision extends the existing backend boundary; it introd
 
 ## Decision
 
-`SimBackend.bind_mocap_pose(body_name)` resolves one fixed mocap body on the cold path and returns `BackendMocapPoseBinding` from `unisim.backend.base`. The immutable binding contains `backend_type`, `body_name`, `num_envs`, a detached read-only `default_pose` with shape `(7,)`, and backend-owned callbacks. Its public methods are:
+`SimBackend.bind_mocap_pose(body_name)` resolves one fixed mocap body on the cold path and returns `MocapPoseBinding` from `unisim.backend.base`. The immutable binding contains `backend_type`, `body_name`, `num_envs`, a detached read-only `default_pose` with shape `(7,)`, and backend-owned callbacks. Its public methods are:
 
 - `read() -> np.ndarray`: detached `(num_envs, 7)` world poses.
 - `write(env_ids, poses) -> None`: unique integer environment IDs and floating `(len(env_ids), 7)` poses. The layout is world xyz followed by a unit wxyz quaternion. An empty selection is a validated no-op.
@@ -27,7 +27,7 @@ The adapter applies pose writes, forwards physics to refresh derived state, and 
 | `dof_damping` | `(R, nv)` | Non-negative joint damping |
 | `dof_frictionloss` | `(R, nv)` | Non-negative joint friction loss |
 
-The constants in `unisim.dr.types` are `RESET_TERM_GEOM_SIZE`, `RESET_TERM_GEOM_SOLREF`, `RESET_TERM_GEOM_SOLIMP`, `RESET_TERM_DOF_DAMPING`, and `RESET_TERM_DOF_FRICTIONLOSS`. `get_geom_sizes`, `get_geom_solref`, `get_geom_solimp`, `get_dof_damping`, and `get_dof_frictionloss` expose detached default tables for cold-path consumer binding; they are not per-world current model views. Model randomization persists across state-only resets.
+The constants in `unisim.dr.types` are `RESET_TERM_GEOM_SIZE`, `RESET_TERM_GEOM_SOLREF`, `RESET_TERM_GEOM_SOLIMP`, `RESET_TERM_DOF_DAMPING`, and `RESET_TERM_DOF_FRICTIONLOSS`. `get_default_geom_sizes`, `get_geom_solref`, `get_geom_solimp`, `get_dof_damping`, and `get_dof_frictionloss` expose detached default tables for cold-path consumer binding; they are not per-world current model views. Model randomization persists across state-only resets.
 
 MJWarp validates the new tables before changing state or uploading model data. Solref accepts either two positive time-constant/damping-ratio values or two non-positive direct-format values. Solimp requires impedance endpoints in `[0,1]`, positive width, midpoint in `(0,1)`, and power at least one. Geometry size writes require positive primitive radii or extents; unused components may be zero. All table values must be representable as finite float32 values.
 

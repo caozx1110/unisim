@@ -679,7 +679,7 @@ class _WorkerContext:
             # status methods can be queried. Treat that as a closed window.
             return False
 
-    def init_renderer(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def bind_renderer(self, payload: dict[str, Any]) -> dict[str, Any]:
         headless = bool(payload.get("headless", False))
         capture = bool(payload.get("capture", False))
         requested = "record" if (headless or capture) else "interactive"
@@ -814,7 +814,7 @@ def _dispatch(ctx: Any, protocol: Any, cmd: str, payload: Any) -> tuple[str, Any
     if cmd == protocol.CMD_GET_META:
         return protocol.CMD_META, ctx.get_meta()
     if cmd == protocol.CMD_INIT_RENDERER:
-        return protocol.CMD_META, ctx.init_renderer(payload or {})
+        return protocol.CMD_META, ctx.bind_renderer(payload or {})
     if cmd == protocol.CMD_RENDER_FRAME:
         return protocol.CMD_META, ctx.render_frame()
     if cmd == protocol.CMD_CAPTURE_FRAME:

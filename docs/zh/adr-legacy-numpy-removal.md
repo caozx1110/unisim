@@ -16,7 +16,7 @@
 
 1.7.16 直接移除了 legacy public training lifecycle，不提供 alias。1.7.15 是最后一个包含该 surface 的版本。私有实现名按 owner 语义命名，而不是使用 `legacy`：
 
-- `_host_*` 表示 adapter 私有的 CPU 权威 state、control、reset、sensor 与 body 操作。
+- `host_*` 表示文档化的 adapter-owned CPU 权威 state、control、reset、sensor 与 body 协议。
 - `_wire_*` 表示版本化 external-worker 协议投影。
 - `_model_file_*` 表示仍受支持的 `SceneCfg(model_file=...)` profile 及其 metadata。
 - `_playback_*` 表示显式 playback snapshot 布局与 serialization 边界。
@@ -26,11 +26,11 @@
 | 1.x 移除面 | 1.7.16 替代 |
 | --- | --- |
 | `step(np.ndarray)` | `step_tensor(torch.Tensor, nsteps=...)` |
-| `set_state(...)` 与 NumPy reset 组合 | `set_state_tensor(...)`；需要 staging、选中列合并、baseline、模型字段或 mocap 时使用 `begin_packed_reset(...)` |
+| `set_state(...)` 与 NumPy reset 组合 | `set_state_tensor(...)`；需要 staging、选中列合并、baseline、模型字段或 mocap 时使用 `bind_packed_reset(...)` |
 | `get_state()`、`get_base_*`、`get_dof_pos/vel` | `get_state_views(...)` |
 | `get_sensor_data*` | `get_sensor_view(...)`、`bind_sensor_data(...)` 或已协商 sensor packet |
 | Body getter 与 body-state copy helper | `get_tracked_body_views(...)` 或公共 tensor sensor projection |
-| 零散 CPU host exchange | `compile_host_bridge_io(...)` 及其 plan boundary |
+| 零散 CPU host exchange | `bind_host_bridge_io(...)` 及其 plan boundary |
 
 NumPy 仍保留在显式 scoped public leaf 中：冷 model/default/layout metadata 与索引表、pre-step callback 格式、mapped entity transaction、playback/render API、physics-state snapshot 与 serialization。公开 DR payload 为 torch-only；adapter 私有的 host 转换（例如 `unisim.dr._host` helper）是 adapter 内部 leaf 而非公开 leaf，见 [torch-first DR payload ADR](adr-dr-torch-first-payloads.md)。这些 leaf 不恢复 NumPy 训练生命周期，也不得成为 tensor-capable Manager 代码的隐藏 fallback。
 

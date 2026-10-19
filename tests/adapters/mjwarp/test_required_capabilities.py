@@ -70,27 +70,27 @@ def _reset(backend, rows=None, payload=None, velocity=None, position=None):
         qvel[:, 6] = velocity
     if position is not None:
         qpos[:, 2] = position
-    backend._host_set_state(rows, qpos, qvel, randomization=payload)
+    backend.host_set_state(rows, qpos, qvel, randomization=payload)
 
 
 def test_mocap_sparse_pose_effect_reset_and_other_worlds(backend) -> None:
     _reset(backend)
     binding = backend.bind_mocap_pose("hand_root")
-    before = backend._host_read_sensor("tip_position").copy()
-    qpos_before = backend._host_get_state(("qpos",))["qpos"].copy()
+    before = backend.host_read_sensor("tip_position").copy()
+    qpos_before = backend.host_get_state(("qpos",))["qpos"].copy()
     poses = np.tile(binding.default_pose, (2, 1))
     poses[0, 0] += 0.4
     poses[1, 3:] = [np.sqrt(0.5), 0, 0, np.sqrt(0.5)]
     binding.write(np.array([0, 2]), poses)
-    after = backend._host_read_sensor("tip_position").copy()
+    after = backend.host_read_sensor("tip_position").copy()
     np.testing.assert_allclose(after[0], before[0] + [0.4, 0, 0], atol=1e-6)
     np.testing.assert_allclose(after[2], [0, 1.3, 0.5], atol=1e-6)
     np.testing.assert_array_equal(after[1], before[1])
-    np.testing.assert_array_equal(backend._host_get_state(("qpos",))["qpos"], qpos_before)
+    np.testing.assert_array_equal(backend.host_get_state(("qpos",))["qpos"], qpos_before)
     _reset(backend, np.array([0], dtype=np.int32))
     np.testing.assert_allclose(binding.read()[0], binding.default_pose)
     np.testing.assert_allclose(binding.read()[2], poses[1])
-    np.testing.assert_allclose(backend._host_read_sensor("tip_position")[2], after[2])
+    np.testing.assert_allclose(backend.host_read_sensor("tip_position")[2], after[2])
     with pytest.raises(KeyError, match="does not exist"):
         backend.bind_mocap_pose("missing")
     with pytest.raises(NotImplementedError, match="not a mocap"):
@@ -99,7 +99,7 @@ def test_mocap_sparse_pose_effect_reset_and_other_worlds(backend) -> None:
 
 def test_extended_model_rows_bounds_and_contact_effect(backend) -> None:
     _reset(backend, position=0.08)
-    sizes = backend.get_geom_sizes()[None].copy()
+    sizes = backend.get_default_geom_sizes()[None].copy()
     ball = backend.get_geom_id("ball")
     sizes[0, ball, 0] = 0.1
     solref = backend.get_geom_solref()[None] * 1.2
@@ -124,10 +124,10 @@ def test_extended_model_rows_bounds_and_contact_effect(backend) -> None:
         )
     np.testing.assert_allclose(backend._device_model.geom_rbound.numpy()[1, ball], 0.1)
     np.testing.assert_allclose(backend._device_model.geom_aabb.numpy()[1, ball, 1], [0.1] * 3)
-    assert backend._host_read_sensor("ball_found")[1, 0] > 0
-    np.testing.assert_array_equal(backend._host_read_sensor("ball_found")[[0, 2]], 0)
-    backend._host_step(np.zeros((3, 2), dtype=np.float32), nsteps=2)
-    assert np.isfinite(backend._host_read_sensor("ball_force")).all()
+    assert backend.host_read_sensor("ball_found")[1, 0] > 0
+    np.testing.assert_array_equal(backend.host_read_sensor("ball_found")[[0, 2]], 0)
+    backend.host_step(np.zeros((3, 2), dtype=np.float32), nsteps=2)
+    assert np.isfinite(backend.host_read_sensor("ball_force")).all()
 
 
 def test_positive_kd_payload_preserves_mujoco_position_actuator_sign(backend) -> None:
@@ -169,22 +169,22 @@ def test_dof_randomization_changes_selected_world_motion(backend, field, amount)
         position=1.0,
     )
     for _ in range(10):
-        backend._host_step(np.zeros((3, 2), dtype=np.float32), nsteps=4)
-    velocity = backend._host_get_state(("qvel",))["qvel"][:, 6]
+        backend.host_step(np.zeros((3, 2), dtype=np.float32), nsteps=4)
+    velocity = backend.host_get_state(("qvel",))["qvel"][:, 6]
     assert abs(velocity[1]) < abs(velocity[0]) * 0.6
     np.testing.assert_allclose(velocity[[0, 2]], 1, atol=1e-5)
 
 
 def test_new_field_validation_precedes_state_or_model_mutation(backend) -> None:
-    before = backend._host_get_state(("qpos",))["qpos"].copy()
+    before = backend.host_get_state(("qpos",))["qpos"].copy()
     size_before = backend._device_model.geom_size.numpy().copy()
     rows = np.array([0], dtype=np.int32)
-    payload = _payload(geom_size=backend.get_geom_sizes()[None].copy())
+    payload = _payload(geom_size=backend.get_default_geom_sizes()[None].copy())
     payload.geom_size[0, backend.get_geom_id("ball"), 0] = 0.2
     payload.dof_damping = torch.full((1, backend.get_init_qvel().size), torch.nan)
     with pytest.raises(ValueError, match="finite"):
         _reset(backend, rows, payload, position=10.0)
-    np.testing.assert_array_equal(backend._host_get_state(("qpos",))["qpos"], before)
+    np.testing.assert_array_equal(backend.host_get_state(("qpos",))["qpos"], before)
     np.testing.assert_array_equal(backend._device_model.geom_size.numpy(), size_before)
     payload.dof_damping = None
     payload.geom_size[0, backend.get_geom_id("floor"), 0] += 1
@@ -195,14 +195,14 @@ def test_new_field_validation_precedes_state_or_model_mutation(backend) -> None:
 @pytest.mark.parametrize("field", ("geom_solref", "geom_solimp"))
 def test_contact_parameters_change_selected_world_contact_force(backend, field) -> None:
     defaults = {
-        "geom_size": backend.get_geom_sizes(),
+        "geom_size": backend.get_default_geom_sizes(),
         "geom_solref": backend.get_geom_solref(),
         "geom_solimp": backend.get_geom_solimp(),
     }
     tiled = {name: np.tile(value[None], (3, 1, 1)) for name, value in defaults.items()}
     payload = _payload(**tiled)
     _reset(backend, payload=payload, position=0.045)
-    original_force = backend._host_read_sensor("ball_force").copy()
+    original_force = backend.host_read_sensor("ball_force").copy()
     assert np.linalg.norm(original_force[0]) > 0
     values = defaults[field][None].copy()
     if field == "geom_solref":
@@ -220,7 +220,7 @@ def test_contact_parameters_change_selected_world_contact_force(backend, field) 
         _payload(**{field: values}),
         position=0.045,
     )
-    changed_force = backend._host_read_sensor("ball_force")
+    changed_force = backend.host_read_sensor("ball_force")
     assert np.linalg.norm(changed_force[1] - original_force[1]) > 1e-3
     np.testing.assert_allclose(changed_force[[0, 2]], original_force[[0, 2]], atol=1e-6)
 
@@ -239,7 +239,10 @@ def test_contact_parameters_change_selected_world_contact_force(backend, field) 
     ),
 )
 def test_extended_field_shapes_ranges_and_dtypes_fail_before_mutation(backend, field, kind) -> None:
-    getter = backend.get_geom_sizes if field == "geom_size" else getattr(backend, f"get_{field}")
+    if field == "geom_size":
+        getter = backend.get_default_geom_sizes
+    else:
+        getter = getattr(backend, f"get_{field}")
     values = getter()[None]
     if kind == "shape":
         values = values[:, :-1]
@@ -251,11 +254,11 @@ def test_extended_field_shapes_ranges_and_dtypes_fail_before_mutation(backend, f
         values = values.astype(np.int32)
     else:
         values[...] = -1
-    before = backend._host_get_state(("qpos",))["qpos"].copy()
+    before = backend.host_get_state(("qpos",))["qpos"].copy()
     error = TypeError if kind == "integer" else (ValueError, NotImplementedError)
     with pytest.raises(error):
         _reset(backend, np.array([0]), _payload(**{field: values}), position=3)
-    np.testing.assert_array_equal(backend._host_get_state(("qpos",))["qpos"], before)
+    np.testing.assert_array_equal(backend.host_get_state(("qpos",))["qpos"], before)
 
 
 def test_mocap_large_coordinates_rejected_before_cast_mutation(backend) -> None:

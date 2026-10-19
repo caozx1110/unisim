@@ -124,7 +124,7 @@ class IsaacGymCudaIpcArenaLayout:
     def reset_kd_shape(self) -> Tuple[int, int]:
         return (self.num_envs, self.nu)
 
-    def wire(self) -> Dict[str, Any]:
+    def to_wire(self) -> Dict[str, Any]:
         return {
             "version": _CUDA_IPC_ARENA_VERSION,
             "num_envs": self.num_envs,
@@ -187,7 +187,7 @@ class IsaacGymCudaIpcArenaLayout:
             payload["sensor_state_offset"],
             payload["size_bytes"],
         )
-        if layout.wire() != payload or layout != cls.create(
+        if layout.to_wire() != payload or layout != cls.create(
             layout.num_envs, layout.nq, layout.nv, layout.nu, layout.nbody
         ):
             raise ValueError("inconsistent IsaacGym CUDA IPC arena descriptor")
@@ -271,7 +271,7 @@ _PyCapsule_SetName.argtypes = [ctypes.py_object, ctypes.c_char_p]
 _PyCapsule_SetName.restype = ctypes.c_int
 
 
-class RawArenaViewToken:
+class RawCudaViewToken:
     """One release callback associated with a stable raw-pointer view."""
 
     def __init__(self, on_release: Optional[Callable[[], None]] = None) -> None:
@@ -307,7 +307,7 @@ def _dlpack_capsule_deleter(capsule_ptr: int) -> None:
             managed.deleter(managed_ptr)
 
 
-class RawCudaArenaView:
+class RawCudaTensorView:
     """A one-shot DLPack producer for a raw CUDA arena allocation."""
 
     def __init__(
@@ -316,7 +316,7 @@ class RawCudaArenaView:
         shape: Sequence[int],
         device_index: int,
         dtype: str = "float32",
-        token: Optional[RawArenaViewToken] = None,
+        token: Optional[RawCudaViewToken] = None,
     ) -> None:
         self.pointer = int(pointer)
         self.shape = tuple(int(value) for value in shape)
@@ -326,7 +326,7 @@ class RawCudaArenaView:
             raise ValueError("raw CUDA arena views support only float32 and int64")
         self.type_code = _DLDataTypeCode.FLOAT if self.dtype == "float32" else _DLDataTypeCode.INT
         self.type_bits = 32 if self.dtype == "float32" else 64
-        self.token = token if token is not None else RawArenaViewToken()
+        self.token = token if token is not None else RawCudaViewToken()
         if self.pointer <= 0 or not self.shape or any(value <= 0 for value in self.shape):
             raise ValueError("raw CUDA arena views require a positive pointer and shape")
 
@@ -381,11 +381,11 @@ def torch_from_cuda_pointer(
     shape: Sequence[int],
     device_index: int,
     dtype: str = "float32",
-    token: Optional[RawArenaViewToken] = None,
+    token: Optional[RawCudaViewToken] = None,
 ) -> Any:
     """Return a Torch tensor view without Torch private storage IPC."""
     return torch_module.from_dlpack(
-        RawCudaArenaView(pointer, shape, device_index, dtype=dtype, token=token)
+        RawCudaTensorView(pointer, shape, device_index, dtype=dtype, token=token)
     )
 
 
@@ -394,41 +394,38 @@ def torch_from_cuda_pointer(
 # --------------------------------------------------------------------------- #
 
 
-def _quat_rotate(torch: Any, quat_wxyz: Any, vectors: Any) -> Any:
-    scalar = quat_wxyz[..., 0:1]
-    axis = quat_wxyz[..., 1:]
-    first = torch.cross(axis, vectors, dim=-1) * 2.0
-    return vectors + scalar * first + torch.cross(axis, first, dim=-1)
+def quat_rotate(torch: Any, quat_wxyz: Any, vectors: Any) -> Any:
+    """Rotate broadcast-compatible wxyz-quaternion vectors without package imports."""
+    quat_vector = quat_wxyz[..., 1:4]
+    if len(tuple(vectors.shape)) < len(tuple(quat_vector.shape)):
+        vectors = vectors.expand_as(quat_vector)
+    cross = torch.linalg.cross(quat_vector, vectors, dim=-1)
+    second_cross = torch.linalg.cross(quat_vector, cross, dim=-1)
+    return vectors + 2.0 * quat_wxyz[..., 0:1] * cross + 2.0 * second_cross
 
 
-def _quat_mul(torch: Any, left_wxyz: Any, right_wxyz: Any) -> Any:
-    lw, lx, ly, lz = (
-        left_wxyz[..., 0:1],
-        left_wxyz[..., 1:2],
-        left_wxyz[..., 2:3],
-        left_wxyz[..., 3:4],
-    )
-    rw, rx, ry, rz = (
-        right_wxyz[..., 0:1],
-        right_wxyz[..., 1:2],
-        right_wxyz[..., 2:3],
-        right_wxyz[..., 3:4],
-    )
+def quat_mul(torch: Any, left_wxyz: Any, right_wxyz: Any) -> Any:
+    """Multiply broadcast-compatible wxyz quaternions without package imports."""
+    left_w, left_xyz = left_wxyz[..., 0:1], left_wxyz[..., 1:4]
+    right_w, right_xyz = right_wxyz[..., 0:1], right_wxyz[..., 1:4]
+    if len(tuple(right_xyz.shape)) < len(tuple(left_xyz.shape)):
+        right_xyz = right_xyz.expand_as(left_xyz)
+    elif len(tuple(left_xyz.shape)) < len(tuple(right_xyz.shape)):
+        left_xyz = left_xyz.expand_as(right_xyz)
+    cross = torch.linalg.cross(left_xyz, right_xyz, dim=-1)
     return torch.cat(
         (
-            lw * rw - lx * rx - ly * ry - lz * rz,
-            lw * rx + lx * rw + ly * rz - lz * ry,
-            lw * ry - lx * rz + ly * rw + lz * rx,
-            lw * rz + lx * ry - ly * rx + lz * rw,
+            left_w * right_w - (left_xyz * right_xyz).sum(dim=-1, keepdim=True),
+            left_w * right_xyz + right_w * left_xyz + cross,
         ),
         dim=-1,
     )
 
 
-def _quat_rotate_inverse(torch: Any, quat_wxyz: Any, vectors: Any) -> Any:
-    conjugate = quat_wxyz.clone()
-    conjugate[..., 1:4] = -conjugate[..., 1:4]
-    return _quat_rotate(torch, conjugate, vectors)
+def quat_rotate_inverse(torch: Any, quat_wxyz: Any, vectors: Any) -> Any:
+    """Rotate vectors into wxyz-quaternion frames without package imports."""
+    conjugate = torch.cat((quat_wxyz[..., 0:1], -quat_wxyz[..., 1:4]), dim=-1)
+    return quat_rotate(torch, conjugate, vectors)
 
 
 def _device_tensor(torch: Any, values: Any, dtype: str, device: Any) -> Any:
@@ -814,7 +811,7 @@ class IsaacGymCudaIpcWorkerRuntime:
         roots = roots.reshape(self.arena.num_envs, -1, 13).clone()
         roots[..., 3:7] = roots[..., [6, 3, 4, 5]]
         quat = roots[..., 3:7]
-        com_world = _quat_rotate(torch, quat, self.root_com)
+        com_world = quat_rotate(torch, quat, self.root_com)
         roots[..., 7:10] -= torch.cross(roots[..., 10:13], com_world, dim=-1)
         return roots
 
@@ -829,7 +826,7 @@ class IsaacGymCudaIpcWorkerRuntime:
         bodies = bodies.reshape(self.arena.num_envs, -1, 13).clone()
         bodies[..., 3:7] = bodies[..., [6, 3, 4, 5]]
         quat = bodies[..., 3:7]
-        com_world = _quat_rotate(torch, quat, self.body_com)
+        com_world = quat_rotate(torch, quat, self.body_com)
         bodies[..., 7:10] -= torch.cross(bodies[..., 10:13], com_world, dim=-1)
         # IsaacGym state tensors are already expressed in each environment's
         # local publication frame.  The arena exposes the same logical frame;
@@ -850,14 +847,14 @@ class IsaacGymCudaIpcWorkerRuntime:
         for name, spec in self.sensor_specs.items():
             body = self.body_state[:, spec["body_id"]]
             if spec["kind"] == "local_linvel":
-                offset_world = _quat_rotate(torch, body[:, 3:7], spec["local_pos"][None, :])
+                offset_world = quat_rotate(torch, body[:, 3:7], spec["local_pos"][None, :])
                 vector = body[:, 7:10] + torch.cross(body[:, 10:13], offset_world, dim=-1)
             else:
                 vector = body[:, 10:13]
-            body_frame = _quat_rotate_inverse(torch, body[:, 3:7], vector)
+            body_frame = quat_rotate_inverse(torch, body[:, 3:7], vector)
             local_quat = spec["local_quat"][None, :]
             slot = 0 if name == "pelvis_local_linvel" else 1
-            self.sensor_state[:, slot] = _quat_rotate_inverse(torch, local_quat, body_frame)
+            self.sensor_state[:, slot] = quat_rotate_inverse(torch, local_quat, body_frame)
 
     def _publish_selected_body_fk(self, rows: Any, qpos: Any, qvel: Any) -> None:
         """Overlay selected reset rows with source-layout forward kinematics."""
@@ -871,7 +868,7 @@ class IsaacGymCudaIpcWorkerRuntime:
                 parent_pos = root_qpos[:, 0:3]
                 parent_quat = root_qpos[:, 3:7]
                 parent_lin = root_qvel[:, 0:3]
-                parent_ang = _quat_rotate(torch, parent_quat, root_qvel[:, 3:6])
+                parent_ang = quat_rotate(torch, parent_quat, root_qvel[:, 3:6])
             else:
                 root_id = body_ids[0]
                 parent_pos = self.body_state[rows, root_id, 0:3]
@@ -891,8 +888,8 @@ class IsaacGymCudaIpcWorkerRuntime:
                 parent_quat = self.body_state[rows, body_ids[parent_index], 3:7]
                 parent_lin = self.body_state[rows, body_ids[parent_index], 7:10]
                 parent_ang = self.body_state[rows, body_ids[parent_index], 10:13]
-                offset = _quat_rotate(torch, parent_quat, kinematics["offset"][local_body][None, :])
-                reference = _quat_mul(
+                offset = quat_rotate(torch, parent_quat, kinematics["offset"][local_body][None, :])
+                reference = quat_mul(
                     torch,
                     parent_quat,
                     kinematics["offset_quat"][local_body][None, :],
@@ -906,11 +903,11 @@ class IsaacGymCudaIpcWorkerRuntime:
                     value = qpos.index_select(1, kinematics["qpos"][local_body]).reshape(-1)
                     rate = qvel.index_select(1, kinematics["qvel"][local_body]).reshape(-1)
                     axis = kinematics["axis"][local_body]
-                    axis_world = _quat_rotate(torch, reference, axis[None, :])
+                    axis_world = quat_rotate(torch, reference, axis[None, :])
                     if kind == "hinge":
                         sine = torch.sin(0.5 * value)[:, None] * axis[None, :]
                         joint_quat = torch.cat((torch.cos(0.5 * value)[:, None], sine), dim=-1)
-                        quat = _quat_mul(torch, reference, joint_quat)
+                        quat = quat_mul(torch, reference, joint_quat)
                         body_ang = parent_ang + axis_world * rate[:, None]
                         parent_pos = parent_pos + offset
                         body_lin = parent_lin + torch.cross(parent_ang, offset, dim=-1)
@@ -949,7 +946,7 @@ class IsaacGymCudaIpcWorkerRuntime:
             if projection["qpos"].numel():
                 self.qpos.index_copy_(1, projection["qpos"], entity_root[:, :7].contiguous())
             if projection["qvel"].numel():
-                angular_body = _quat_rotate_inverse(
+                angular_body = quat_rotate_inverse(
                     torch, entity_root[:, 3:7], entity_root[:, 10:13]
                 )
                 root_velocity = torch.cat((entity_root[:, 7:10], angular_body), dim=-1)
@@ -1089,9 +1086,9 @@ class IsaacGymCudaIpcWorkerRuntime:
                     root_qvel = qvel.index_select(1, projection["qvel"])
                     native_root[:, 7:10] = root_qvel[:, 0:3]
                     quat_wxyz = root_qpos[:, 3:7]
-                    native_root[:, 10:13] = _quat_rotate(torch, quat_wxyz, root_qvel[:, 3:6])
+                    native_root[:, 10:13] = quat_rotate(torch, quat_wxyz, root_qvel[:, 3:6])
                     com = projection["com"][rows]
-                    com_world = _quat_rotate(torch, quat_wxyz, com)
+                    com_world = quat_rotate(torch, quat_wxyz, com)
                     native_root[:, 7:10] += torch.cross(native_root[:, 10:13], com_world, dim=-1)
                 root_actors = projection["actor_ids"].index_select(0, rows).reshape(-1)
                 self._assign_native_root(root_actors, native_root)
@@ -1229,8 +1226,11 @@ class IsaacGymCudaIpcWorkerRuntime:
 __all__ = [
     "IsaacGymCudaIpcArenaLayout",
     "IsaacGymCudaIpcWorkerRuntime",
-    "RawArenaViewToken",
-    "RawCudaArenaView",
+    "RawCudaViewToken",
+    "RawCudaTensorView",
+    "quat_mul",
+    "quat_rotate",
+    "quat_rotate_inverse",
     "torch_from_cuda_pointer",
 ]
 
@@ -1341,7 +1341,7 @@ class IsaacGymCudaIpcPlan:
                 self.reset_event = self.transport.create_event()
                 self._make_views()
                 payload = {
-                    "arena": self.arena.wire(),
+                    "arena": self.arena.to_wire(),
                     "memory": self._memory_wire(),
                     "control_event": self._event_wire(self.control_event),
                     "state_event": self._event_wire(self.state_event),
@@ -1367,7 +1367,7 @@ class IsaacGymCudaIpcPlan:
                         "IsaacGym CUDA IPC same-GPU handshake failed: "
                         f"worker={worker_uuid!r}, collector={self.transport.identity.uuid!r}"
                     )
-                if response.get("arena") != self.arena.wire():
+                if response.get("arena") != self.arena.to_wire():
                     self._detach_worker_best_effort(backend)
                     raise RuntimeError("IsaacGym worker changed the CUDA IPC arena layout")
             except BaseException:
@@ -1471,7 +1471,7 @@ class IsaacGymCudaIpcPlan:
             shape,
             self.device_index,
             dtype=dtype,
-            token=RawArenaViewToken(lambda: self._release_view(token_id)),
+            token=RawCudaViewToken(lambda: self._release_view(token_id)),
         )
         self._active_views[token_id] = name
         return view

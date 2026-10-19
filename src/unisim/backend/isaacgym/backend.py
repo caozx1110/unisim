@@ -17,15 +17,15 @@ from typing import Any
 import numpy as np
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
     PhysicsStateLayout,
+    PlayCapabilities,
     PublicStateWidths,
     SelectedResetPublication,
     TensorDataPlane,
     TensorExecution,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    validate_tensor_device,
+    validate_torch_device,
 )
 from unisim.backend.mjcf_layout import extract_mjcf_joint_layout
 from unisim.backend.subprocess_ipc import protocol
@@ -68,6 +68,7 @@ from unisim.dr.types import (
 from unisim.entities import SceneResetRequest
 from unisim.inspection import ConfigurationField, ConfigurationProvenance
 from unisim.progress import progress_enabled
+from unisim.utils.quaternion import torch_quat_mul, torch_quat_rotate
 
 from .dependencies import build_worker_env, resolve_isaacgym_runtime
 from .tensor import IsaacGymCudaIpcPlan
@@ -789,14 +790,14 @@ class IsaacGymBackend(MjcfSubprocessBackend):
     # Physics-state playback contract                                      #
     # ------------------------------------------------------------------ #
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
+    def get_play_capabilities(self) -> PlayCapabilities:
         # The native interactive renderer and video capture path is unchanged;
         # physics-state playback adds the detached MuJoCo replay contract when
         # the construction-time audit accepted the scene shape.  The getattr
         # default keeps the report fail-closed for instances that bypassed
         # __init__ (test doubles built via __new__).
         playback_supported = getattr(self, "_playback_state_supported", False)
-        return BackendPlayCapabilities(
+        return PlayCapabilities(
             supports_native_interactive_renderer=True,
             supports_physics_state_playback=playback_supported,
             supports_native_video_capture=True,
@@ -886,7 +887,7 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         # The split columns are strided views; the reset slots expect
         # contiguous rows.  set_state also refreshes the worker and host
         # caches, keeping state and sensor getters consistent.
-        self._host_set_state(
+        self.host_set_state(
             np.arange(self._num_envs, dtype=np.intp),
             np.ascontiguousarray(parts.qpos),
             np.ascontiguousarray(parts.qvel),
@@ -912,17 +913,17 @@ class IsaacGymBackend(MjcfSubprocessBackend):
     # Playback clock maintenance                                           #
     # ------------------------------------------------------------------ #
 
-    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
+    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict[str, dict[str, float]]:
         if getattr(self, "_cuda_ipc_plan", None) is not None:
             raise RuntimeError("NumPy step is unavailable while a CUDA IPC tensor plan is open")
-        result = super()._host_step(ctrl, nsteps)
+        result = super().host_step(ctrl, nsteps)
         self._time_view += int(nsteps) * self._sim_dt
         return result
 
-    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
         if getattr(self, "_cuda_ipc_plan", None) is not None:
             raise RuntimeError("NumPy reset is unavailable while a CUDA IPC tensor plan is open")
-        super()._host_reset(env_ids)
+        super().host_reset(env_ids)
         ids = (
             np.arange(self._num_envs, dtype=np.intp)
             if env_ids is None
@@ -930,7 +931,7 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         )
         self._time_view[ids] = 0.0
 
-    def _host_set_state(
+    def host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -941,7 +942,7 @@ class IsaacGymBackend(MjcfSubprocessBackend):
             raise RuntimeError(
                 "host-plane state writes are unavailable while a CUDA IPC plan is open"
             )
-        result = super()._host_set_state(env_indices, qpos, qvel, randomization)
+        result = super().host_set_state(env_indices, qpos, qvel, randomization)
         rows = np.asarray(env_indices, dtype=np.intp)
         if rows.ndim == 1 and rows.size:
             self._time_view[rows] = 0.0
@@ -958,7 +959,7 @@ class IsaacGymBackend(MjcfSubprocessBackend):
     # ------------------------------------------------------------------ #
     # Experimental CUDA IPC tensor lifecycle
     # ------------------------------------------------------------------ #
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         info = self._model_info
         if info is None:
             return (
@@ -971,7 +972,7 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         return TensorExecution.DEVICE_RESIDENT
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
-        if self.tensor_execution() is TensorExecution.UNSUPPORTED:
+        if self.get_tensor_execution() is TensorExecution.UNSUPPORTED:
             return TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED)
         return TensorLifecycleCapabilities(
             execution=TensorExecution.DEVICE_RESIDENT,
@@ -1020,7 +1021,7 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         if unknown:
             raise KeyError(f"unknown isaacgym tensor state field(s): {sorted(unknown)}")
         if device is not None:
-            validate_tensor_device(
+            validate_torch_device(
                 (str(plan.device),),
                 device,
                 current_device=plan.device_index,
@@ -1044,28 +1045,6 @@ class IsaacGymBackend(MjcfSubprocessBackend):
             if mapped[0].kind in ("framepos", "framequat", "framezaxis")
         }
 
-    @staticmethod
-    def _cuda_quat_rotate(torch: Any, quat_wxyz: Any, vectors: Any) -> Any:
-        vector = quat_wxyz[..., 1:4]
-        cross = torch.cross(vector, vectors, dim=-1)
-        return (
-            vectors + quat_wxyz[..., 0:1] * (2.0 * cross) + 2.0 * torch.cross(vector, cross, dim=-1)
-        )
-
-    @staticmethod
-    def _cuda_quat_mul(torch: Any, left_wxyz: Any, right_wxyz: Any) -> Any:
-        left_vector = left_wxyz[..., 1:4]
-        right_vector = right_wxyz[..., 1:4]
-        vector = (
-            left_wxyz[..., 0:1] * right_vector
-            + right_wxyz[..., 0:1] * left_vector
-            + torch.cross(left_vector, right_vector, dim=-1)
-        )
-        scalar = left_wxyz[..., 0:1] * right_wxyz[..., 0:1] - torch.sum(
-            left_vector * right_vector, dim=-1, keepdim=True
-        )
-        return torch.cat((scalar, vector), dim=-1)
-
     def _cuda_derived_sensor_view(self, name: str, plan: Any) -> Any:
         candidates = [
             (qualified, mapped)
@@ -1084,16 +1063,16 @@ class IsaacGymBackend(MjcfSubprocessBackend):
             local_pos = torch.as_tensor(
                 spec.local_pos, dtype=torch.float32, device=body_pos.device
             ).expand(body_pos.shape[0], 3)
-            return body_pos + self._cuda_quat_rotate(torch, body_quat, local_pos)
+            return body_pos + torch_quat_rotate(torch, body_quat, local_pos)
         local_quat = torch.as_tensor(
             spec.local_quat, dtype=torch.float32, device=body_quat.device
         ).expand(body_quat.shape[0], 4)
-        world_quat = self._cuda_quat_mul(torch, body_quat, local_quat)
+        world_quat = torch_quat_mul(torch, body_quat, local_quat)
         if spec.kind == "framequat":
             return world_quat
         world_z = torch.zeros_like(body_pos)
         world_z[:, 2] = 1.0
-        return self._cuda_quat_rotate(torch, world_quat, world_z)
+        return torch_quat_rotate(torch, world_quat, world_z)
 
     def _bind_sensor_data_reader(self, names: tuple[str, ...]) -> Callable[[], np.ndarray]:
         """Bind the cold NumPy shape contract over CUDA sensor views."""
@@ -1133,7 +1112,7 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         if plan is None:
             plan = self.compile_cuda_ipc_io(None)
         if device is not None:
-            validate_tensor_device(
+            validate_torch_device(
                 (str(plan.device),),
                 device,
                 current_device=plan.device_index,
@@ -1290,12 +1269,12 @@ class IsaacGymBackend(MjcfSubprocessBackend):
             selected_payload,
         )
 
-    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+    def bind_packed_reset(self, *, device: Any | None = None) -> Any:
         """Begin a packed transaction over the external CUDA IPC reset boundary."""
 
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def close(self) -> None:
         plan = getattr(self, "_cuda_ipc_plan", None)

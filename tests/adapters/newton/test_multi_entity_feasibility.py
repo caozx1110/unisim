@@ -292,7 +292,7 @@ def test_fixed_passive_static_variant_and_selected_reset_survive_step(tmp_path: 
 
         state_before = backend.get_physics_state().copy()
         with pytest.raises(ValueError, match="duplicate"):
-            backend._host_set_state(
+            backend.host_set_state(
                 np.asarray((0, 0), dtype=np.intp),
                 backend._qpos_cache[[0, 0]].copy(),
                 backend._qvel_cache[[0, 0]].copy(),
@@ -355,7 +355,7 @@ def test_fixed_passive_static_variant_and_selected_reset_survive_step(tmp_path: 
 
         # Full selected snapshots include every entity, including the static
         # table's zero-width Newton articulation view.
-        backend._host_set_state(
+        backend.host_set_state(
             np.asarray((4,), dtype=np.intp),
             backend._qpos_cache[[4]].copy(),
             backend._qvel_cache[[4]].copy(),
@@ -409,7 +409,7 @@ def test_fixed_passive_static_variant_and_selected_reset_survive_step(tmp_path: 
             atol=1e-6,
         )
 
-        backend._host_step(np.zeros((5, 1), dtype=np.float32))
+        backend.host_step(np.zeros((5, 1), dtype=np.float32))
         assert np.isfinite(backend.get_physics_state()).all()
         after_step = backend.get_entity_state("object")
         np.testing.assert_allclose(
@@ -492,8 +492,8 @@ def test_real_portable_contact_is_attributed_only_to_its_world(tmp_path: Path):
                 ),
             )
         )
-        backend._host_step(np.zeros((2, 1), dtype=np.float32))
-        np.testing.assert_array_equal(backend._host_read_sensor("object_table"), [[1.0], [0.0]])
+        backend.host_step(np.zeros((2, 1), dtype=np.float32))
+        np.testing.assert_array_equal(backend.host_read_sensor("object_table"), [[1.0], [0.0]])
 
         # Every native solver contact belongs to exactly one env world.  This
         # complements the public flag check above and catches a malformed
@@ -526,8 +526,8 @@ def test_real_portable_contact_is_attributed_only_to_its_world(tmp_path: Path):
                 ),
             )
         )
-        backend._host_step(np.zeros((2, 1), dtype=np.float32))
-        np.testing.assert_array_equal(backend._host_read_sensor("object_table"), [[0.0], [0.0]])
+        backend.host_step(np.zeros((2, 1), dtype=np.float32))
+        np.testing.assert_array_equal(backend.host_read_sensor("object_table"), [[0.0], [0.0]])
     finally:
         backend.close()
 
@@ -598,7 +598,7 @@ def test_nonidentity_orientation_offset_com_and_variant_response(tmp_path: Path)
         )
 
         velocity_before = backend.get_entity_state("object")["root_velocity"].copy()
-        backend._host_step(np.zeros((4, 1), dtype=np.float32))
+        backend.host_step(np.zeros((4, 1), dtype=np.float32))
         state_after = backend.get_entity_state("object")
         velocity_after = state_after["root_velocity"]
         pose_after = state_after["root_pose"]
@@ -635,7 +635,7 @@ def test_passive_joint_keeps_action_dimension_and_control_force_drives_response(
         assert robot.actuator_names == ("drive",)
         assert robot.actuator_indices == (0,)
         before = backend.get_entity_state("robot")["joint_velocities"].copy()
-        backend._host_step(np.array([[0.0], [0.5]], dtype=np.float32))
+        backend.host_step(np.array([[0.0], [0.5]], dtype=np.float32))
         after = backend.get_entity_state("robot")["joint_velocities"]
         np.testing.assert_allclose(after[:, 0], before[:, 0], atol=1e-7)
         assert abs(float(after[1, 1] - before[1, 1])) > 1e-4
@@ -681,7 +681,7 @@ def test_variant_mass_and_inertia_change_solver_force_response(tmp_path: Path):
 
         controls = np.zeros((2, 2), dtype=np.float32)
         controls[:, object_entity.actuator_indices] = 1.0
-        backend._host_step(controls)
+        backend.host_step(controls)
         velocity = backend.get_entity_state("object")["joint_velocities"]
 
         assert abs(float(velocity[0, 0]) - float(velocity[1, 0])) > 0.002
@@ -718,8 +718,8 @@ def test_selected_world_matches_independent_single_world_solver(tmp_path: Path):
             )
         )
         control = np.full((5, 1), 0.3, dtype=np.float32)
-        batched._host_step(control, nsteps=5)
-        single._host_step(control[[0]], nsteps=5)
+        batched.host_step(control, nsteps=5)
+        single.host_step(control[[0]], nsteps=5)
         for entity in ("robot", "object", "table"):
             batched_state = batched.get_entity_state(entity)
             single_state = single.get_entity_state(entity)
@@ -786,7 +786,7 @@ def test_source_order_permutation_keeps_entity_address_identity(tmp_path: Path):
                     ),
                 )
             )
-            backend._host_step(np.array([[0.2], [-0.2]], dtype=np.float32), nsteps=3)
+            backend.host_step(np.array([[0.2], [-0.2]], dtype=np.float32), nsteps=3)
         for entity in ("robot", "object", "table"):
             forward_state = forward.get_entity_state(entity)
             reverse_state = reverse.get_entity_state(entity)

@@ -18,7 +18,7 @@
 - payload 字段保持 `Any` 类型注解与惰性 torch 校验（`validate_tensor_reset_payload`、`validate_interval_op`），使 `unisim-core` 维持仅依赖 NumPy 的打包契约：base 包绝不在模块顶层 import torch。
 - payload tensor 的设备决定执行平面：`torch.cpu` 为 host 平面，CUDA 设备为 device 平面。不引入新的配置参数。
 - `DomainRandomizationCapabilities` 按平面拆分：`supported_reset_terms` / `supported_interval_terms` 声明 host 平面，新增的 `supported_device_reset_terms` / `supported_device_interval_terms` 声明 device 平面。空集合 fail-closed；在未声明某 term 的平面上提交该 term 时点名 term 快速失败。
-- delta 项不再仅限 host。packed reset composer stage `base_mass_delta` / `base_com_offset`，并在 commit 时与权威 baseline（由冷 NumPy metadata leaf `get_reset_term_default()` 提供）在 torch 中合成为最终绝对的 `body_mass` / `body_ipos` 表（`final = baseline + delta`）。`PACKED_RESET_HOST_ONLY_FIELDS` 已删除。
+- delta 项不再仅限 host。packed reset transaction stage `base_mass_delta` / `base_com_offset`，并在 commit 时与权威 baseline（由冷 NumPy metadata leaf `get_reset_term_default()` 提供）在 torch 中合成为最终绝对的 `body_mass` / `body_ipos` 表（`final = baseline + delta`）。`PACKED_RESET_HOST_ONLY_FIELDS` 已删除。
 - push 在所有后端统一为生产方采样，沿用 MJWarp device 模式。后端内部的全局 RNG push 采样（MuJoCo、Motrix）已删除；host 适配器缺少生产方采样的 push payload 时快速失败。
 - NumPy 仅保留在显式边界之后：host 边界适配器（MuJoCo、Motrix、IsaacGym、IsaacSim、subprocess IPC）使用的 adapter 私有 `unisim.dr._host` 转换 helper、`get_reset_term_default()` 等冷元数据，以及 serialization/playback leaf。
 - 后端 conformance 长牙：每个声明 reset randomization 的适配器必须对至少一个声明的 reset term 完成可验证的往返——写入非 baseline 值、commit、在新事务中读回 baseline 并断言 allclose。

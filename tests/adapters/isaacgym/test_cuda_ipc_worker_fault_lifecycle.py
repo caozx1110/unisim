@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -126,6 +127,25 @@ def test_tensor_backend_fail_closes_after_worker_pipe_death_and_reopens(
                 stream.close()
 
 
+def _cuda_test_torch(torch: Any) -> Any:
+    """Provide the narrow CUDA-API surface without initializing a CPU-only Torch build."""
+    @contextmanager
+    def device(_index: int):
+        yield
+
+    cuda = SimpleNamespace(
+        device=device,
+        current_stream=lambda index=None: SimpleNamespace(cuda_stream=0),
+    )
+    return SimpleNamespace(
+        zeros=torch.zeros,
+        cat=torch.cat,
+        sort=torch.Tensor.sort,
+        linalg=SimpleNamespace(cross=torch.linalg.cross),
+        cuda=cuda,
+    )
+
+
 def test_cuda_ipc_worker_reset_failure_marks_scene_faulted() -> None:
     torch = pytest.importorskip("torch")
     runtime = IsaacGymCudaIpcWorkerRuntime.__new__(IsaacGymCudaIpcWorkerRuntime)
@@ -156,7 +176,7 @@ def test_cuda_ipc_worker_reset_failure_marks_scene_faulted() -> None:
         "pending_dof_actors": {8},
     }
     runtime.ctx = SimpleNamespace(
-        torch=torch,
+        torch=_cuda_test_torch(torch),
         device="cpu",
         _dof_state=torch.zeros((1, 2), dtype=torch.float32),
         scene_worker=SimpleNamespace(**scene),
@@ -191,7 +211,7 @@ def test_cuda_ipc_worker_step_failure_marks_scene_faulted() -> None:
     runtime.ctrl = torch.zeros((1,), dtype=torch.float32)
     runtime.control_event = SimpleNamespace(wait_stream=lambda stream: None)
     runtime.ctx = SimpleNamespace(
-        torch=torch,
+        torch=_cuda_test_torch(torch),
         sim=object(),
         gym=SimpleNamespace(set_dof_position_target_tensor=lambda *_args: False),
         gymtorch=SimpleNamespace(unwrap_tensor=lambda value: value),

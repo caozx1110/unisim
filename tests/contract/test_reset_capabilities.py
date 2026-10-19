@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from unisim import FakeBackend
-from unisim.backend.base import BackendMocapPoseBinding
+from unisim.backend.base import MocapPoseBinding
 from unisim.dr.types import DomainRandomizationCapabilities, TensorResetRandomizationPayload
 
 
@@ -84,7 +84,7 @@ def test_reset_randomization_conformance_round_trips_one_declared_term() -> None
 @pytest.mark.parametrize(
     "name",
     (
-        "get_geom_sizes",
+        "get_default_geom_sizes",
         "get_geom_solref",
         "get_geom_solimp",
         "get_dof_damping",
@@ -120,7 +120,7 @@ def test_model_file_adapter_rejects_new_payload_before_any_state_access(adapter,
     }[adapter]
     backend_class = getattr(module, class_name)
     with pytest.raises(NotImplementedError, match=field):
-        backend_class._host_set_state(
+        backend_class.host_set_state(
             CapabilityOnly(),
             np.array([0]),
             np.zeros((1, 1)),
@@ -137,7 +137,7 @@ def _binding():
         writes.append(rows.copy())
         state[rows] = poses
 
-    return BackendMocapPoseBinding("test", "root", 3, state[0], lambda: state, write), writes
+    return MocapPoseBinding("test", "root", 3, state[0], lambda: state, write), writes
 
 
 @pytest.mark.parametrize(

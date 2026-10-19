@@ -79,10 +79,10 @@ def test_mjwarp_pre_step_control_per_substep(tmp_path: Path) -> None:
 
     ctrl = np.zeros((2, 1), dtype=np.float32)
     backend.set_pre_step_control(p_controller)
-    result = backend._host_step(ctrl, nsteps=nsteps)
+    result = backend.host_step(ctrl, nsteps=nsteps)
     assert set(result["timing"]) == {"control_upload_ms", "physics_ms", "host_cache_refresh_ms"}
     for _ in range(step_calls - 1):
-        backend._host_step(ctrl, nsteps=nsteps)
+        backend.host_step(ctrl, nsteps=nsteps)
 
     # (a) The converter ran exactly once per physics substep and always
     # received the policy-level ctrl, not a previously converted value.
@@ -103,7 +103,7 @@ def test_mjwarp_pre_step_control_per_substep(tmp_path: Path) -> None:
     # the P-law target).
     backend.set_pre_step_control(None)
     coast_qvel = backend.get_state_views("qvel")["qvel"].cpu().numpy().copy()
-    backend._host_step(np.zeros((2, 1), dtype=np.float32), nsteps=nsteps)
+    backend.host_step(np.zeros((2, 1), dtype=np.float32), nsteps=nsteps)
     assert len(observed_qpos) == step_calls * nsteps
     coast_after = backend.get_state_views("qvel")["qvel"].cpu().numpy()
     np.testing.assert_allclose(coast_after, coast_qvel, atol=1e-5)
@@ -115,12 +115,12 @@ def test_mjwarp_pre_step_control_changes_trajectory(tmp_path: Path) -> None:
     nsteps = 4
     ctrl = np.zeros((2, 1), dtype=np.float32)
     for _ in range(8):
-        baseline._host_step(ctrl, nsteps=nsteps)
+        baseline.host_step(ctrl, nsteps=nsteps)
     driven.set_pre_step_control(
         lambda owner, c: (0.2 - owner.get_state_views("qpos")["qpos"].cpu().numpy()) * 20.0
     )
     for _ in range(8):
-        driven._host_step(ctrl, nsteps=nsteps)
+        driven.host_step(ctrl, nsteps=nsteps)
     baseline_qpos = baseline.get_state_views(("qpos",))["qpos"].cpu().numpy()
     driven_qpos = driven.get_state_views(("qpos",))["qpos"].cpu().numpy()
     np.testing.assert_allclose(baseline_qpos, 0.0, atol=1e-6)
@@ -150,7 +150,7 @@ def test_mjwarp_pre_step_control_replays_captured_step_graph(tmp_path: Path) -> 
     backend._mujoco_warp = RejectEagerStep()
     backend.set_pre_step_control(controller)
     try:
-        backend._host_step(np.ones((2, 1), dtype=np.float32), nsteps=2)
+        backend.host_step(np.ones((2, 1), dtype=np.float32), nsteps=2)
     finally:
         backend.set_pre_step_control(None)
         backend._mujoco_warp = original_module
@@ -181,7 +181,7 @@ def test_mjwarp_pre_step_control_falls_back_to_eager_steps(tmp_path: Path) -> No
     backend._mujoco_warp = CountingStep()
     backend.set_pre_step_control(lambda owner, ctrl: ctrl)
     try:
-        backend._host_step(np.ones((2, 1), dtype=np.float32), nsteps=3)
+        backend.host_step(np.ones((2, 1), dtype=np.float32), nsteps=3)
     finally:
         backend.set_pre_step_control(None)
         backend._mujoco_warp = original_module
@@ -201,8 +201,8 @@ def test_mjwarp_pre_step_control_graph_matches_eager_short_horizon(tmp_path: Pat
     rows = np.arange(2, dtype=np.int32)
     qpos = np.array([[0.1], [-0.1]], dtype=np.float32)
     qvel = np.array([[0.2], [-0.2]], dtype=np.float32)
-    graph_backend._host_set_state(rows, qpos, qvel)
-    eager_backend._host_set_state(rows, qpos, qvel)
+    graph_backend.host_set_state(rows, qpos, qvel)
+    eager_backend.host_set_state(rows, qpos, qvel)
 
     graph_observed: list[np.ndarray] = []
     eager_observed: list[np.ndarray] = []
@@ -219,19 +219,19 @@ def test_mjwarp_pre_step_control_graph_matches_eager_short_horizon(tmp_path: Pat
     eager_backend.set_pre_step_control(eager_controller)
     ctrl = np.zeros((2, 1), dtype=np.float32)
     for _ in range(2):
-        graph_backend._host_step(ctrl, nsteps=4)
-        eager_backend._host_step(ctrl, nsteps=4)
+        graph_backend.host_step(ctrl, nsteps=4)
+        eager_backend.host_step(ctrl, nsteps=4)
 
     np.testing.assert_array_equal(graph_observed[0], eager_observed[0])
     np.testing.assert_allclose(graph_observed, eager_observed, atol=2e-6)
     np.testing.assert_allclose(
-        graph_backend._host_get_state(("qpos", "qvel"))["qpos"],
-        eager_backend._host_get_state(("qpos", "qvel"))["qpos"],
+        graph_backend.host_get_state(("qpos", "qvel"))["qpos"],
+        eager_backend.host_get_state(("qpos", "qvel"))["qpos"],
         atol=2e-6,
     )
     np.testing.assert_allclose(
-        graph_backend._host_get_state(("qpos", "qvel"))["qvel"],
-        eager_backend._host_get_state(("qpos", "qvel"))["qvel"],
+        graph_backend.host_get_state(("qpos", "qvel"))["qvel"],
+        eager_backend.host_get_state(("qpos", "qvel"))["qvel"],
         atol=2e-5,
     )
 
@@ -241,9 +241,9 @@ def test_mjwarp_pre_step_control_validates_return_shape(tmp_path: Path) -> None:
     ctrl = np.zeros((2, 1), dtype=np.float32)
     backend.set_pre_step_control(lambda owner, c: np.zeros((2, 2), dtype=c.dtype))
     with pytest.raises(ValueError, match="pre-step control must return shape"):
-        backend._host_step(ctrl, nsteps=1)
+        backend.host_step(ctrl, nsteps=1)
     backend.set_pre_step_control(None)
-    backend._host_step(ctrl, nsteps=1)
+    backend.host_step(ctrl, nsteps=1)
 
 
 @pytest.mark.parametrize("with_object_free_joint", [False, True])
@@ -277,8 +277,8 @@ def test_mjwarp_state_snapshot_matches_set_state_layout(
     if with_object_free_joint:
         qpos[:, 1:8] = object_pose
 
-    backend._host_set_state(ids, qpos, qvel)
-    state = backend._host_get_state(("qpos", "qvel"))
+    backend.host_set_state(ids, qpos, qvel)
+    state = backend.host_get_state(("qpos", "qvel"))
     assert state["qpos"].shape == qpos.shape
     assert state["qvel"].shape == qvel.shape
     np.testing.assert_allclose(state["qpos"], qpos, atol=1e-6)
@@ -289,13 +289,13 @@ def test_mjwarp_state_snapshot_matches_set_state_layout(
 
     detached = state["qpos"].copy()
     state["qpos"][:] += 10.0
-    np.testing.assert_array_equal(backend._host_get_state(("qpos",))["qpos"], detached)
+    np.testing.assert_array_equal(backend.host_get_state(("qpos",))["qpos"], detached)
 
-    backend._host_step(np.zeros((2, 1), dtype=np.float32), nsteps=1)
-    after_step = backend._host_get_state(("qpos", "qvel"))
+    backend.host_step(np.zeros((2, 1), dtype=np.float32), nsteps=1)
+    after_step = backend.host_get_state(("qpos", "qvel"))
     assert after_step["qpos"].shape == qpos.shape
     assert after_step["qvel"].shape == qvel.shape
-    backend._host_set_state(ids, after_step["qpos"], after_step["qvel"])
+    backend.host_set_state(ids, after_step["qpos"], after_step["qvel"])
 
 
 MOCAP_MODEL = """<mujoco model='unisim-test-mjwarp-mocap'>
@@ -367,7 +367,7 @@ def test_mjwarp_body_ipos_default_stability_and_per_env_current_query(
 
     ipos = np.tile(canonical, (2, 1, 1))
     ipos[:, base_id, 0] += np.array([0.1, -0.2], dtype=np.float32)
-    backend._host_set_state(
+    backend.host_set_state(
         rows,
         qpos,
         qvel,
@@ -385,7 +385,7 @@ def test_mjwarp_body_ipos_default_stability_and_per_env_current_query(
 
     # A partial reset of env 1 (body_ipos composed with base_com_offset)
     # leaves env 0 untouched.
-    backend._host_set_state(
+    backend.host_set_state(
         np.array([1], dtype=np.int32),
         qpos[[1]],
         qvel[[1]],
@@ -400,7 +400,7 @@ def test_mjwarp_body_ipos_default_stability_and_per_env_current_query(
     np.testing.assert_array_equal(backend.get_reset_term_default("body_ipos"), default_before)
 
     # base_com_offset alone composes on top of the immutable defaults.
-    backend._host_set_state(
+    backend.host_set_state(
         np.array([0], dtype=np.int32),
         qpos[[0]],
         qvel[[0]],
@@ -430,7 +430,7 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
         xml=NONZERO_CTRL_KEYFRAME_MODEL,
         default_keyframe_name="stand",
     )
-    assert device.tensor_execution().value == "device_resident"
+    assert device.get_tensor_execution().value == "device_resident"
     capabilities = device.get_tensor_capabilities()
     _assert_tensor_platform_capabilities("mjwarp", capabilities)
     assert capabilities.execution is TensorExecution.DEVICE_RESIDENT
@@ -447,8 +447,8 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     with pytest.raises(TypeError, match="nsteps must be a positive integer"):
         device.step_tensor(ctrl, nsteps=1.5)
     with pytest.raises(TypeError, match="nsteps must be a positive integer"):
-        host._host_step(ctrl.detach().cpu().numpy(), nsteps=1.5)
-    host._host_step(ctrl.detach().cpu().numpy(), nsteps=2)
+        host.host_step(ctrl.detach().cpu().numpy(), nsteps=1.5)
+    host.host_step(ctrl.detach().cpu().numpy(), nsteps=2)
     result = device.step_tensor(ctrl, nsteps=2)
     assert result is not None
     assert result["timing"]["host_cache_refresh_ms"] == 0.0
@@ -460,12 +460,12 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     assert device.get_sensor_view("base_pos").data_ptr() == sensor_view.data_ptr()
     np.testing.assert_allclose(
         sensor_view.detach().cpu().numpy(),
-        host._host_read_sensor("base_pos"),
+        host.host_read_sensor("base_pos"),
         atol=1e-6,
     )
     np.testing.assert_allclose(
         views["qpos"].detach().cpu().numpy(),
-        host._host_get_state(("qpos",))["qpos"],
+        host.host_get_state(("qpos",))["qpos"],
         atol=1e-6,
     )
 
@@ -476,12 +476,12 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     torch.testing.assert_close(views["qpos"], before_reject)
     np.testing.assert_allclose(
         views["qvel"].detach().cpu().numpy(),
-        host._host_get_state(("qvel",))["qvel"],
+        host.host_get_state(("qvel",))["qvel"],
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        device._host_get_state(("qpos",))["qpos"],
-        host._host_get_state(("qpos",))["qpos"],
+        device.host_get_state(("qpos",))["qpos"],
+        host.host_get_state(("qpos",))["qpos"],
         atol=1e-6,
     )
 
@@ -489,41 +489,41 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
     qpos = torch.full((1, 1), 0.5, dtype=torch.float32, device=ctrl.device)
     qvel = torch.zeros_like(qpos)
     host_rows = rows.detach().cpu().numpy()
-    host._host_set_state(host_rows, qpos.cpu().numpy(), qvel.cpu().numpy())
+    host.host_set_state(host_rows, qpos.cpu().numpy(), qvel.cpu().numpy())
     reset_result = device.set_state_tensor(rows, qpos, qvel)
     assert reset_result is not None
     assert reset_result["timing"]["set_state_tensor_host_cache_refresh_ms"] == 0.0
     np.testing.assert_allclose(
         device.get_state_views(("qpos",))["qpos"].detach().cpu().numpy(),
-        host._host_get_state(("qpos",))["qpos"],
+        host.host_get_state(("qpos",))["qpos"],
         atol=1e-6,
     )
     np.testing.assert_allclose(
-        device._host_get_state(("qpos",))["qpos"],
-        host._host_get_state(("qpos",))["qpos"],
+        device.host_get_state(("qpos",))["qpos"],
+        host.host_get_state(("qpos",))["qpos"],
         atol=1e-6,
     )
     np.testing.assert_array_equal(
-        device._host_get_state(("ctrl",))["ctrl"],
-        host._host_get_state(("ctrl",))["ctrl"],
+        device.host_get_state(("ctrl",))["ctrl"],
+        host.host_get_state(("ctrl",))["ctrl"],
     )
 
 
-def test_mjwarp_tensor_step_then_host_reset_preserves_unselected_rows(tmp_path: Path) -> None:
+def test_mjwarp_tensor_step_thenhost_reset_preserves_unselected_rows(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
     device = _make_backend(tmp_path)
     ctrl = torch.ones((2, 1), dtype=torch.float32, device="cuda")
     device.step_tensor(ctrl, nsteps=2)
-    before_host_reset = device.get_state_views(("qpos",))["qpos"].detach().cpu().numpy().copy()
+    beforehost_reset = device.get_state_views(("qpos",))["qpos"].detach().cpu().numpy().copy()
 
-    device._host_set_state(
+    device.host_set_state(
         np.array([0], dtype=np.int64),
         np.array([[0.25]], dtype=np.float32),
         np.zeros((1, 1), dtype=np.float32),
     )
-    after_host_reset = device._host_get_state(("qpos",))["qpos"]
-    np.testing.assert_allclose(after_host_reset[0], 0.25, atol=1e-7)
-    np.testing.assert_allclose(after_host_reset[1], before_host_reset[1], atol=1e-6)
+    afterhost_reset = device.host_get_state(("qpos",))["qpos"]
+    np.testing.assert_allclose(afterhost_reset[0], 0.25, atol=1e-7)
+    np.testing.assert_allclose(afterhost_reset[1], beforehost_reset[1], atol=1e-6)
 
 
 def test_mjwarp_tensor_sensor_after_reset_avoids_host_publication(
@@ -550,7 +550,7 @@ def test_mjwarp_tensor_sensor_after_reset_avoids_host_publication(
     monkeypatch.setattr(backend, "_refresh_tracked_body_state_device", fail_host_publication)
     tensor_sensor = backend.get_sensor_view("track_pos_w_base")
     assert backend._tracked_body_state_dirty is False
-    host_sensor = backend._host_read_sensor("track_pos_w_base")
+    host_sensor = backend.host_read_sensor("track_pos_w_base")
     assert tensor_sensor.is_cuda
     np.testing.assert_allclose(tensor_sensor.detach().cpu().numpy(), host_sensor, atol=1e-6)
 
@@ -828,20 +828,20 @@ def test_mjwarp_capture_replay_trajectory_matches_eager_modes(tmp_path: Path) ->
     rows = np.arange(2, dtype=np.int32)
     initial_qpos = np.array([[0.1], [-0.1]], dtype=np.float32)
     initial_qvel = np.array([[0.2], [-0.2]], dtype=np.float32)
-    replay._host_set_state(rows, initial_qpos, initial_qvel)
-    eager._host_set_state(rows, initial_qpos, initial_qvel)
+    replay.host_set_state(rows, initial_qpos, initial_qvel)
+    eager.host_set_state(rows, initial_qpos, initial_qvel)
 
     # The first replay is capture warmup: CUDA graphs were captured on the cold
     # construction path, while this call warms the public step/reset replay path
     # and records the first completion receipt.
     warmup_ctrl = torch.full((2, 1), 0.05, dtype=torch.float32, device="cuda")
     replay.step_tensor(warmup_ctrl, nsteps=1)
-    eager._host_step(warmup_ctrl.detach().cpu().numpy(), nsteps=1)
+    eager.host_step(warmup_ctrl.detach().cpu().numpy(), nsteps=1)
 
     for ctrl_value in (0.1, -0.2, 0.3):
         ctrl = torch.full((2, 1), ctrl_value, dtype=torch.float32, device="cuda")
         replay_result = replay.step_tensor(ctrl, nsteps=1)
-        eager._host_step(ctrl.detach().cpu().numpy(), nsteps=1)
+        eager.host_step(ctrl.detach().cpu().numpy(), nsteps=1)
         replay_views = replay.get_state_views(("qpos", "qvel"))
         eager_views = eager.get_state_views(("qpos", "qvel"))
         torch.testing.assert_close(
@@ -874,7 +874,7 @@ def test_mjwarp_capture_replay_trajectory_matches_eager_modes(tmp_path: Path) ->
         replay.set_state_tensor_mask(mask, replay_qpos, replay_qvel, full_refresh=False)
         selected_rows = np.flatnonzero(mask.detach().cpu().numpy()).astype(np.int32)
         if selected_rows.size:
-            eager._host_set_state(
+            eager.host_set_state(
                 selected_rows,
                 eager_qpos.detach().cpu().numpy()[selected_rows],
                 eager_qvel.detach().cpu().numpy()[selected_rows],
@@ -962,13 +962,13 @@ def test_mjwarp_tensor_reset_rejects_pending_wrench_and_mocap(tmp_path: Path) ->
         mocap.set_state_tensor(rows, qpos, qvel)
 
 
-def test_mjwarp_host_step_tensor_sensor_view_refreshes_tracking(tmp_path: Path) -> None:
+def test_mjwarphost_step_tensor_sensor_view_refreshes_tracking(tmp_path: Path) -> None:
     pytest.importorskip("torch")
     backend = _make_backend(tmp_path, add_body_sensors=True)
-    backend._host_step(np.ones((2, 1), dtype=np.float32), nsteps=2)
+    backend.host_step(np.ones((2, 1), dtype=np.float32), nsteps=2)
     tensor_sensor = backend.get_sensor_view("track_pos_w_base")
     body_id = backend.get_body_ids(("base",))[0]
-    host_sensor = backend._host_get_body_pos_w(np.array([body_id], dtype=np.intp))[:, 0, :]
+    host_sensor = backend.host_get_body_pos_w(np.array([body_id], dtype=np.intp))[:, 0, :]
     assert tensor_sensor.shape == (2, 3)
     np.testing.assert_allclose(
         tensor_sensor.detach().cpu().numpy(),

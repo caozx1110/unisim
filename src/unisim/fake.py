@@ -69,35 +69,35 @@ class FakeBackend(SimBackend):
             (self._num_envs, len(np.asarray(body_ids).reshape(-1)), 3), dtype=np.float64
         )
 
-    def _host_get_base_pos(self) -> np.ndarray:
+    def host_get_base_pos(self) -> np.ndarray:
         return np.zeros((self._num_envs, 3))
 
-    def _host_get_base_quat(self) -> np.ndarray:
+    def host_get_base_quat(self) -> np.ndarray:
         out = np.zeros((self._num_envs, 4))
         out[:, 0] = 1.0
         return out
 
-    def _host_get_base_lin_vel(self) -> np.ndarray:
+    def host_get_base_lin_vel(self) -> np.ndarray:
         return np.zeros((self._num_envs, 3))
 
-    def _host_get_base_ang_vel(self) -> np.ndarray:
+    def host_get_base_ang_vel(self) -> np.ndarray:
         return np.zeros((self._num_envs, 3))
 
-    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._zeros_body(body_ids)
 
-    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         out = np.zeros((*self._zeros_body(body_ids).shape[:2], 4))
         out[..., 0] = 1.0
         return out
 
-    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._zeros_body(body_ids)
 
-    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._zeros_body(body_ids)
 
-    def _host_read_sensor(self, name: str) -> np.ndarray:
+    def host_read_sensor(self, name: str) -> np.ndarray:
         raise KeyError(name)
 
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
@@ -111,7 +111,7 @@ class FakeBackend(SimBackend):
     def get_playback_model(self, env_index: int | None = None):
         return self
 
-    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> None:
+    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> None:
         ctrl = np.asarray(ctrl, dtype=np.float64)
         if ctrl.shape != (self.num_envs, self.num_actuators):
             raise ValueError(
@@ -124,7 +124,7 @@ class FakeBackend(SimBackend):
         self._qvel[...] = ctrl
         self._step_count += nsteps
 
-    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
         if env_ids is None:
             self._qpos.fill(0.0)
             self._qvel.fill(0.0)
@@ -136,7 +136,7 @@ class FakeBackend(SimBackend):
         self._qvel[ids] = 0.0
         self._ctrl[ids] = 0.0
 
-    def _host_get_state(
+    def host_get_state(
         self, fields: tuple[str, ...] | str | None = None
     ) -> Mapping[str, np.ndarray]:
         requested = (
@@ -158,7 +158,7 @@ class FakeBackend(SimBackend):
                 raise KeyError(f"unknown fake state field: {field}")
         return result
 
-    def _host_set_state(self, env_indices, qpos=None, qvel=None, randomization=None) -> None:
+    def host_set_state(self, env_indices, qpos=None, qvel=None, randomization=None) -> None:
         if randomization is not None and not randomization.is_empty():
             raise NotImplementedError("fake backend has no randomization")
         ids = np.asarray(env_indices, dtype=np.intp)

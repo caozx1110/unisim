@@ -17,7 +17,7 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    tensor_device_matches,
+    torch_device_matches,
 )
 from unisim.dr.types import TensorResetRandomizationPayload
 
@@ -36,7 +36,7 @@ _BODY_VIEW_WIDTHS = {
 }
 
 
-def motrix_tensor_capabilities(backend: MotrixBackend) -> TensorLifecycleCapabilities:
+def tensor_capabilities(backend: MotrixBackend) -> TensorLifecycleCapabilities:
     """Return the deliberately narrow MotrixSim tensor capability matrix."""
     from unisim.backend.packed_reset import PACKED_RESET_MODEL_FIELDS
 
@@ -122,7 +122,7 @@ def _canonical_states(backend: MotrixBackend, fields: tuple[str, ...]) -> dict[s
         if "qvel" in fields:
             values["qvel"] = backend._portable_state_qvel()
         return values
-    return dict(backend._host_get_state(fields))
+    return dict(backend.host_get_state(fields))
 
 
 def _normalize_device(value: Any | None, *, label: str = "tensor I/O") -> Any:
@@ -194,7 +194,7 @@ def _resolve_sensor_names(
             None,
         )
         if match is None:
-            source = np.asarray(backend._host_read_sensor(name), dtype=np.float32)
+            source = np.asarray(backend.host_read_sensor(name), dtype=np.float32)
             physical_widths[name] = int(source.reshape(backend.num_envs, -1).shape[1])
             physical.append(name)
             continue
@@ -229,7 +229,7 @@ def _read_sensor_sources(
     sources: dict[str, np.ndarray] = {}
     if resolved.body_names:
         positions, quaternions, linear_velocities, angular_velocities = (
-            backend._host_get_body_state_w(resolved.body_ids)
+            backend.host_get_body_state_w(resolved.body_ids)
         )
         arrays_by_prefix = {
             "track_pos_w_": positions,
@@ -241,7 +241,7 @@ def _read_sensor_sources(
             sources[name] = np.asarray(arrays_by_prefix[prefix][:, body_index, :], dtype=np.float32)
     if resolved.physical:
         values = np.asarray(
-            backend._host_read_sensor_batch(resolved.physical), dtype=np.float32
+            backend.host_read_sensor_batch(resolved.physical), dtype=np.float32
         ).reshape(backend.num_envs, -1)
         cursor = 0
         for name in resolved.physical:
@@ -296,7 +296,7 @@ def _read_selected_sensor_sources(
             sources[name] = np.asarray(arrays_by_prefix[prefix][:, body_index, :], dtype=np.float32)
     if resolved.physical:
         values = np.asarray(
-            backend._host_read_sensor_rows_batch(resolved.physical, selected_rows),
+            backend.host_read_sensor_rows_batch(resolved.physical, selected_rows),
             dtype=np.float32,
         )
         cursor = 0
@@ -332,15 +332,15 @@ def _read_selected_states(
     if "qpos" in fields:
         dof_qpos = backend._data.dof_pos[np.ix_(selected_rows, qpos_indices)]
         qpos = np.empty((selected_rows.size, dof_qpos.shape[1] + 7), dtype=np.float32)
-        qpos[:, :3] = backend._host_get_base_pos()[selected_rows]
-        qpos[:, 3:7] = backend._host_get_base_quat()[selected_rows]
+        qpos[:, :3] = backend.host_get_base_pos()[selected_rows]
+        qpos[:, 3:7] = backend.host_get_base_quat()[selected_rows]
         qpos[:, 7:] = dof_qpos
         output["qpos"] = qpos
     if "qvel" in fields:
         dof_qvel = backend._data.dof_vel[np.ix_(selected_rows, qvel_indices)]
         qvel = np.empty((selected_rows.size, dof_qvel.shape[1] + 6), dtype=np.float32)
-        qvel[:, :3] = backend._host_get_base_lin_vel()[selected_rows]
-        qvel[:, 3:6] = backend._host_get_base_ang_vel()[selected_rows]
+        qvel[:, :3] = backend.host_get_base_lin_vel()[selected_rows]
+        qvel[:, 3:6] = backend.host_get_base_ang_vel()[selected_rows]
         qvel[:, 6:] = dof_qvel
         output["qvel"] = qvel
     return output
@@ -401,7 +401,7 @@ def _pack_state_sensors(
             )
 
 
-def motrix_state_views(
+def state_views(
     backend: MotrixBackend, fields: tuple[str, ...] | str | None, device: Any | None
 ) -> dict[str, Any]:
     """Copy requested state blocks to one Torch device in one packed H2D."""
@@ -437,7 +437,7 @@ def motrix_state_views(
     return {name: packet[:, offsets[name] : offsets[name] + widths[name]] for name in names}
 
 
-def motrix_sensor_view(backend: MotrixBackend, name: str, device: Any | None) -> Any:
+def sensor_view(backend: MotrixBackend, name: str, device: Any | None) -> Any:
     """Copy one authoritative CPU sensor block to a Torch device."""
     import torch
 
@@ -452,7 +452,7 @@ def motrix_sensor_view(backend: MotrixBackend, name: str, device: Any | None) ->
     return result
 
 
-def motrix_step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> dict | None:
+def step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> dict | None:
     """Bridge control through one persistent packed direct-API plan."""
     import torch
 
@@ -474,7 +474,7 @@ def motrix_step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> di
     if plan is None or plan.device != target:
         if plan is not None:
             plan.close()
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
         )
         backend._direct_host_bridge_plan = plan
@@ -485,7 +485,7 @@ def motrix_step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> di
     return result
 
 
-def motrix_set_state_tensor(
+def set_state_tensor(
     backend: MotrixBackend,
     env_indices: Any,
     qpos: Any,
@@ -549,7 +549,7 @@ def motrix_set_state_tensor(
             positions = np.ascontiguousarray(positions[order])
             velocities = np.ascontiguousarray(velocities[order])
             # Reorder payload rows on their device to match the sorted host
-            # rows; ``_host_set_state`` converts to host NumPy once at the
+            # rows; ``host_set_state`` converts to host NumPy once at the
             # boundary.
             order_device = torch.as_tensor(order, dtype=torch.int64, device=source_device)
             randomization = TensorResetRandomizationPayload(
@@ -559,12 +559,12 @@ def motrix_set_state_tensor(
                     if (value := getattr(randomization, field)) is not None
                 }
             )
-        return backend._host_set_state(rows, positions, velocities, randomization)
+        return backend.host_set_state(rows, positions, velocities, randomization)
     plan = backend._direct_host_bridge_plan
     if plan is None or plan.device != target:
         if plan is not None:
             plan.close()
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
         )
         backend._direct_host_bridge_plan = plan
@@ -574,7 +574,7 @@ def motrix_set_state_tensor(
     return result
 
 
-def motrix_set_state_tensor_mask(
+def set_state_tensor_mask(
     backend: MotrixBackend,
     reset_mask: Any,
     qpos: Any,
@@ -632,7 +632,7 @@ def motrix_set_state_tensor_mask(
             if value.device != source_device:
                 raise ValueError("MotrixSim tensor mask reset values must share one device")
         # Rows are selected on the payload's device; the host NumPy conversion
-        # happens once at the _host_set_state boundary.
+        # happens once at the host_set_state boundary.
         selected_randomization = TensorResetRandomizationPayload(
             **{
                 field: value.index_select(0, selected_rows)
@@ -646,7 +646,7 @@ def motrix_set_state_tensor_mask(
     rows = selected_rows.detach().cpu().numpy()
     host_qpos = qpos.index_select(0, selected_rows).detach().cpu().numpy()
     host_qvel = qvel.index_select(0, selected_rows).detach().cpu().numpy()
-    result = backend._host_set_state(rows, host_qpos, host_qvel, selected_randomization)
+    result = backend.host_set_state(rows, host_qpos, host_qvel, selected_randomization)
     for plan in backend._host_bridge_plans:
         if isinstance(plan, MotrixHostBridgeTransferPlan):
             plan._publish_mask_reset_rows(selected_rows, host_qpos, host_qvel)
@@ -689,7 +689,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         }
 
         require_motrix_tensor_runtime(backend, require_callback_free=True)
-        if backend.tensor_execution() is not TensorExecution.HOST_BRIDGE:
+        if backend.get_tensor_execution() is not TensorExecution.HOST_BRIDGE:
             raise RuntimeError("MotrixSim packed tensor I/O requires the host-bridge lifecycle")
         unsupported = set(spec.state_fields) - _SUPPORTED_STATE_FIELDS
         if unsupported:
@@ -801,7 +801,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
                 if width != _BODY_VIEW_WIDTHS[prefix]:
                     raise RuntimeError(f"MotrixSim body sensor {name!r} width changed")
             else:
-                source = self._backend._host_read_sensor(name)
+                source = self._backend.host_read_sensor(name)
                 expected_sensor = (self._backend.num_envs, width)
                 if np.asarray(source).reshape(expected_sensor[0], -1).shape != expected_sensor:
                     raise RuntimeError(
@@ -874,7 +874,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
             raise ValueError(f"MotrixSim packed ctrl must have shape {expected}")
         if ctrl.dtype != torch.float32 or not bool(ctrl.is_contiguous()):
             raise TypeError("MotrixSim packed ctrl must be contiguous float32")
-        if not tensor_device_matches(
+        if not torch_device_matches(
             (str(self.device),), ctrl.device, current_device=self.device.index
         ):
             raise ValueError(f"MotrixSim packed ctrl must live on {self.device}, got {ctrl.device}")
@@ -900,7 +900,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         if not self._control_ready:
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
-        self._backend._host_step(self._buffers().host_ctrl.numpy(), nsteps)
+        self._backend.host_step(self._buffers().host_ctrl.numpy(), nsteps)
         return {"timing": dict(self.last_timing)}
 
     def read_state_sensors(self) -> Mapping[str, Any]:
@@ -962,7 +962,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
             raise TypeError("MotrixSim packed reset qpos and qvel must be float32")
         if any(
-            not tensor_device_matches(
+            not torch_device_matches(
                 (str(self.device),), value.device, current_device=self.device.index
             )
             for value in (env_indices, qpos, qvel)
@@ -1000,7 +1000,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         rows_device = env_indices.detach().clone()
         rows_device = rows_device[torch.argsort(rows_device)]
 
-        self._backend._host_set_state(
+        self._backend.host_set_state(
             rows,
             host_qpos.astype(self._backend._np_dtype),
             host_qvel.astype(self._backend._np_dtype),
@@ -1056,7 +1056,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         states = None
         if self._last_reset_qpos_host is not None and self._last_reset_qvel_host is not None:
             # Reset randomization currently changes dynamics terms only, and the
-            # qpos conversion used by `_host_set_state` is an exact quaternion
+            # qpos conversion used by `host_set_state` is an exact quaternion
             # round-trip. The committed reset payload therefore equals a canonical
             # re-read. If state commit ever mutates qpos/qvel, publish that state
             # here instead so this cache cannot diverge from canonical state.
@@ -1097,6 +1097,11 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
 
 __all__ = [
     "MotrixHostBridgeTransferPlan",
-    "motrix_tensor_capabilities",
     "require_motrix_tensor_runtime",
+    "sensor_view",
+    "set_state_tensor",
+    "set_state_tensor_mask",
+    "state_views",
+    "step_tensor",
+    "tensor_capabilities",
 ]

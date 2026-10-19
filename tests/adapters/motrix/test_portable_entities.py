@@ -579,7 +579,7 @@ def test_portable_entities_layout_properties_and_selected_reset(tmp_path: Path):
         assert backend.get_body_ipos().shape == (layout.nbody, 3)
 
         controls = np.asarray([[0.1], [0.2], [0.3], [0.4], [0.5]], dtype=np.float32)
-        backend._host_step(controls, nsteps=2)
+        backend.host_step(controls, nsteps=2)
         before = {
             name: {
                 field: np.asarray(values).copy()
@@ -617,7 +617,7 @@ def test_portable_entities_layout_properties_and_selected_reset(tmp_path: Path):
         )
         np.testing.assert_array_equal(backend._data.actuator_ctrls, controls)
 
-        backend._host_step(controls)
+        backend.host_step(controls)
         assert not np.array_equal(
             backend.get_entity_state("object")["root_pose"][rows, :3], pose[:, :3]
         )
@@ -645,7 +645,7 @@ def test_portable_entities_layout_properties_and_selected_reset(tmp_path: Path):
         )
         assert passive_joint == 8
 
-        backend._host_step(np.zeros((5, 1), np.float32), nsteps=2)
+        backend.host_step(np.zeros((5, 1), np.float32), nsteps=2)
         assert backend.get_entity_state("passive")["joint_positions"][2, 0] != 0.35
 
         controls_before_restore = backend._portable_current_controls().copy()
@@ -670,8 +670,8 @@ def test_portable_tracking_sensors_read_and_selected_reset(tmp_path: Path):
         _scene(tmp_path), 3, 0.002, base_name="robot/base", add_body_sensors=True
     )
     try:
-        robot_pos = backend._host_read_sensor("track_pos_b_robot/link")
-        robot_quat = backend._host_read_sensor("track_quat_b_robot/link")
+        robot_pos = backend.host_read_sensor("track_pos_b_robot/link")
+        robot_quat = backend.host_read_sensor("track_quat_b_robot/link")
         assert robot_pos.shape == (3, 3)
         assert robot_quat.shape == (3, 4)
         np.testing.assert_allclose(
@@ -683,10 +683,10 @@ def test_portable_tracking_sensors_read_and_selected_reset(tmp_path: Path):
             atol=1e-6,
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("track_pos_b_robot/link", np.asarray((2, 0, 2))),
+            backend.host_read_sensor_rows("track_pos_b_robot/link", np.asarray((2, 0, 2))),
             robot_pos[[2, 0, 2]],
         )
-        batch = backend._host_read_sensor_batch(
+        batch = backend.host_read_sensor_batch(
             ("track_pos_b_robot/link", "track_quat_b_robot/link")
         )
         np.testing.assert_array_equal(batch, np.concatenate((robot_pos, robot_quat), axis=1))
@@ -694,8 +694,8 @@ def test_portable_tracking_sensors_read_and_selected_reset(tmp_path: Path):
         view = backend.bind_sensor_data(("track_pos_b_robot/link", "track_quat_b_robot/link"))
         np.testing.assert_array_equal(view.read(), batch)
 
-        object_pos_before = backend._host_read_sensor("track_pos_b_object/base").copy()
-        passive_quat_before = backend._host_read_sensor("track_quat_b_passive/child").copy()
+        object_pos_before = backend.host_read_sensor("track_pos_b_object/base").copy()
+        passive_quat_before = backend.host_read_sensor("track_quat_b_passive/child").copy()
         object_pose = np.asarray([(3.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0)], np.float32)
         backend.reset_entities(
             SceneResetRequest(
@@ -710,8 +710,8 @@ def test_portable_tracking_sensors_read_and_selected_reset(tmp_path: Path):
                 ),
             )
         )
-        object_pos_after = backend._host_read_sensor("track_pos_b_object/base")
-        passive_quat_after = backend._host_read_sensor("track_quat_b_passive/child")
+        object_pos_after = backend.host_read_sensor("track_pos_b_object/base")
+        passive_quat_after = backend.host_read_sensor("track_quat_b_passive/child")
         np.testing.assert_allclose(object_pos_after[1], (3.0, 0.0, 1.0), atol=1e-6)
         np.testing.assert_array_equal(object_pos_after[[0, 2]], object_pos_before[[0, 2]])
         assert not np.allclose(passive_quat_after[1], passive_quat_before[1], atol=1e-6)
@@ -728,9 +728,9 @@ def test_portable_source_and_generated_sensors_read_and_selected_reset(tmp_path:
     scene.entity_assets = tuple(entities)
     backend = MotrixBackend(scene, 3, 0.002, base_name="robot/base", add_body_sensors=True)
     try:
-        robot_source_pos = backend._host_read_sensor("robot/source_pos")
-        robot_source_quat = backend._host_read_sensor("robot/source_quat")
-        robot_generated_pos = backend._host_read_sensor("track_pos_b_robot/link")
+        robot_source_pos = backend.host_read_sensor("robot/source_pos")
+        robot_source_quat = backend.host_read_sensor("robot/source_quat")
+        robot_generated_pos = backend.host_read_sensor("track_pos_b_robot/link")
         assert robot_source_pos.shape == (3, 3)
         assert robot_source_quat.shape == (3, 4)
         np.testing.assert_allclose(
@@ -744,7 +744,7 @@ def test_portable_source_and_generated_sensors_read_and_selected_reset(tmp_path:
         np.testing.assert_allclose(
             robot_generated_pos, np.broadcast_to((0.0, 0.0, 0.2), (3, 3)), atol=1e-6
         )
-        batch = backend._host_read_sensor_batch(
+        batch = backend.host_read_sensor_batch(
             ("robot/source_pos", "track_pos_b_robot/link", "robot/source_quat")
         )
         assert batch.shape == (3, 10)
@@ -754,7 +754,7 @@ def test_portable_source_and_generated_sensors_read_and_selected_reset(tmp_path:
         )
         assert all(len(runtime.sensor_names) == 15 for runtime in backend._portable_runtimes)
 
-        passive_source_quat_before = backend._host_read_sensor("passive/source_quat").copy()
+        passive_source_quat_before = backend.host_read_sensor("passive/source_quat").copy()
         backend.reset_entities(
             SceneResetRequest(
                 (1,),
@@ -767,7 +767,7 @@ def test_portable_source_and_generated_sensors_read_and_selected_reset(tmp_path:
                 ),
             )
         )
-        passive_source_quat_after = backend._host_read_sensor("passive/source_quat")
+        passive_source_quat_after = backend.host_read_sensor("passive/source_quat")
         assert not np.allclose(
             passive_source_quat_after[1], passive_source_quat_before[1], atol=1e-6
         )
@@ -787,7 +787,7 @@ def test_portable_source_sensors_do_not_require_generated_sensors(tmp_path: Path
     try:
         assert set(backend._sensor_names) == {"robot/source_pos", "robot/source_quat"}
         np.testing.assert_allclose(
-            backend._host_read_sensor("robot/source_pos"),
+            backend.host_read_sensor("robot/source_pos"),
             np.broadcast_to((0.0, 0.0, 1.0), (2, 3)),
             atol=1e-6,
         )
@@ -803,8 +803,8 @@ def test_portable_site_sensors_read_and_selected_reset(tmp_path: Path):
     backend = MotrixBackend(scene, 3, 0.002, base_name="robot/base")
     try:
         assert set(backend._sensor_names) == {"passive/site_pos", "passive/site_quat"}
-        positions = backend._host_read_sensor("passive/site_pos")
-        quaternions = backend._host_read_sensor("passive/site_quat")
+        positions = backend.host_read_sensor("passive/site_pos")
+        quaternions = backend.host_read_sensor("passive/site_quat")
         assert positions.shape == (3, 3)
         assert quaternions.shape == (3, 4)
         np.testing.assert_allclose(positions, np.tile((1.2, 0.0, 2.0), (3, 1)), atol=1e-6)
@@ -823,8 +823,8 @@ def test_portable_site_sensors_read_and_selected_reset(tmp_path: Path):
                 ),
             )
         )
-        positions_after = backend._host_read_sensor("passive/site_pos")
-        quaternions_after = backend._host_read_sensor("passive/site_quat")
+        positions_after = backend.host_read_sensor("passive/site_pos")
+        quaternions_after = backend.host_read_sensor("passive/site_quat")
         expected_position = np.asarray(
             (1.15 + 0.05 * np.cos(angle), 0.0, 2.0 - 0.05 * np.sin(angle))
         )
@@ -853,8 +853,8 @@ def test_portable_site_motion_sensors_read_site_frame_and_selected_reset(tmp_pat
         site_dofs = np.concatenate((passive.root_qvel_indices, passive.joints[0].qvel_indices))
         root_velocity = np.asarray((0.3, -0.2, 0.15, 0.1, 0.6, -0.4), dtype=np.float32)
         joint_velocity = np.asarray([[0.8]], dtype=np.float32)
-        before_linear = backend._host_read_sensor("passive/site_vel").copy()
-        before_angular = backend._host_read_sensor("passive/site_gyro").copy()
+        before_linear = backend.host_read_sensor("passive/site_vel").copy()
+        before_angular = backend.host_read_sensor("passive/site_gyro").copy()
 
         backend.reset_entities(
             SceneResetRequest(
@@ -877,20 +877,20 @@ def test_portable_site_motion_sensors_read_site_frame_and_selected_reset(tmp_pat
         site_frame_linear = np.asarray((world_linear[0], -world_linear[1], -world_linear[2]))
         site_frame_angular = np.asarray((world_angular[0], -world_angular[1], -world_angular[2]))
         np.testing.assert_allclose(
-            backend._host_read_sensor("passive/site_vel")[1],
+            backend.host_read_sensor("passive/site_vel")[1],
             site_frame_linear,
             atol=2e-6,
         )
         np.testing.assert_allclose(
-            backend._host_read_sensor("passive/site_gyro")[1],
+            backend.host_read_sensor("passive/site_gyro")[1],
             site_frame_angular,
             atol=2e-6,
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor("passive/site_vel")[[0, 2]], before_linear[[0, 2]]
+            backend.host_read_sensor("passive/site_vel")[[0, 2]], before_linear[[0, 2]]
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor("passive/site_gyro")[[0, 2]], before_angular[[0, 2]]
+            backend.host_read_sensor("passive/site_gyro")[[0, 2]], before_angular[[0, 2]]
         )
     finally:
         backend.close()
@@ -902,8 +902,8 @@ def test_cross_entity_frame_sensor_fragment_reads_and_selected_reset(tmp_path: P
     backend = MotrixBackend(scene, 3, 0.002, base_name="robot/base", add_body_sensors=True)
     try:
         assert {"cross_pos", "cross_quat"} <= set(backend._sensor_names)
-        cross_pos = backend._host_read_sensor("cross_pos")
-        cross_quat = backend._host_read_sensor("cross_quat")
+        cross_pos = backend.host_read_sensor("cross_pos")
+        cross_quat = backend.host_read_sensor("cross_quat")
         np.testing.assert_allclose(
             cross_pos,
             np.tile((1.15, 0.0, 2.0), (3, 1)),
@@ -914,10 +914,10 @@ def test_cross_entity_frame_sensor_fragment_reads_and_selected_reset(tmp_path: P
             np.tile((1.0, 0.0, 0.0, 0.0), (3, 1)),
             atol=1e-6,
         )
-        batch = backend._host_read_sensor_batch(("cross_quat", "cross_pos"))
+        batch = backend.host_read_sensor_batch(("cross_quat", "cross_pos"))
         np.testing.assert_array_equal(batch, np.concatenate((cross_quat, cross_pos), axis=1))
 
-        robot_pos_before = backend._host_read_sensor("track_pos_b_robot/base").copy()
+        robot_pos_before = backend.host_read_sensor("track_pos_b_robot/base").copy()
         pose = np.asarray([(2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0)], dtype=np.float32)
         backend.reset_entities(
             SceneResetRequest(
@@ -925,7 +925,7 @@ def test_cross_entity_frame_sensor_fragment_reads_and_selected_reset(tmp_path: P
                 (EntityStatePatch("passive", root_pose=pose),),
             )
         )
-        cross_pos_after = backend._host_read_sensor("cross_pos")
+        cross_pos_after = backend.host_read_sensor("cross_pos")
         np.testing.assert_allclose(
             cross_pos_after[[0, 2]],
             np.tile((1.15, 0.0, 2.0), (2, 1)),
@@ -933,7 +933,7 @@ def test_cross_entity_frame_sensor_fragment_reads_and_selected_reset(tmp_path: P
         )
         np.testing.assert_allclose(cross_pos_after[1], (2.15, 0.0, 2.0), atol=1e-6)
         np.testing.assert_array_equal(
-            backend._host_read_sensor("track_pos_b_robot/base"), robot_pos_before
+            backend.host_read_sensor("track_pos_b_robot/base"), robot_pos_before
         )
     finally:
         backend.close()
@@ -947,8 +947,8 @@ def test_cross_entity_body_motion_sensor_fragment_reads_assignment_rows(tmp_path
     backend = MotrixBackend(scene, 3, 0.002, base_name="robot/base")
     try:
         assert {"cross_linvel", "cross_angvel"} <= set(backend._sensor_names)
-        before_linear = backend._host_read_sensor("cross_linvel").copy()
-        before_angular = backend._host_read_sensor("cross_angvel").copy()
+        before_linear = backend.host_read_sensor("cross_linvel").copy()
+        before_angular = backend.host_read_sensor("cross_angvel").copy()
         np.testing.assert_allclose(before_linear, 0.0, atol=2e-6)
         np.testing.assert_allclose(before_angular, 0.0, atol=2e-6)
 
@@ -972,23 +972,23 @@ def test_cross_entity_body_motion_sensor_fragment_reads_assignment_rows(tmp_path
 
         layout = backend.get_scene_layout()
         object_body_id = int(layout.get_entity("object").body_ids[0])
-        _, link_quat, link_linear, link_angular = backend._host_get_body_state_w(
+        _, link_quat, link_linear, link_angular = backend.host_get_body_state_w(
             np.asarray((object_body_id,), dtype=np.intp)
         )
         offset_world = _rotate_wxyz(link_quat[1, 0], backend.get_body_ipos()[object_body_id])
         expected_linear = link_linear[1, 0] + np.cross(link_angular[1, 0], offset_world)
         expected_angular = link_angular[1, 0]
         np.testing.assert_allclose(
-            backend._host_read_sensor("cross_linvel")[1], expected_linear, atol=2e-6
+            backend.host_read_sensor("cross_linvel")[1], expected_linear, atol=2e-6
         )
         np.testing.assert_allclose(
-            backend._host_read_sensor("cross_angvel")[1], expected_angular, atol=2e-6
+            backend.host_read_sensor("cross_angvel")[1], expected_angular, atol=2e-6
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor("cross_linvel")[[0, 2]], before_linear[[0, 2]]
+            backend.host_read_sensor("cross_linvel")[[0, 2]], before_linear[[0, 2]]
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor("cross_angvel")[[0, 2]], before_angular[[0, 2]]
+            backend.host_read_sensor("cross_angvel")[[0, 2]], before_angular[[0, 2]]
         )
     finally:
         backend.close()
@@ -1000,8 +1000,8 @@ def test_cross_entity_site_sensor_fragment_reads_and_selected_reset(tmp_path: Pa
     backend = MotrixBackend(scene, 3, 0.002, base_name="robot/base")
     try:
         assert set(backend._sensor_names) == {"cross_site_pos", "cross_site_quat"}
-        positions = backend._host_read_sensor("cross_site_pos")
-        quaternions = backend._host_read_sensor("cross_site_quat")
+        positions = backend.host_read_sensor("cross_site_pos")
+        quaternions = backend.host_read_sensor("cross_site_quat")
         np.testing.assert_allclose(
             positions,
             np.tile((1.2, 0.0, 2.0), (3, 1)),
@@ -1026,8 +1026,8 @@ def test_cross_entity_site_sensor_fragment_reads_and_selected_reset(tmp_path: Pa
                 ),
             )
         )
-        positions_after = backend._host_read_sensor("cross_site_pos")
-        quaternions_after = backend._host_read_sensor("cross_site_quat")
+        positions_after = backend.host_read_sensor("cross_site_pos")
+        quaternions_after = backend.host_read_sensor("cross_site_quat")
         expected_position = np.asarray(
             (1.15 + 0.05 * np.cos(angle), 0.0, 2.0 - 0.05 * np.sin(angle))
         )
@@ -1056,8 +1056,8 @@ def test_cross_entity_site_motion_sensor_fragment_reads_world_frame(tmp_path: Pa
             "cross_site_linvel",
             "cross_site_angvel",
         }
-        before_linear = backend._host_read_sensor("cross_site_linvel").copy()
-        before_angular = backend._host_read_sensor("cross_site_angvel").copy()
+        before_linear = backend.host_read_sensor("cross_site_linvel").copy()
+        before_angular = backend.host_read_sensor("cross_site_angvel").copy()
         np.testing.assert_allclose(before_linear, 0.0, atol=2e-6)
         np.testing.assert_allclose(before_angular, 0.0, atol=2e-6)
 
@@ -1089,26 +1089,26 @@ def test_cross_entity_site_motion_sensor_fragment_reads_world_frame(tmp_path: Pa
         expected_linear = jacp[1] @ qvel
         expected_angular = jacr[1] @ qvel
         np.testing.assert_allclose(
-            backend._host_read_sensor("cross_site_linvel")[1],
+            backend.host_read_sensor("cross_site_linvel")[1],
             expected_linear,
             atol=2e-6,
         )
         np.testing.assert_allclose(
-            backend._host_read_sensor("cross_site_angvel")[1],
+            backend.host_read_sensor("cross_site_angvel")[1],
             expected_angular,
             atol=2e-6,
         )
         rows = np.asarray((2, 1, 0), dtype=np.intp)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("cross_site_linvel", rows),
-            backend._host_read_sensor("cross_site_linvel")[rows],
+            backend.host_read_sensor_rows("cross_site_linvel", rows),
+            backend.host_read_sensor("cross_site_linvel")[rows],
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor("cross_site_linvel")[[0, 2]],
+            backend.host_read_sensor("cross_site_linvel")[[0, 2]],
             before_linear[[0, 2]],
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor("cross_site_angvel")[[0, 2]],
+            backend.host_read_sensor("cross_site_angvel")[[0, 2]],
             before_angular[[0, 2]],
         )
     finally:
@@ -1128,16 +1128,16 @@ def test_contact_sensor_fragments_read_native_force_and_found(tmp_path: Path):
                 (EntityStatePatch("object", root_pose=pose),),
             )
         )
-        backend._host_step(np.zeros((2, 1), dtype=np.float32), nsteps=2)
-        found = backend._host_read_sensor("object_table_found")
-        force = backend._host_read_sensor("object_table_force")
+        backend.host_step(np.zeros((2, 1), dtype=np.float32), nsteps=2)
+        found = backend.host_read_sensor("object_table_found")
+        force = backend.host_read_sensor("object_table_force")
         assert found.shape == (2, 1)
         assert force.shape == (2, 3)
         np.testing.assert_allclose(found, 1.0, atol=0)
         assert np.all(np.isfinite(force))
         assert np.any(np.abs(force) > 0.0)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("object_table_found", np.asarray((1, 0))),
+            backend.host_read_sensor_rows("object_table_found", np.asarray((1, 0))),
             found[[1, 0]],
         )
     finally:
@@ -1156,13 +1156,13 @@ def test_fixed_variant_tracking_sensors_gather_by_assignment(tmp_path: Path):
     )
     backend = MotrixBackend(scene, 5, 0.002, base_name="robot/base", add_body_sensors=True)
     try:
-        values = backend._host_read_sensor("track_pos_b_passive/child")
+        values = backend.host_read_sensor("track_pos_b_passive/child")
         np.testing.assert_allclose(
             values[:, 0],
             [1.2, 1.2, 1.15, 1.2, 1.15],
             atol=1e-6,
         )
-        batch = backend._host_read_sensor_batch(
+        batch = backend.host_read_sensor_batch(
             ("track_pos_b_passive/child", "track_quat_b_passive/child")
         )
         assert batch.shape == (5, 7)
@@ -1188,8 +1188,8 @@ def test_fixed_variant_cross_entity_frame_sensors_gather_by_assignment(tmp_path:
     scene.fragment_files = (str(_frame_sensor_fragment(tmp_path)),)
     backend = MotrixBackend(scene, 5, 0.002, base_name="robot/base", add_body_sensors=True)
     try:
-        positions = backend._host_read_sensor("cross_pos")
-        quaternions = backend._host_read_sensor("cross_quat")
+        positions = backend.host_read_sensor("cross_pos")
+        quaternions = backend.host_read_sensor("cross_quat")
         np.testing.assert_allclose(positions[:, 0], [1.2, 1.2, 1.15, 1.2, 1.15], atol=1e-6)
         np.testing.assert_allclose(
             quaternions,
@@ -1198,7 +1198,7 @@ def test_fixed_variant_cross_entity_frame_sensors_gather_by_assignment(tmp_path:
         )
         rows = np.asarray((4, 0, 2), dtype=np.intp)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("cross_pos", rows), positions[rows]
+            backend.host_read_sensor_rows("cross_pos", rows), positions[rows]
         )
         assert all(len(runtime.sensor_names) == 14 for runtime in backend._portable_runtimes)
         assert all(
@@ -1222,8 +1222,8 @@ def test_fixed_variant_cross_entity_site_sensors_gather_by_assignment(tmp_path: 
     scene.fragment_files = (str(_site_frame_sensor_fragment(tmp_path)),)
     backend = MotrixBackend(scene, 5, 0.002, base_name="robot/base")
     try:
-        positions = backend._host_read_sensor("cross_site_pos")
-        quaternions = backend._host_read_sensor("cross_site_quat")
+        positions = backend.host_read_sensor("cross_site_pos")
+        quaternions = backend.host_read_sensor("cross_site_quat")
         np.testing.assert_allclose(positions[:, 0], [1.25, 1.25, 1.2, 1.25, 1.2], atol=1e-6)
         np.testing.assert_allclose(
             quaternions,
@@ -1232,7 +1232,7 @@ def test_fixed_variant_cross_entity_site_sensors_gather_by_assignment(tmp_path: 
         )
         rows = np.asarray((4, 0, 2), dtype=np.intp)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("cross_site_pos", rows), positions[rows]
+            backend.host_read_sensor_rows("cross_site_pos", rows), positions[rows]
         )
         assert all(
             runtime.sensor_names == ("cross_site_pos", "cross_site_quat")
@@ -1288,8 +1288,8 @@ def test_fixed_variant_cross_entity_site_motion_sensors_gather_by_assignment(
         )
         jacp, jacr = backend.get_site_jacobian_w(site_id, site_dofs)
         state_qvel = backend._portable_state_qvel()
-        linear = backend._host_read_sensor("cross_site_linvel")
-        angular = backend._host_read_sensor("cross_site_angvel")
+        linear = backend.host_read_sensor("cross_site_linvel")
+        angular = backend.host_read_sensor("cross_site_angvel")
         assert linear.shape == angular.shape == (5, 3)
         for row in range(5):
             qvel = state_qvel[row, site_dofs]
@@ -1297,10 +1297,10 @@ def test_fixed_variant_cross_entity_site_motion_sensors_gather_by_assignment(
             np.testing.assert_allclose(angular[row], jacr[row] @ qvel, atol=2e-6)
         rows = np.asarray((4, 0, 2), dtype=np.intp)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("cross_site_linvel", rows), linear[rows]
+            backend.host_read_sensor_rows("cross_site_linvel", rows), linear[rows]
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("cross_site_angvel", rows), angular[rows]
+            backend.host_read_sensor_rows("cross_site_angvel", rows), angular[rows]
         )
         assert all(
             runtime.sensor_names
@@ -1359,12 +1359,12 @@ def test_fixed_variant_contact_sensors_preserve_identity_and_rows(tmp_path: Path
                 (EntityStatePatch("object", root_pose=pose),),
             )
         )
-        backend._host_step(np.zeros((5, 1), dtype=np.float32), nsteps=2)
-        np.testing.assert_allclose(backend._host_read_sensor("object_table_found"), 1.0, atol=0)
+        backend.host_step(np.zeros((5, 1), dtype=np.float32), nsteps=2)
+        np.testing.assert_allclose(backend.host_read_sensor("object_table_found"), 1.0, atol=0)
         rows = np.asarray((4, 0, 2), dtype=np.intp)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("object_table_force", rows),
-            backend._host_read_sensor("object_table_force")[rows],
+            backend.host_read_sensor_rows("object_table_force", rows),
+            backend.host_read_sensor("object_table_force")[rows],
         )
     finally:
         backend.close()
@@ -1391,12 +1391,12 @@ def test_fixed_variant_source_sensors_gather_by_assignment(tmp_path: Path):
     )
     backend = MotrixBackend(scene, 5, 0.002, base_name="robot/base", add_body_sensors=True)
     try:
-        values = backend._host_read_sensor("passive/source_pos")
+        values = backend.host_read_sensor("passive/source_pos")
         assert values.shape == (5, 3)
         np.testing.assert_allclose(values[:, 0], [1.2, 1.2, 1.15, 1.2, 1.15], atol=1e-6)
         rows = np.asarray((4, 0, 2), dtype=np.intp)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("passive/source_pos", rows), values[rows]
+            backend.host_read_sensor_rows("passive/source_pos", rows), values[rows]
         )
         assert all(len(runtime.sensor_names) == 13 for runtime in backend._portable_runtimes)
         assert all(
@@ -1428,16 +1428,16 @@ def test_fixed_variant_site_sensors_gather_by_assignment(tmp_path: Path):
     )
     backend = MotrixBackend(scene, 5, 0.002, base_name="robot/base")
     try:
-        positions = backend._host_read_sensor("passive/site_pos")
+        positions = backend.host_read_sensor("passive/site_pos")
         assert positions.shape == (5, 3)
         np.testing.assert_allclose(positions[:, 0], [1.25, 1.25, 1.2, 1.25, 1.2], atol=1e-6)
-        quaternions = backend._host_read_sensor("passive/site_quat")
+        quaternions = backend.host_read_sensor("passive/site_quat")
         rows = np.asarray((4, 0, 2), dtype=np.intp)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("passive/site_pos", rows), positions[rows]
+            backend.host_read_sensor_rows("passive/site_pos", rows), positions[rows]
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("passive/site_quat", rows), quaternions[rows]
+            backend.host_read_sensor_rows("passive/site_quat", rows), quaternions[rows]
         )
         assert all(
             runtime.sensor_names == ("passive/site_pos", "passive/site_quat")
@@ -1490,8 +1490,8 @@ def test_fixed_variant_site_motion_sensors_gather_by_assignment(tmp_path: Path):
             )
         )
         jacp, jacr = backend.get_site_jacobian_w(site_id, site_dofs)
-        linear = backend._host_read_sensor("passive/site_vel")
-        angular = backend._host_read_sensor("passive/site_gyro")
+        linear = backend.host_read_sensor("passive/site_vel")
+        angular = backend.host_read_sensor("passive/site_gyro")
         assert linear.shape == angular.shape == (5, 3)
         for row in range(5):
             qvel = np.concatenate((root_velocity[row], joint_velocity[row]))
@@ -1509,10 +1509,10 @@ def test_fixed_variant_site_motion_sensors_gather_by_assignment(tmp_path: Path):
             )
         rows = np.asarray((4, 0, 2), dtype=np.intp)
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("passive/site_vel", rows), linear[rows]
+            backend.host_read_sensor_rows("passive/site_vel", rows), linear[rows]
         )
         np.testing.assert_array_equal(
-            backend._host_read_sensor_rows("passive/site_gyro", rows), angular[rows]
+            backend.host_read_sensor_rows("passive/site_gyro", rows), angular[rows]
         )
         assert all(
             runtime.sensor_names == ("passive/site_vel", "passive/site_gyro")
@@ -1568,7 +1568,7 @@ def test_fixed_variants_preserve_public_layout_and_native_identity(tmp_path: Pat
         with pytest.raises(ValueError, match="is not present in site Jacobian"):
             backend.get_site_jacobian_w(site_id, np.asarray((0,), dtype=np.intp))
         with pytest.raises(NotImplementedError, match="fixed-variant scenes yet"):
-            backend.init_renderer()
+            backend.bind_renderer()
         with pytest.raises(NotImplementedError, match="fixed-variant scenes yet"):
             backend.run_playback(env=None, initialize=None, step=None, num_steps=1)
 
@@ -1590,7 +1590,7 @@ def test_fixed_variants_preserve_public_layout_and_native_identity(tmp_path: Pat
             rtol=2e-7,
         )
         controls = np.asarray([[0.1], [0.2], [0.3], [0.4], [0.5]], dtype=np.float32)
-        backend._host_step(controls, nsteps=2)
+        backend.host_step(controls, nsteps=2)
         before = {
             name: {
                 field: np.asarray(values).copy()
@@ -1709,14 +1709,14 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
         unmapped_mass = requested_mass.copy()
         unmapped_mass[:, 0] = 1.0
         with pytest.raises(ValueError, match="without native Motrix links"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
                 randomization=_reset_payload(body_mass=unmapped_mass),
             )
         with pytest.raises(ValueError, match="body_mass must have shape"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
@@ -1725,13 +1725,13 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
         nonfinite_mass = requested_mass.copy()
         nonfinite_mass[0, object_body_id] = np.nan
         with pytest.raises(ValueError, match="body_mass must contain only finite values"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
                 randomization=_reset_payload(body_mass=nonfinite_mass),
             )
-        backend._host_set_state(
+        backend.host_set_state(
             rows,
             qpos[rows],
             qvel[rows],
@@ -1754,7 +1754,7 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
         upward_force = np.zeros((5, 1, 3), dtype=np.float32)
         upward_force[:, 0, 2] = 8.0
         backend.apply_body_force(np.asarray((passive_body_id,), dtype=np.int32), upward_force)
-        backend._host_step(np.zeros((5, 1), dtype=np.float32))
+        backend.host_step(np.zeros((5, 1), dtype=np.float32))
         vertical_velocity = backend.get_entity_state("passive")["root_velocity"][:, 2]
         assert (
             vertical_velocity[4]
@@ -1767,7 +1767,7 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
         qpos = backend._portable_state_qpos()
         qvel = backend._portable_state_qvel()
         later_rows = np.asarray((1, 4), dtype=np.intp)
-        backend._host_set_state(
+        backend.host_set_state(
             later_rows,
             qpos[later_rows],
             qvel[later_rows],
@@ -1808,7 +1808,7 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
             NotImplementedError,
             match="reset randomization does not support terms",
         ):
-            backend._host_set_state(
+            backend.host_set_state(
                 later_rows,
                 qpos[later_rows],
                 qvel[later_rows],
@@ -1892,14 +1892,14 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
         unmapped_ipos = requested_ipos.copy()
         unmapped_ipos[:, 0, 0] = 0.1
         with pytest.raises(ValueError, match="without native Motrix links"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
                 randomization=_reset_payload(body_ipos=unmapped_ipos),
             )
         with pytest.raises(ValueError, match="body_ipos must have shape"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
@@ -1908,7 +1908,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
         nonfinite_ipos = requested_ipos.copy()
         nonfinite_ipos[0, object_body_id, 0] = np.nan
         with pytest.raises(ValueError, match="body_ipos must contain only finite values"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
@@ -1921,7 +1921,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
             native_body_mass(passive_body_id), default_mass[:, passive_body_id]
         )
 
-        backend._host_set_state(
+        backend.host_set_state(
             rows,
             qpos[rows],
             qvel[rows],
@@ -1952,7 +1952,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
         world_force = np.zeros((5, 1, 3), dtype=np.float32)
         world_force[:, 0, 2] = 2.0
         backend.apply_body_force(np.asarray((passive_body_id,), dtype=np.int32), world_force)
-        backend._host_step(np.zeros((5, 1), dtype=np.float32))
+        backend.host_step(np.zeros((5, 1), dtype=np.float32))
         angular_velocity = backend.get_entity_state("passive")["root_velocity"][:, 4]
         assert angular_velocity[1] < angular_velocity[4] < angular_velocity[3]
         assert angular_velocity[3] < angular_velocity[2] < angular_velocity[0]
@@ -1960,7 +1960,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
         qpos = backend._portable_state_qpos()
         qvel = backend._portable_state_qvel()
         later_rows = np.asarray((1, 4), dtype=np.intp)
-        backend._host_set_state(
+        backend.host_set_state(
             later_rows,
             qpos[later_rows],
             qvel[later_rows],
@@ -2019,7 +2019,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
             NotImplementedError,
             match="reset randomization does not support terms",
         ):
-            backend._host_set_state(
+            backend.host_set_state(
                 later_rows,
                 qpos[later_rows],
                 qvel[later_rows],
@@ -2056,7 +2056,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
         qvel = backend._portable_state_qvel()
         malformed = np.zeros((2, layout.nv, 1), dtype=np.float32)
         with pytest.raises(ValueError, match="dof_armature must have shape"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
@@ -2065,7 +2065,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
         negative = np.zeros((2, layout.nv), dtype=np.float32)
         negative[:, 0] = -0.1
         with pytest.raises(ValueError, match="dof_frictionloss must contain only non-negative"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
@@ -2074,7 +2074,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
         nonfinite = np.zeros((2, layout.nv), dtype=np.float32)
         nonfinite[:, -1] = np.nan
         with pytest.raises(ValueError, match="dof_armature must contain only finite values"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
@@ -2084,7 +2084,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
         passive_root_dof = layout.get_entity("passive").root_qvel_indices[0]
         unmapped[:, passive_root_dof] = 0.1
         with pytest.raises(ValueError, match="without native Motrix scalar joints"):
-            backend._host_set_state(
+            backend.host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
@@ -2098,7 +2098,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
         requested["dof_armature"][:, passive_dof] = (0.02, 0.3)
         requested["dof_frictionloss"][:, robot_dof] = 0.03
         requested["dof_frictionloss"][:, passive_dof] = 0.04
-        backend._host_set_state(
+        backend.host_set_state(
             rows,
             qpos[rows],
             qvel[rows],
@@ -2129,7 +2129,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
 
         qpos = backend._portable_state_qpos()
         qvel = backend._portable_state_qvel()
-        backend._host_set_state(
+        backend.host_set_state(
             rows,
             qpos[rows],
             qvel[rows],
@@ -2152,7 +2152,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
             np.asarray((passive_child_body,), dtype=np.int32), force, torque=torque
         )
         for _ in range(10):
-            backend._host_step(np.zeros((5, 1), dtype=np.float32))
+            backend.host_step(np.zeros((5, 1), dtype=np.float32))
         passive_velocities = backend.get_entity_state("passive")["joint_velocities"][:, 0]
         assert abs(passive_velocities[1]) > abs(passive_velocities[4]) > 0.0
     finally:
@@ -2196,7 +2196,7 @@ def test_portable_packed_baseline_tracks_committed_writes(tmp_path: Path):
             ),
         )
 
-        transaction = backend.begin_packed_reset(device=torch.device("cpu"))
+        transaction = backend.bind_packed_reset(device=torch.device("cpu"))
         baseline = transaction.baseline(term)
         assert baseline.shape[0] == backend.num_envs
         torch.testing.assert_close(baseline[0], torch.as_tensor(written), rtol=1e-4, atol=1e-5)
@@ -2253,7 +2253,7 @@ def test_fixed_variants_map_body_forces_and_reset_scope(tmp_path: Path):
             )
         )
         velocity_before = backend.get_entity_state("passive")["root_velocity"][:, 2].copy()
-        backend._host_step(np.zeros((5, 1), dtype=np.float32))
+        backend.host_step(np.zeros((5, 1), dtype=np.float32))
         velocity_with_force = backend.get_entity_state("passive")["root_velocity"][:, 2]
         assert velocity_with_force[2] > 0.0
         assert velocity_with_force[4] > 0.0
@@ -2280,7 +2280,7 @@ def test_fixed_variants_map_body_forces_and_reset_scope(tmp_path: Path):
         np.testing.assert_allclose(pending[[2, 4], 2], 0.0, atol=0)
         np.testing.assert_allclose(pending[[0, 1, 3], 2], 8.0, atol=0)
 
-        backend._host_step(np.zeros((5, 1), dtype=np.float32))
+        backend.host_step(np.zeros((5, 1), dtype=np.float32))
         velocity_after_reset = backend.get_entity_state("passive")["root_velocity"][:, 2]
         delta = velocity_after_reset - velocity_before
         assert np.all(delta[[2, 4]] < np.max(delta[[0, 1, 3]]) - 0.002)
@@ -2332,7 +2332,7 @@ def test_portable_body_torque_maps_world_frame_and_interval_parity(tmp_path: Pat
         pending = backend._portable_pending_body_torques[int(object_body[0])]
         np.testing.assert_allclose(pending[:, 0], 0.2, atol=0)
 
-        backend._host_step(np.zeros((2, 1), dtype=np.float32))
+        backend.host_step(np.zeros((2, 1), dtype=np.float32))
         angular_after = backend.get_entity_state("object")["root_velocity"][:, 3:]
         delta = angular_after - angular_before
         assert np.all(delta[:, 0] > 0.0)
@@ -2340,7 +2340,7 @@ def test_portable_body_torque_maps_world_frame_and_interval_parity(tmp_path: Pat
         np.testing.assert_allclose(delta[0], delta[1], rtol=2e-3, atol=2e-7)
         assert np.all(backend._portable_pending_body_torques[int(object_body[0])] == 0.0)
 
-        backend._host_step(np.zeros((2, 1), dtype=np.float32))
+        backend.host_step(np.zeros((2, 1), dtype=np.float32))
         np.testing.assert_allclose(
             backend.get_entity_state("object")["root_velocity"][:, 3:],
             angular_after,
@@ -2428,12 +2428,12 @@ def test_no_variant_body_force_is_consumed_by_next_step(tmp_path: Path):
         velocity_before = backend.get_entity_state("object")["root_velocity"][:, 2].copy()
 
         backend.apply_body_force(object_body, force)
-        backend._host_step(np.zeros((2, 1), dtype=np.float32))
+        backend.host_step(np.zeros((2, 1), dtype=np.float32))
         velocity_with_force = backend.get_entity_state("object")["root_velocity"][:, 2]
         assert np.all(velocity_with_force > velocity_before)
         assert np.all(backend._portable_pending_body_forces[int(object_body[0])] == 0.0)
 
-        backend._host_step(np.zeros((2, 1), dtype=np.float32))
+        backend.host_step(np.zeros((2, 1), dtype=np.float32))
         velocity_after = backend.get_entity_state("object")["root_velocity"][:, 2]
         assert np.all(velocity_after < velocity_with_force)
     finally:
@@ -2481,7 +2481,7 @@ def test_selected_default_controls_restore_only_impacted_native_rows(tmp_path: P
         np.testing.assert_allclose(default_robot["joint_velocities"], [[1.2], [1.2]])
 
         controls = np.asarray([[0.1], [0.2], [0.3], [0.4], [0.5]], dtype=np.float32)
-        backend._host_step(controls, nsteps=2)
+        backend.host_step(controls, nsteps=2)
         backend.reset_entities(
             SceneResetRequest(
                 (0, 3),
@@ -2517,7 +2517,7 @@ def test_selected_default_controls_restore_only_impacted_native_rows(tmp_path: P
 
         unrelated_qpos_before = backend._portable_state_qpos()[1, qpos_indices].copy()
         unrelated_qvel_before = backend._portable_state_qvel()[1, qvel_indices].copy()
-        backend._host_reset((0, 4))
+        backend.host_reset((0, 4))
         np.testing.assert_allclose(
             backend._portable_current_controls(),
             [[0.4], [0.2], [0.3], [0.4], [0.4]],
@@ -2535,7 +2535,7 @@ def test_selected_default_controls_restore_only_impacted_native_rows(tmp_path: P
             default_object["root_pose"][0],
         )
 
-        backend._host_step(backend._portable_current_controls())
+        backend.host_step(backend._portable_current_controls())
         assert backend.get_entity_state("object")["root_pose"][4, :3].tolist() != pose[0].tolist()
     finally:
         backend.close()

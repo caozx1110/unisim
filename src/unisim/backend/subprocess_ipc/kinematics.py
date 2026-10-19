@@ -105,9 +105,10 @@ def prepare_kinematics(tables: Dict[str, Any]) -> Dict[str, Any]:
     return _as_arrays(tables)
 
 
-def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    w1, x1, y1, z1 = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
-    w2, x2, y2, z2 = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+def quat_mul(left_wxyz: np.ndarray, right_wxyz: np.ndarray) -> np.ndarray:
+    """Multiply broadcast-compatible wxyz quaternions without package imports."""
+    w1, x1, y1, z1 = left_wxyz[..., 0], left_wxyz[..., 1], left_wxyz[..., 2], left_wxyz[..., 3]
+    w2, x2, y2, z2 = right_wxyz[..., 0], right_wxyz[..., 1], right_wxyz[..., 2], right_wxyz[..., 3]
     return np.stack(
         (
             w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
@@ -119,12 +120,13 @@ def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     )
 
 
-def _quat_rotate(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
+def quat_rotate(quat_wxyz: np.ndarray, vectors: np.ndarray) -> np.ndarray:
+    """Rotate vectors by broadcast-compatible wxyz quaternions."""
     w = quat_wxyz[..., 0:1]
     u = quat_wxyz[..., 1:4]
-    uv = np.cross(u, vec)
+    uv = np.cross(u, vectors)
     uuv = np.cross(u, uv)
-    return vec + 2.0 * (w * uv + uuv)
+    return vectors + 2.0 * (w * uv + uuv)
 
 
 def forward_prepared_kinematics(
@@ -168,14 +170,14 @@ def forward_prepared_kinematics(
             pos[:, index] = qpos[:, 0:3]
             quat[:, index] = qpos[:, 3:7]
             lin[:, index] = qvel[:, 0:3]
-            ang[:, index] = _quat_rotate(qpos[:, 3:7], qvel[:, 3:6])
+            ang[:, index] = quat_rotate(qpos[:, 3:7], qvel[:, 3:6])
             continue
         parent = int(parents[index])
-        offset = _quat_rotate(quat[:, parent], kin["body_pos"][index])
+        offset = quat_rotate(quat[:, parent], kin["body_pos"][index])
         pos[:, index] = pos[:, parent] + offset
         # The joint rotation acts in the body reference frame: offset first,
         # then the rotation about the (offset-frame) axis.
-        reference = _quat_mul(quat[:, parent], kin["body_quat"][index])
+        reference = quat_mul(quat[:, parent], kin["body_quat"][index])
         kind = int(kin["body_joint_kind"][index])
         if kind == JOINT_NONE:
             quat[:, index] = reference
@@ -185,7 +187,7 @@ def forward_prepared_kinematics(
         column = int(kin["body_joint_column"][index])
         value = qpos[:, column]
         rate = qvel[:, column - 1]
-        axis_world = _quat_rotate(reference, kin["body_joint_axis"][index])
+        axis_world = quat_rotate(reference, kin["body_joint_axis"][index])
         if kind == JOINT_HINGE:
             sine = np.sin(0.5 * value)
             joint_quat = np.concatenate(
@@ -195,7 +197,7 @@ def forward_prepared_kinematics(
                 ),
                 axis=-1,
             )
-            quat[:, index] = _quat_mul(reference, joint_quat)
+            quat[:, index] = quat_mul(reference, joint_quat)
             ang[:, index] = ang[:, parent] + axis_world * rate[:, None]
             lin[:, index] = lin[:, parent] + np.cross(ang[:, parent], offset)
         else:

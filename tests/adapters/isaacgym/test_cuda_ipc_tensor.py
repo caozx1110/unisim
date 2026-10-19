@@ -29,7 +29,7 @@ from unisim.backend.isaacgym.dependencies import (
 from unisim.backend.isaacgym.tensor import (
     IsaacGymCudaIpcArenaLayout,
     IsaacGymCudaIpcPlan,
-    RawArenaViewToken,
+    RawCudaViewToken,
     torch_from_cuda_pointer,
 )
 from unisim.backend.subprocess_ipc import cuda_ipc, protocol
@@ -63,9 +63,9 @@ def test_cuda_ipc_arena_layout_is_fixed_and_fails_closed() -> None:
     assert layout.reset_kd_shape == (2, 3)
     assert layout.body_state_shape == (2, 0, 13)
     assert layout.sensor_state_shape == (2, 2, 3)
-    assert IsaacGymCudaIpcArenaLayout.from_wire(layout.wire()) == layout
+    assert IsaacGymCudaIpcArenaLayout.from_wire(layout.to_wire()) == layout
 
-    bad = dict(layout.wire())
+    bad = dict(layout.to_wire())
     bad["qvel_offset"] += 1
     with pytest.raises(ValueError, match="inconsistent"):
         IsaacGymCudaIpcArenaLayout.from_wire(bad)
@@ -75,7 +75,7 @@ def test_cuda_ipc_arena_layout_is_fixed_and_fails_closed() -> None:
 
 def test_gpu_backend_declares_external_cuda_ipc_capability_matrix() -> None:
     backend = _fake_gpu_backend()
-    assert backend.tensor_execution() is TensorExecution.DEVICE_RESIDENT
+    assert backend.get_tensor_execution() is TensorExecution.DEVICE_RESIDENT
     capabilities = backend.get_tensor_capabilities()
     _assert_tensor_platform_capabilities("isaacgym", capabilities)
     assert capabilities.process_topology is TensorProcessTopology.EXTERNAL_WORKER
@@ -98,7 +98,7 @@ def test_gpu_backend_declares_external_cuda_ipc_capability_matrix() -> None:
 def test_cpu_backend_removes_cuda_ipc_from_tensor_capabilities() -> None:
     backend = _fake_gpu_backend()
     backend._model_info = SimpleNamespace(use_gpu_pipeline=False)
-    assert backend.tensor_execution() is TensorExecution.UNSUPPORTED
+    assert backend.get_tensor_execution() is TensorExecution.UNSUPPORTED
     assert backend.get_tensor_capabilities().execution is TensorExecution.UNSUPPORTED
 
 
@@ -293,7 +293,7 @@ def test_state_view_lifecycle_counts_each_caller_held_field() -> None:
     created: list[str] = []
 
     class _FakeCallerView:
-        def __init__(self, token: RawArenaViewToken) -> None:
+        def __init__(self, token: RawCudaViewToken) -> None:
             self._token = token
 
         def __del__(self) -> None:
@@ -336,7 +336,7 @@ def test_state_view_lifecycle_counts_each_caller_held_field() -> None:
         _device_index: int,
         *,
         dtype: str = "float32",
-        token: RawArenaViewToken | None = None,
+        token: RawCudaViewToken | None = None,
     ) -> Any:
         assert token is not None
         created.append(dtype)
@@ -388,7 +388,7 @@ def test_state_view_lifecycle_counts_each_caller_held_field() -> None:
 
 def test_failed_close_preserves_internal_cuda_ipc_views() -> None:
     class _FakeCallerView:
-        def __init__(self, token: RawArenaViewToken) -> None:
+        def __init__(self, token: RawCudaViewToken) -> None:
             self._token = token
 
         def __del__(self) -> None:
@@ -431,7 +431,7 @@ def test_failed_close_preserves_internal_cuda_ipc_views() -> None:
         _device_index: int,
         *,
         dtype: str = "float32",
-        token: RawArenaViewToken | None = None,
+        token: RawCudaViewToken | None = None,
     ) -> Any:
         assert token is not None
         return _FakeCallerView(token)
@@ -522,11 +522,11 @@ def test_numpy_hot_paths_fail_closed_while_cuda_ipc_plan_is_open() -> None:
     backend = _fake_gpu_backend()
     backend._cuda_ipc_plan = object()
     with pytest.raises(RuntimeError, match="NumPy step"):
-        backend._host_step(None)
+        backend.host_step(None)
     with pytest.raises(RuntimeError, match="NumPy reset"):
-        backend._host_reset()
+        backend.host_reset()
     with pytest.raises(RuntimeError, match="host-plane state writes"):
-        backend._host_set_state(None, None, None)
+        backend.host_set_state(None, None, None)
     with pytest.raises(RuntimeError, match="host-plane entity reset"):
         backend.reset_entities(None)
 
@@ -736,7 +736,7 @@ def _cuda_ipc_wire(
     state_handle = state_event.export_handle()
     reset_handle = reset_event.export_handle()
     return {
-        "arena": layout.wire(),
+        "arena": layout.to_wire(),
         "memory": {
             "opaque_handle": memory_handle.opaque_handle,
             "device_uuid": memory_handle.device_uuid,
@@ -851,7 +851,7 @@ def test_cuda_ipc_control_state_with_native_isaacgym_worker(tmp_path: Path) -> N
         )
         attached = True
         assert attach["device_uuid"] == transport.identity.uuid
-        assert attach["arena"] == layout.wire()
+        assert attach["arena"] == layout.to_wire()
         assert "isaacgym" not in sys.modules
         state_event.wait_stream(torch.cuda.current_stream().cuda_stream)
         torch.testing.assert_close(
@@ -1081,7 +1081,7 @@ def test_cuda_ipc_control_state_and_events_cross_python38_process(tmp_path: Path
             _cuda_ipc_wire(layout, allocation, control_event, state_event, reset_event),
         )["payload"]
         assert attach["device_uuid"] == transport.identity.uuid
-        assert attach["arena"] == layout.wire()
+        assert attach["arena"] == layout.to_wire()
 
         control_values = torch.tensor(
             [[0.25, 0.5, 0.75], [1.0, 1.25, 1.5]],

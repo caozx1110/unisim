@@ -13,13 +13,13 @@ from typing import Any
 import numpy as np
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
     CameraCfg,
     HostBridgeTransferPlan,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     PublicStateWidths,
+    RootStateLayout,
     SimBackend,
     TensorExecution,
     TensorIOSpec,
@@ -567,7 +567,7 @@ class SuperDexBackend(SimBackend):
             ):
                 raise ValueError("SuperDex scenes must use the same actor slot DoF layout")
         if self._execution_mode == "serial":
-            self._host_reset()
+            self.host_reset()
             return
         self._reject_if_debugger_attached()
         contact_sources = [
@@ -620,7 +620,7 @@ class SuperDexBackend(SimBackend):
                 contact_distances,
                 num_workers=self._batch_num_workers,
             )
-        self._host_reset()
+        self.host_reset()
 
     def _ids(self, value: np.ndarray) -> np.ndarray:
         ids = np.asarray(value)
@@ -630,12 +630,12 @@ class SuperDexBackend(SimBackend):
             raise ValueError("env_indices must contain unique in-range indices")
         return ids.astype(np.intp, copy=False)
 
-    def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
+    def host_reset(self, env_ids: np.ndarray | None = None) -> None:
         self._check_open()
         ids = self._env_ids if env_ids is None else self._ids(env_ids)
         qpos = self._default_qpos[ids].copy()
         qvel = np.zeros((ids.size, self.model.nv), dtype=self._dtype)
-        self._host_set_state(ids, qpos, qvel)
+        self.host_set_state(ids, qpos, qvel)
 
     def _validate_portable_quaternions(self, qpos: np.ndarray) -> None:
         m = self.model
@@ -823,7 +823,7 @@ class SuperDexBackend(SimBackend):
             self._entity_faulted = True
             raise
 
-    def _host_set_state(
+    def host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -884,7 +884,7 @@ class SuperDexBackend(SimBackend):
             world.step(0)
         self._refresh(ids)
 
-    def _host_step(
+    def host_step(
         self,
         ctrl: np.ndarray,
         nsteps: int = 1,
@@ -1265,7 +1265,7 @@ class SuperDexBackend(SimBackend):
             return np.array([found], dtype=self._dtype)
         raise NotImplementedError(f"superdex sensor kind is unsupported: {kind}")
 
-    def _host_get_state(self, fields: Any = None) -> dict[str, np.ndarray]:
+    def host_get_state(self, fields: Any = None) -> dict[str, np.ndarray]:
         self._check_open()
         names = (
             ("qpos", "qvel")
@@ -1437,7 +1437,7 @@ class SuperDexBackend(SimBackend):
         )
         self._refresh(rows, refresh_contacts=False)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if self.model.actor_plans:
             assert self.model.layout is not None
             entity_name, separator, local_name = str(root_body_name).partition("/")
@@ -1452,7 +1452,7 @@ class SuperDexBackend(SimBackend):
                 raise NotImplementedError(
                     f"portable SuperDex entity {entity.name!r} has no floating root state"
                 )
-            return BackendRootStateLayout(
+            return RootStateLayout(
                 tuple(entity.root_qpos_indices), tuple(entity.root_qvel_indices)
             )
         body = self.get_body_id(root_body_name)
@@ -1460,7 +1460,7 @@ class SuperDexBackend(SimBackend):
             raise NotImplementedError(
                 f"superdex body {root_body_name!r} does not own a floating root"
             )
-        return BackendRootStateLayout(
+        return RootStateLayout(
             qpos_indices=(0, 1, 2, 3, 4, 5, 6),
             qvel_indices=(0, 1, 2, 3, 4, 5),
         )
@@ -1475,8 +1475,8 @@ class SuperDexBackend(SimBackend):
             supported_fixed_variant_layouts=layouts,
         )
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
-        return BackendPlayCapabilities(
+    def get_play_capabilities(self) -> PlayCapabilities:
+        return PlayCapabilities(
             supports_physics_state_playback=True,
             supports_debug_overlay=True,
             # The native Polyscope viewer reads the scene on the calling
@@ -1496,17 +1496,17 @@ class SuperDexBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | os.PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         """Resolve playback: native interactive viewer or shared MuJoCo recorder."""
         mode = normalize_play_render_mode(play_render_mode)
         if mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="none", headless=True, record_video=False, num_steps=None, output_video=None
             )
         if mode == "interactive":
             # Serial-mode enforcement happens in run_playback, where the
             # instance (and its execution mode) is available.
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="interactive",
                 headless=False,
                 record_video=False,
@@ -1517,7 +1517,7 @@ class SuperDexBackend(SimBackend):
             raise ValueError("superdex MuJoCo playback requires positive training.play_steps")
         if output_video is None:
             raise ValueError("superdex MuJoCo playback requires an output video path")
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode="record",
             headless=True,
             record_video=True,
@@ -1676,7 +1676,7 @@ class SuperDexBackend(SimBackend):
             return np.zeros(self.model.nv, dtype=self._dtype)
         return self.model.dof_armature.copy()
 
-    def _host_read_sensor(self, name: str) -> np.ndarray:
+    def host_read_sensor(self, name: str) -> np.ndarray:
         self._check_open()
         return self._sensor_source(name).copy()
 
@@ -1700,20 +1700,20 @@ class SuperDexBackend(SimBackend):
             return getattr(self, attribute)[:, body_id]
         raise KeyError(f"unknown SuperDex sensor {name!r}")
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         """Declare SuperDex's CPU-authoritative tensor execution profile."""
         return TensorExecution.HOST_BRIDGE
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         """Return the deliberately narrow initial packed host-bridge profile."""
-        from .tensor import superdex_tensor_capabilities
+        from .tensor import tensor_capabilities
 
-        return superdex_tensor_capabilities(self)
+        return tensor_capabilities(self)
 
     def get_public_state_widths(self) -> PublicStateWidths:
         """Return the canonical public qpos/qvel tensor reset widths."""
 
-        public_state = self._host_get_state(("qpos", "qvel"))
+        public_state = self.host_get_state(("qpos", "qvel"))
         nq = int(np.asarray(public_state["qpos"]).shape[1])
         nv = int(np.asarray(public_state["qvel"]).shape[1])
         if (nq, nv) != (self.model.nq, self.model.nv):
@@ -1723,7 +1723,7 @@ class SuperDexBackend(SimBackend):
             )
         return PublicStateWidths(nq=nq, nv=nv)
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
+    def bind_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
         """Compile persistent SuperDex staging and packed device layouts."""
         from .tensor import SuperDexHostBridgeTransferPlan
 
@@ -1744,7 +1744,7 @@ class SuperDexBackend(SimBackend):
         if target.type not in {"cpu", "cuda"}:
             raise ValueError(f"SuperDex tensor device must be CPU or CUDA, got {target}")
         result: dict[str, torch.Tensor] = {}
-        for name, value in self._host_get_state(fields).items():
+        for name, value in self.host_get_state(fields).items():
             source = np.ascontiguousarray(value, dtype=np.float32)
             result[name] = torch.from_numpy(source).to(
                 target, non_blocking=bool(target.type == "cuda")
@@ -1763,7 +1763,7 @@ class SuperDexBackend(SimBackend):
         target = torch.device(device) if device is not None else torch.device("cpu")
         if target.type not in {"cpu", "cuda"}:
             raise ValueError(f"SuperDex tensor device must be CPU or CUDA, got {target}")
-        source = np.ascontiguousarray(self._host_read_sensor(name), dtype=np.float32)
+        source = np.ascontiguousarray(self.host_read_sensor(name), dtype=np.float32)
         result = torch.from_numpy(source).to(target, non_blocking=bool(target.type == "cuda"))
         if target.type == "cuda":
             torch.cuda.current_stream(target).synchronize()
@@ -1787,7 +1787,7 @@ class SuperDexBackend(SimBackend):
         if plan is None or plan.device != target:
             if plan is not None:
                 plan.close()
-            plan = self.compile_host_bridge_io(
+            plan = self.bind_host_bridge_io(
                 TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
             )
             self._direct_host_bridge_plan = plan
@@ -1850,28 +1850,28 @@ class SuperDexBackend(SimBackend):
         )
         return reset_result
 
-    def _host_get_base_pos(self) -> np.ndarray:
+    def host_get_base_pos(self) -> np.ndarray:
         return self._pos[:, self._base_id].copy()
 
-    def _host_get_base_quat(self) -> np.ndarray:
+    def host_get_base_quat(self) -> np.ndarray:
         return self._quat[:, self._base_id].copy()
 
-    def _host_get_base_lin_vel(self) -> np.ndarray:
+    def host_get_base_lin_vel(self) -> np.ndarray:
         return self._lin[:, self._base_id].copy()
 
-    def _host_get_base_ang_vel(self) -> np.ndarray:
+    def host_get_base_ang_vel(self) -> np.ndarray:
         return self._ang[:, self._base_id].copy()
 
-    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._pos[:, body_ids].copy()
 
-    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._quat[:, body_ids].copy()
 
-    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._lin[:, body_ids].copy()
 
-    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._ang[:, body_ids].copy()
 
     def apply_body_force(

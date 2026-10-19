@@ -15,6 +15,7 @@ import numpy as np
 
 from unisim.dr._host import interval_payload_to_host
 from unisim.dr.interval import INTERVAL_TERM_BODY_FORCE, INTERVAL_TERM_BODY_TORQUE, IntervalTermOp
+from unisim.utils.quaternion import torch_quat_mul, torch_quat_rotate
 
 
 def initialize_staged_body_wrench(backend: Any) -> np.ndarray | None:
@@ -244,33 +245,11 @@ def cuda_derived_sensor_specs(sensor_map: Any) -> dict[str, tuple[Any, int]]:
     }
 
 
-def cuda_quat_rotate(torch: Any, quat_wxyz: Any, vectors: Any) -> Any:
-    vector = quat_wxyz[..., 1:4]
-    cross = torch.cross(vector, vectors, dim=-1)
-    return vectors + quat_wxyz[..., 0:1] * (2.0 * cross) + 2.0 * torch.cross(vector, cross, dim=-1)
-
-
-def cuda_quat_mul(torch: Any, left_wxyz: Any, right_wxyz: Any) -> Any:
-    left_vector = left_wxyz[..., 1:4]
-    right_vector = right_wxyz[..., 1:4]
-    vector = (
-        left_wxyz[..., 0:1] * right_vector
-        + right_wxyz[..., 0:1] * left_vector
-        + torch.cross(left_vector, right_vector, dim=-1)
-    )
-    scalar = left_wxyz[..., 0:1] * right_wxyz[..., 0:1] - torch.sum(
-        left_vector * right_vector, dim=-1, keepdim=True
-    )
-    return torch.cat((scalar, vector), dim=-1)
-
-
 def cuda_derived_sensor_view(
     name: str,
     host: Any,
     specs: dict[str, tuple[Any, int]],
     torch: Any,
-    quat_rotate: Any,
-    quat_mul: Any,
 ) -> Any:
     """Project one qualified frame sensor from a backend-owned body view."""
     candidates = [
@@ -288,16 +267,16 @@ def cuda_derived_sensor_view(
         local_pos = torch.as_tensor(
             spec.local_pos, dtype=torch.float32, device=body_pos.device
         ).expand(body_pos.shape[0], 3)
-        return body_pos + quat_rotate(torch, body_quat, local_pos)
+        return body_pos + torch_quat_rotate(torch, body_quat, local_pos)
     local_quat = torch.as_tensor(
         spec.local_quat, dtype=torch.float32, device=body_quat.device
     ).expand(body_quat.shape[0], 4)
-    world_quat = quat_mul(torch, body_quat, local_quat)
+    world_quat = torch_quat_mul(torch, body_quat, local_quat)
     if spec.kind == "framequat":
         return world_quat
     world_z = torch.zeros_like(body_pos)
     world_z[:, 2] = 1.0
-    return quat_rotate(torch, world_z, world_z)
+    return torch_quat_rotate(torch, world_z, world_z)
 
 
 __all__ = [
@@ -309,8 +288,6 @@ __all__ = [
     "consume_step_payload_body_wrench",
     "cuda_derived_sensor_specs",
     "cuda_derived_sensor_view",
-    "cuda_quat_mul",
-    "cuda_quat_rotate",
     "initialize_staged_body_wrench",
     "interval_term_handlers",
     "mapped_default_actuator_rows",

@@ -22,12 +22,12 @@ from typing import Any, cast
 import numpy as np
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
     CameraCfg,
     DebugOverlayGetter,
     HostBridgeTransferPlan,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     SimBackend,
     TensorExecution,
     TensorIOSpec,
@@ -645,7 +645,7 @@ class DrakeBackend(SimBackend):
         return np.asarray(indices, dtype=np.int32)
 
     # Stepping and reset.
-    def _host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict | None:
+    def host_step(self, ctrl: np.ndarray, nsteps: int = 1) -> dict | None:
         self._require_entity_healthy()
         # UniLab passes one actuator command per env. An optional pre-step hook
         # can convert policy actions into backend-native position targets.
@@ -696,7 +696,7 @@ class DrakeBackend(SimBackend):
         timing.setdefault("step_ms", (time.perf_counter() - start) * 1000.0)
         return {"timing": timing}
 
-    def _host_set_state(
+    def host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
@@ -773,10 +773,10 @@ class DrakeBackend(SimBackend):
             }
         return self._interval_term_handler_cache
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
+    def get_play_capabilities(self) -> PlayCapabilities:
         # Drake advances playback physics, while the shared playback helper
         # handles recording. There is no native interactive Drake viewer path.
-        return BackendPlayCapabilities(
+        return PlayCapabilities(
             supports_native_interactive_renderer=False,
             supports_physics_state_playback=True,
             supports_native_video_capture=False,
@@ -789,10 +789,10 @@ class DrakeBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         mode = normalize_play_render_mode(play_render_mode)
         if mode in {"none", "auto"}:
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=mode,
                 headless=True,
                 record_video=False,
@@ -807,7 +807,7 @@ class DrakeBackend(SimBackend):
             raise ValueError("DrakeUni record playback requires a finite play_steps value.")
         if output_video is None:
             raise ValueError("DrakeUni record playback requires an output video path.")
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode="record",
             headless=True,
             record_video=True,
@@ -850,7 +850,7 @@ class DrakeBackend(SimBackend):
             on_frame=on_frame,
         )
 
-    def init_renderer(
+    def bind_renderer(
         self,
         spacing: float = 1.0,
         *,
@@ -927,41 +927,41 @@ class DrakeBackend(SimBackend):
     #
     # DrakeUni returns one flat sensor array; this class owns the MuJoCo-style
     # named views over that array.
-    def _host_get_base_pos(self) -> np.ndarray:
+    def host_get_base_pos(self) -> np.ndarray:
         self._reject_entity_mode("single-root base state")
         self._require_floating_root()
         return self._physics_state[:, 1:4].copy()
 
-    def _host_get_base_quat(self) -> np.ndarray:
+    def host_get_base_quat(self) -> np.ndarray:
         self._reject_entity_mode("single-root base state")
         self._require_floating_root()
         return self._physics_state[:, 4:8].copy()
 
-    def _host_get_base_lin_vel(self) -> np.ndarray:
+    def host_get_base_lin_vel(self) -> np.ndarray:
         self._reject_entity_mode("single-root base state")
         self._require_floating_root()
         qvel_start = 1 + self._model.nq
         return self._physics_state[:, qvel_start : qvel_start + 3].copy()
 
-    def _host_get_base_ang_vel(self) -> np.ndarray:
+    def host_get_base_ang_vel(self) -> np.ndarray:
         self._reject_entity_mode("single-root base state")
         self._require_floating_root()
         qvel_start = 1 + self._model.nq
         return self._physics_state[:, qvel_start + 3 : qvel_start + 6].copy()
 
-    def _host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_pos_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._body_state(body_ids)["pos"]
 
-    def _host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_quat_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._body_state(body_ids)["quat"]
 
-    def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._body_state(body_ids)["linvel"]
 
-    def _host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
+    def host_get_body_ang_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         return self._body_state(body_ids)["angvel"]
 
-    def _host_read_sensor(self, name: str) -> np.ndarray:
+    def host_read_sensor(self, name: str) -> np.ndarray:
         self._require_entity_healthy()
         if name in self._sensor_views:
             return self._sensor_views[name].copy()
@@ -976,7 +976,7 @@ class DrakeBackend(SimBackend):
             for index, name in enumerate(self._sensor_names)
         }
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         """Declare Drake's CPU-authoritative tensor execution profile."""
 
         return TensorExecution.HOST_BRIDGE
@@ -984,11 +984,11 @@ class DrakeBackend(SimBackend):
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         """Return the deliberately narrow initial packed host-bridge profile."""
 
-        from .tensor import drake_tensor_capabilities
+        from .tensor import tensor_capabilities
 
-        return drake_tensor_capabilities(self)
+        return tensor_capabilities(self)
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
+    def bind_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
         """Compile persistent Drake staging and packed device layouts."""
 
         from .tensor import DrakeHostBridgeTransferPlan
@@ -1057,7 +1057,7 @@ class DrakeBackend(SimBackend):
         if plan is None or plan.device != target:
             if plan is not None:
                 plan.close()
-            plan = self.compile_host_bridge_io(
+            plan = self.bind_host_bridge_io(
                 TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
             )
             self._direct_host_bridge_plan = plan
@@ -1577,28 +1577,6 @@ class DrakeBackend(SimBackend):
             raise NotImplementedError(
                 "DrakeBackend root-state helpers require a floating-root compact state"
             )
-
-
-def _quat_conjugate(quat: np.ndarray) -> np.ndarray:
-    values = np.asarray(quat, dtype=np.float64).copy()
-    values[..., 1:] *= -1.0
-    return values
-
-
-def _quat_multiply(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
-    a = np.asarray(lhs, dtype=np.float64)
-    b = np.asarray(rhs, dtype=np.float64)
-    aw, ax, ay, az = np.moveaxis(a, -1, 0)
-    bw, bx, by, bz = np.moveaxis(b, -1, 0)
-    return np.stack(
-        (
-            aw * bw - ax * bx - ay * by - az * bz,
-            aw * bx + ax * bw + ay * bz - az * by,
-            aw * by - ax * bz + ay * bw + az * bx,
-            aw * bz + ax * by - ay * bx + az * bw,
-        ),
-        axis=-1,
-    )
 
 
 def _quat_to_rotation_matrix(quat: np.ndarray) -> np.ndarray:

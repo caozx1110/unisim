@@ -16,9 +16,9 @@ The existing tensor contract already provides the correct commit primitives: sel
 
 UniSim owns a backend-neutral, staged packed reset transaction:
 
-- `SimBackend.begin_packed_reset(device=None)` returns a backend-owned `TorchPackedResetComposer`, or fails closed.
+- `SimBackend.bind_packed_reset(device=None)` returns a backend-owned `PackedResetTransaction`, or fails closed.
 - `TensorLifecycleCapabilities` adds `packed_reset`, `packed_reset_fields`, and `packed_reset_mocap`. Unsupported lifecycles must not declare them.
-- The composer owns full-width, device-resident committed baselines seeded from the backend's authoritative (fixed-variant aware) `get_reset_term_default()`.
+- The transaction owns full-width, device-resident committed baselines seeded from the backend's authoritative (fixed-variant aware) `get_reset_term_default()`.
 - The fixed-width variant keeps the same staging width end to end: `begin_state_mask(mask)`, `write_state_mask(mask, ...)`, and `commit_state_mask(mask, ...)` consume a full-width bool mask, preserve false rows, and delegate selected-row semantics to the public backend mask boundary. This avoids owner-side `nonzero()` compaction without changing the staged-row contract above.
 - `write_model_field(field, rows, values, columns=None)` merges final absolute selected-row values, including disjoint selected-column merges for terms such as PD `kp`/`kd`.
 - `commit_state(rows, qpos, qvel)` performs exactly one public reset boundary by calling `set_state_tensor()` with the staged selected-row tables. Baselines are promoted only for the committed rows and only after that boundary returns successfully; staged writes for other rows remain until `discard()`.
@@ -43,7 +43,7 @@ UniSim owns a backend-neutral, staged packed reset transaction:
 
 ### Delta terms
 
-- `base_mass_delta` and `base_com_offset` are first-class fields of the single torch payload family since UniLab issue #2410; the former host-only restriction and `PACKED_RESET_HOST_ONLY_FIELDS` are removed. The composer stages the sampled deltas and merges them with the authoritative baseline — seeded from the cold NumPy metadata leaf `get_reset_term_default()` — into final absolute `body_mass` / `body_ipos` tables in torch at commit: `final = baseline + delta`. Adapter-internal delta merges may remain as adapter-private implementations, but the public payload no longer restricts the delta fields.
+- `base_mass_delta` and `base_com_offset` are first-class fields of the single torch payload family since UniLab issue #2410; the former host-only restriction and `PACKED_RESET_HOST_ONLY_FIELDS` are removed. The transaction stages the sampled deltas and merges them with the authoritative baseline — seeded from the cold NumPy metadata leaf `get_reset_term_default()` — into final absolute `body_mass` / `body_ipos` tables in torch at commit: `final = baseline + delta`. Adapter-internal delta merges may remain as adapter-private implementations, but the public payload no longer restricts the delta fields.
 
 ## Consequences
 

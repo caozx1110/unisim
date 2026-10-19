@@ -52,7 +52,7 @@ def run_newton_native_playback(
         if record_video and output_video is None:
             raise ValueError("newton native video recording requires an output_video path.")
 
-        backend.init_renderer(
+        backend.bind_renderer(
             spacing=float(render_spacing) if render_spacing is not None else 1.0,
             headless=headless,
             capture=True,
@@ -78,7 +78,7 @@ def run_newton_native_playback(
         write_playback_video(str(output_video), frames, fps=int(1.0 / ctrl_dt))
         return str(output_video)
 
-    backend.init_renderer(
+    backend.bind_renderer(
         spacing=float(render_spacing) if render_spacing is not None else 1.0,
         headless=False,
         camera_kwargs=camera,

@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from unisim.backend.materialization_common import TemporarySceneCleanup
+from unisim.backend.scene_cleanup import TemporarySceneCleanup
 from unisim.scene import SceneCfg
 from unisim.scene_layout import CompiledSceneLayout
 
@@ -87,7 +87,7 @@ class NewtonModelAudit:
     qvel_per_world: int
 
 
-def build_newton_source_builder(
+def build_source_builder(
     newton: Any, model_file: str, gravity: np.ndarray | None = None
 ) -> Any:
     """Import one independently compiled portable full-scene source."""
@@ -159,7 +159,7 @@ def validate_newton_portable_metadata(
             )
 
 
-def build_newton_assigned_world_builder(
+def build_assigned_world_builder(
     newton: Any,
     source_builders: tuple[Any, ...],
     metadata: tuple[NewtonModelMetadata, ...],
@@ -637,8 +637,8 @@ __all__ = [
     "NewtonSensorPlan",
     "audit_newton_variant_model",
     "audit_newton_model",
-    "build_newton_assigned_world_builder",
-    "build_newton_source_builder",
+    "build_assigned_world_builder",
+    "build_source_builder",
     "compute_contact_found_flags",
     "scan_newton_model_metadata",
     "validate_newton_portable_metadata",

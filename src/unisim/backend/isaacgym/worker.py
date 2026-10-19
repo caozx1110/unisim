@@ -776,7 +776,7 @@ class _WorkerContext:
         return {
             "device_uuid": transport.identity.uuid,
             "device_name": transport.identity.name,
-            "arena": arena.wire(),
+            "arena": arena.to_wire(),
         }
 
     def step_cuda_ipc(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -813,7 +813,7 @@ class _WorkerContext:
                 "created without a graphics context"
             )
 
-    def init_renderer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def bind_renderer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Create the interactive viewer and/or the headless capture camera."""
         gym = self.gym
         gymapi = self.gymapi
@@ -983,7 +983,7 @@ def _dispatch(ctx: _WorkerContext, protocol: Any, cmd: str, payload: Any) -> Tup
     if cmd == protocol.CMD_GET_PHYSICS_STATE:
         return protocol.CMD_META, ctx.physics_state()
     if cmd == protocol.CMD_INIT_RENDERER:
-        return protocol.CMD_META, ctx.init_renderer(payload)
+        return protocol.CMD_META, ctx.bind_renderer(payload)
     if cmd == protocol.CMD_RENDER_FRAME:
         return protocol.CMD_META, ctx.render_frame()
     if cmd == protocol.CMD_CAPTURE_FRAME:

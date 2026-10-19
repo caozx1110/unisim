@@ -94,7 +94,7 @@ def run_genesis_playback(
         if record_video and output_video is None:
             raise ValueError("genesis video recording requires an output_video path.")
 
-        backend.init_renderer(
+        backend.bind_renderer(
             headless=headless,
             capture=True,
             width=1280,
@@ -119,7 +119,7 @@ def run_genesis_playback(
         write_playback_video(str(output_video), frames, fps=int(1.0 / ctrl_dt))
         return str(output_video)
 
-    backend.init_renderer(headless=False, camera_kwargs=camera_kwargs)
+    backend.bind_renderer(headless=False, camera_kwargs=camera_kwargs)
     obs = initialize()
     last_render_time = time.perf_counter()
     render_dt = 1.0 / 60.0

@@ -16,7 +16,7 @@ Keeping both surfaces makes unsupported adapters look like host fallbacks and fo
 
 Version 1.7.16 removed the legacy public training lifecycle without aliases. Version 1.7.15 is the final release that contains it. Private implementation names describe their owner instead of using `legacy`:
 
-- `_host_*` names adapter-private CPU-authoritative state, control, reset, sensor, and body operations.
+- `host_*` names the documented adapter-owned CPU-authoritative state, control, reset, sensor, and body protocol.
 - `_wire_*` names a versioned external-worker protocol projection.
 - `_model_file_*` names the still-supported `SceneCfg(model_file=...)` profile and its metadata.
 - `_playback_*` names explicit playback snapshot layout and serialization boundaries.
@@ -26,11 +26,11 @@ Test-only private hooks and compatibility aliases are deleted rather than rename
 | Removed 1.x surface | 1.7.16 replacement |
 | --- | --- |
 | `step(np.ndarray)` | `step_tensor(torch.Tensor, nsteps=...)` |
-| `set_state(...)`, NumPy reset composition | `set_state_tensor(...)`, or `begin_packed_reset(...)` for staging, selected-column merges, baselines, model fields, and mocap |
+| `set_state(...)`, NumPy reset composition | `set_state_tensor(...)`, or `bind_packed_reset(...)` for staging, selected-column merges, baselines, model fields, and mocap |
 | `get_state()`, `get_base_*`, `get_dof_pos/vel` | `get_state_views(...)` |
 | `get_sensor_data*` | `get_sensor_view(...)`, `bind_sensor_data(...)`, or a negotiated sensor packet |
 | Body getters and body-state copy helpers | `get_tracked_body_views(...)` or public tensor sensor projections |
-| Scattered CPU host exchange | `compile_host_bridge_io(...)` and its plan boundaries |
+| Scattered CPU host exchange | `bind_host_bridge_io(...)` and its plan boundaries |
 
 NumPy remains valid behind explicitly scoped public leaves: cold model/default/layout metadata and index tables, pre-step callback formats, mapped entity transactions, playback/rendering APIs, physics-state snapshots, and serialization. Public DR payloads are torch-only; adapter-private host conversion (for example the `unisim.dr._host` helpers) is an adapter-internal leaf rather than a public one, as recorded in [the torch-first DR payload ADR](adr-dr-torch-first-payloads.md). These leaves do not restore a NumPy training lifecycle and must not be used as hidden fallbacks from tensor-capable Manager code.
 

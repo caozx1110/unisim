@@ -335,7 +335,7 @@ def test_genesis_partial_cuda_capability_profile() -> None:
     capabilities = backend.get_tensor_capabilities()
     _assert_tensor_platform_capabilities("genesis", capabilities)
 
-    assert backend.tensor_execution() is TensorExecution.DEVICE_RESIDENT
+    assert backend.get_tensor_execution() is TensorExecution.DEVICE_RESIDENT
     assert capabilities.state_views
     assert set(capabilities.state_fields) == {"qpos", "qvel"}
     assert capabilities.stepping
@@ -353,26 +353,26 @@ def test_genesis_partial_cuda_capability_profile() -> None:
     assert capabilities.torch_devices == ("cuda",)
 
     cpu_backend, _, _ = _backend(torch.device("cpu"))
-    assert cpu_backend.tensor_execution() is TensorExecution.UNSUPPORTED
+    assert cpu_backend.get_tensor_execution() is TensorExecution.UNSUPPORTED
     assert not cpu_backend.get_tensor_capabilities().state_views
 
     assert backend._genesis_backend_is_exact_cuda()
     backend._gs.backend = _FakeGenesisBackend.AMDGPU
-    assert backend.tensor_execution() is TensorExecution.UNSUPPORTED
+    assert backend.get_tensor_execution() is TensorExecution.UNSUPPORTED
     backend._gs.backend = _FakeGenesisBackend.CPU
-    assert backend.tensor_execution() is TensorExecution.UNSUPPORTED
+    assert backend.get_tensor_execution() is TensorExecution.UNSUPPORTED
     backend._gs.backend = None
-    assert backend.tensor_execution() is TensorExecution.UNSUPPORTED
+    assert backend.get_tensor_execution() is TensorExecution.UNSUPPORTED
     backend._gs.backend = _FakeGenesisBackend.CUDA
 
     backend._gs = SimpleNamespace(use_zerocopy=False)
-    assert backend.tensor_execution() is TensorExecution.UNSUPPORTED
+    assert backend.get_tensor_execution() is TensorExecution.UNSUPPORTED
 
     exact_cuda, _, _ = _cuda_backend()
     exact_cuda._portable_mode = True
-    assert exact_cuda.tensor_execution() is TensorExecution.UNSUPPORTED
+    assert exact_cuda.get_tensor_execution() is TensorExecution.UNSUPPORTED
     exact_cuda._portable_mode = False
-    assert exact_cuda.tensor_execution() is TensorExecution.DEVICE_RESIDENT
+    assert exact_cuda.get_tensor_execution() is TensorExecution.DEVICE_RESIDENT
 
 
 def test_genesis_state_views_are_stable_cuda_mirrors_without_host_copy() -> None:
@@ -524,7 +524,7 @@ def test_genesis_packed_mask_reset_preserves_false_rows_and_model_fields() -> No
         RESET_TERM_KP: np.ones((2, 1), dtype=np.float32),
         RESET_TERM_KD: np.full((2, 1), 2.0, dtype=np.float32),
     }[term]
-    transaction = backend.begin_packed_reset()
+    transaction = backend.bind_packed_reset()
     default_qpos = torch.full((4,), 3.0, dtype=torch.float32, device=backend._device)
     default_qvel = torch.zeros((3,), dtype=torch.float32, device=backend._device)
     transaction.set_state_default(default_qpos, default_qvel)
@@ -815,7 +815,7 @@ def test_real_genesis_cuda_public_state_and_partial_lifecycle(tmp_path: Path) ->
         encoding="utf-8",
     )
     backend = GenesisBackend(SceneCfg(model_file=str(model_file)), num_envs=2, sim_dt=0.005)
-    if backend.tensor_execution() is not TensorExecution.DEVICE_RESIDENT:
+    if backend.get_tensor_execution() is not TensorExecution.DEVICE_RESIDENT:
         pytest.skip("real Genesis session did not expose the CUDA zero-copy lane")
     assert bool(getattr(genesis, "use_zerocopy", False))
     backend.materialize()
@@ -853,19 +853,19 @@ def test_real_genesis_cuda_public_state_and_partial_lifecycle(tmp_path: Path) ->
     assert local_linvel.is_cuda and torso_gyro.is_cuda
     np.testing.assert_allclose(
         local_linvel.detach().cpu().numpy(),
-        backend._host_read_sensor("pelvis_local_linvel"),
+        backend.host_read_sensor("pelvis_local_linvel"),
         atol=2e-6,
     )
     np.testing.assert_allclose(
         torso_gyro.detach().cpu().numpy(),
-        backend._host_read_sensor("torso_gyro"),
+        backend.host_read_sensor("torso_gyro"),
         atol=2e-6,
     )
     torso_upvector = backend.get_sensor_view("torso_upvector")
     assert torso_upvector.is_cuda
     np.testing.assert_allclose(
         torso_upvector.detach().cpu().numpy(),
-        backend._host_read_sensor("torso_upvector"),
+        backend.host_read_sensor("torso_upvector"),
         atol=2e-6,
     )
 

@@ -74,7 +74,7 @@ def test_projection_round_trip_has_explicit_world_and_body_angular_velocity():
 
 
 @pytest.mark.parametrize("bad", ["count", "rows", "nan", "quat"])
-def test_invalid_host_reset_does_not_write_canonical_buffers(bad):
+def test_invalidhost_reset_does_not_write_canonical_buffers(bad):
     p, old = projection()
     old["reset_env_ids"][:2] = [2, 0]
     old["reset_qpos"][:2, 3] = 1

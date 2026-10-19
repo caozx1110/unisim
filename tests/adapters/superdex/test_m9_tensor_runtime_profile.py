@@ -53,7 +53,7 @@ class _FakePlan:
 def test_superdex_phase_model_exposes_all_packed_boundaries() -> None:
     profiler = _load_profiler()
     plan = _FakePlan()
-    backend = type("FakeSuperDexBackend", (), {"compile_host_bridge_io": lambda _, __: plan})()
+    backend = type("FakeSuperDexBackend", (), {"bind_host_bridge_io": lambda _, __: plan})()
     operations = profiler._superdex_operations(
         backend,
         plan,
@@ -65,7 +65,7 @@ def test_superdex_phase_model_exposes_all_packed_boundaries() -> None:
     )
 
     assert tuple(operations) == profiler._SUPERDEX_PHASES
-    operations["compile_host_bridge_io"]()
+    operations["bind_host_bridge_io"]()
     assert operations["step"]() is None
     assert plan._control_ready is True
 

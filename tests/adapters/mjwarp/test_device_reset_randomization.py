@@ -360,7 +360,7 @@ def test_device_payload_tracked_refresh_matches_host_reference(tmp_path: Path) -
         TensorResetRandomizationPayload(body_mass=payload.body_mass),
     )
     np.testing.assert_allclose(
-        backend._host_read_sensor("com"), host._host_read_sensor("com"), atol=1e-6
+        backend.host_read_sensor("com"), host.host_read_sensor("com"), atol=1e-6
     )
     backend.close()
     host.close()
