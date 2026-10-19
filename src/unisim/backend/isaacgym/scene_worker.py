@@ -27,39 +27,6 @@ def unit_quaternion(value: np.ndarray, label: str) -> None:
         raise ValueError(label + " requires unit quaternions")
 
 
-class _InitProgress:
-    """Time-throttled PROGRESS frames on the worker protocol stream.
-
-    Frames interleave with the pending INIT reply; the host consumes them and
-    re-arms its receive deadline.  Emission never masks a real init failure.
-    """
-
-    def __init__(self, context: Any, min_interval: float = 0.25, enabled: bool = True) -> None:
-        self._context = context
-        self._min_interval = min_interval
-        self._enabled = enabled
-        self._last = 0.0
-
-    def report(self, label: str, done: int, total: int, force: bool = False) -> None:
-        if not self._enabled:
-            return
-        stream = getattr(self._context, "progress_out", None)
-        if stream is None:
-            return
-        now = time.monotonic()
-        if not force and now - self._last < self._min_interval:
-            return
-        self._last = now
-        try:
-            self._context.protocol.send_message(
-                stream,
-                self._context.protocol.CMD_PROGRESS,
-                {"label": label, "done": int(done), "total": int(total)},
-            )
-        except Exception:
-            pass
-
-
 class SceneWorker:
     """Own one native scene, public/native maps and pending indexed writes."""
 
@@ -548,7 +515,7 @@ class SceneWorker:
         plane_params.normal = gymapi.Vec3(0.0, 0.0, 1.0)
         ctx.gym.add_ground(ctx.sim, plane_params)
         self._shaped_bodies: dict[str, set[str]] = {}
-        progress = _InitProgress(ctx, enabled=bool(self.payload.get("init_progress")))
+        progress = self.protocol.InitProgress(ctx, enabled=bool(self.payload.get("init_progress")))
         total_assets = sum(len(self._materialized_source_ids(spec)) for spec in self.specs)
         loaded_assets = 0
         for entity, spec in zip(self.layout.entities, self.specs):

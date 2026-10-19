@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from unisim import IsaacSimBackend
-from unisim.backend.isaacsim.scene_worker import _InitProgress
 from unisim.backend.subprocess_ipc import protocol
 from unisim.dr.types import ModelSourceDescriptor
 from unisim.entities import SceneEntitySpec
@@ -34,7 +33,7 @@ def _frames(stream: io.BytesIO) -> list[dict]:
 
 def test_init_progress_frames_throttle_and_force():
     stream = io.BytesIO()
-    progress = _InitProgress(_Context(stream), min_interval=60.0)
+    progress = protocol.InitProgress(_Context(stream), min_interval=60.0)
     progress.report("build", 1, 4, force=True)
     progress.report("build", 2, 4)
     progress.report("build", 3, 4)
@@ -55,7 +54,7 @@ def test_init_progress_frames_throttle_and_force():
 
 def test_init_progress_honors_interval_after_it_expires():
     stream = io.BytesIO()
-    progress = _InitProgress(_Context(stream), min_interval=0.0)
+    progress = protocol.InitProgress(_Context(stream), min_interval=0.0)
     progress.report("build", 1, 2)
     progress.report("build", 2, 2)
     assert len(_frames(stream)) == 2
@@ -63,10 +62,10 @@ def test_init_progress_honors_interval_after_it_expires():
 
 def test_init_progress_disabled_or_streamless_emits_nothing():
     stream = io.BytesIO()
-    disabled = _InitProgress(_Context(stream), enabled=False)
+    disabled = protocol.InitProgress(_Context(stream), enabled=False)
     disabled.report("build", 1, 1, force=True)
     assert stream.getvalue() == b""
-    streamless = _InitProgress(_Context(None))
+    streamless = protocol.InitProgress(_Context(None))
     streamless.report("build", 1, 1, force=True)
 
 
@@ -75,7 +74,7 @@ def test_init_progress_never_masks_a_write_failure():
         def write(self, data: bytes) -> int:
             raise OSError("closed")
 
-    progress = _InitProgress(_Context(BrokenStream()))  # type: ignore[arg-type]
+    progress = protocol.InitProgress(_Context(BrokenStream()))  # type: ignore[arg-type]
     progress.report("build", 1, 1, force=True)
 
 

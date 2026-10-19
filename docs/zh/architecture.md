@@ -16,7 +16,7 @@ MuJoCo 与 MJWarp 的 tensor state view 和 tensor reset 使用模型完整的 M
 
 UniLab 拥有 task/env/manager 生命周期、Hydra owner YAML、机器人资产、训练、checkpoint 和 sim2sim 策略 I/O。UniLab 将任务拥有的场景与随机化输入转换为 UniSim 契约。
 
-引擎适配器使用包中立的 `SceneCfg` 和可选的向量化环境数量构造。模型元数据只在构造期间解析；状态和控制数组通过公共契约传递，引擎对象不会逃出适配器。IsaacGym 与 IsaacSim 共享子进程 IPC 组帧，并把它们的 Python 3.8 与 Kit worker 保留在核心 wheel 之外。
+引擎适配器使用包中立的 `SceneCfg` 和可选的向量化环境数量构造。模型元数据只在构造期间解析；状态和控制数组通过公共契约传递，引擎对象不会逃出适配器。IsaacGym 与 IsaacSim 共享子进程 IPC 组帧、worker 引导辅助逻辑、映射 body-wrench 暂存、映射变体默认表与 CUDA frame-sensor 投影，并把它们的 Python 3.8 与 Kit worker 保留在核心 wheel 之外。
 
 `unisim.ADAPTER_SPECS` 是所有已声明 UniLab 后端身份的唯一迁移清单。`available` 表示存在公共适配器和诊断；它不表示每台主机都安装了专有 SDK 或 GPU 运行时。运行时支持由适配器的 optional-extra 与 worker 冒烟测试确立。
 
