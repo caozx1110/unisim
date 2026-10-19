@@ -171,7 +171,7 @@ def test_uniform_mesh_variant_optional_slot_fails_closed(tmp_path: Path) -> None
 def test_uniform_mesh_variant_renderer_shows_distinct_native_identities(tmp_path: Path) -> None:
     backend = MotrixBackend(_scene(tmp_path, (0, 1)), 2, 0.002, base_name="object/base")
     try:
-        backend.init_renderer(
+        backend.bind_renderer(
             spacing=1.0,
             headless=True,
             capture=True,

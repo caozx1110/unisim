@@ -147,7 +147,7 @@ def test_canonical_g1_full_public_packed_publication_and_control_parity() -> Non
                 atol=1.0e-5,
             )
 
-        plan = candidate.compile_host_bridge_io(
+        plan = candidate.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=_ALL_PUBLIC_SENSORS,

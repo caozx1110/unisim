@@ -80,7 +80,7 @@ def test_newton_declares_partial_device_resident_tensor_lifecycle(
     torch = pytest.importorskip("torch")
     backend = _cuda_backend(tmp_path)
     try:
-        assert backend.tensor_execution().value == "device_resident"
+        assert backend.get_tensor_execution().value == "device_resident"
         capabilities = backend.get_tensor_capabilities()
         _assert_tensor_platform_capabilities("newton", capabilities)
         assert capabilities.process_topology.value == "in_process"
@@ -138,7 +138,7 @@ def test_newton_portable_multi_entity_tensor_lifecycle_fails_closed() -> None:
     torch = pytest.importorskip("torch")
     backend = _portable_fake(2)
 
-    assert backend.tensor_execution().value == "unsupported"
+    assert backend.get_tensor_execution().value == "unsupported"
     capabilities = backend.get_tensor_capabilities()
     assert capabilities.execution.value == "unsupported"
     assert not capabilities.state_views
@@ -431,7 +431,7 @@ def test_newton_packed_mask_reset_preserves_false_rows_and_gains(
     try:
         capabilities = backend.get_tensor_capabilities()
         assert capabilities.packed_reset
-        transaction = backend.begin_packed_reset()
+        transaction = backend.bind_packed_reset()
         default_qpos = torch.asarray(backend.get_default_qpos(), device=backend._device)
         default_qvel = torch.asarray(backend.get_init_qvel(), device=backend._device)
         transaction.set_state_default(default_qpos, default_qvel)

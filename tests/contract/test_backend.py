@@ -22,13 +22,13 @@ def test_fake_backend_conforms() -> None:
         hasattr(backend, name)
         for name in ("step", "reset", "get_state", "set_state", "get_dof_pos", "get_sensor_data")
     )
-    assert BackendCapability.STATE_WRITE in backend.capabilities
+    assert BackendCapability.STATE_WRITE in backend.capability_flags
 
 
 def test_tensor_lifecycle_fails_closed_by_default() -> None:
     torch = pytest.importorskip("torch")
     backend = FakeBackend(num_envs=2, num_actuators=1)
-    assert backend.tensor_execution() is TensorExecution.UNSUPPORTED
+    assert backend.get_tensor_execution() is TensorExecution.UNSUPPORTED
     assert backend.get_tensor_capabilities() == TensorLifecycleCapabilities(
         execution=TensorExecution.UNSUPPORTED
     )
@@ -46,7 +46,7 @@ def test_tensor_lifecycle_fails_closed_by_default() -> None:
             torch.zeros(2, dtype=torch.bool), np.zeros((2, 1)), np.zeros((2, 1))
         )
     with pytest.raises(NotImplementedError, match="does not support packed host-bridge"):
-        backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos",)))
+        backend.bind_host_bridge_io(TensorIOSpec(state_fields=("qpos",)))
 
 
 def test_benchmark_api_is_only_data() -> None:
@@ -152,3 +152,9 @@ def test_pre_step_wrench_output_validation() -> None:
     )
     with pytest.raises(ValueError, match="contains NaN or Inf"):
         backend._apply_pre_step_control(ctrl)
+
+
+def test_coarse_capability_flags_do_not_shadow_semantic_report() -> None:
+    backend = FakeBackend(num_envs=2, num_actuators=1)
+    assert "state_write" in {flag.value for flag in backend.capability_flags}
+    assert isinstance(backend.get_capabilities().declarations, tuple)

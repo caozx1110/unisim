@@ -410,7 +410,7 @@ def _collect_mujoco_assets(asset_dir: Path) -> dict[str, bytes]:
 
 
 @overload
-def materialize_mujoco_hfield_attached_scene(
+def materialize_hfield_attached_scene(
     *,
     model_file: str,
     terrain_cfg: TerrainGeneratorCfg,
@@ -423,7 +423,7 @@ def materialize_mujoco_hfield_attached_scene(
 
 
 @overload
-def materialize_mujoco_hfield_attached_scene(
+def materialize_hfield_attached_scene(
     *,
     model_file: str,
     terrain_cfg: TerrainGeneratorCfg,
@@ -435,7 +435,7 @@ def materialize_mujoco_hfield_attached_scene(
 ) -> tuple[Any, np.ndarray, Any]: ...
 
 
-def materialize_mujoco_hfield_attached_scene(
+def materialize_hfield_attached_scene(
     *,
     model_file: str,
     terrain_cfg: TerrainGeneratorCfg,
@@ -501,12 +501,12 @@ def materialize_mujoco_hfield_attached_scene(
     return model, generated.terrain_origins
 
 
-def inject_mujoco_tracking_sensors(
+def bind_tracking_sensors(
     model_file: str,
     baselink_name: str | None = None,
     tracked_body_names: Sequence[str] | None = None,
 ) -> tuple[str, list, list]:
-    """Inject tracking sensors for the MuJoCo backend.
+    """Bind MuJoCo tracking sensors into a temporary model source.
 
     By default, the generated sensors track every named body in the world frame
     (``_w``). ``tracked_body_names`` narrows that injection to an exact named-body

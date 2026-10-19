@@ -1407,7 +1407,7 @@ def test_body_property_readback_requires_mapped_scene_and_keeps_other_properties
 def test_mapped_geometry_dimensions_and_contact_parameters_stay_unsupported():
     backend = _readback_backend({})
     for method in (
-        backend.get_geom_sizes,
+        backend.get_default_geom_sizes,
         backend.get_geom_solref,
         backend.get_geom_solimp,
     ):
@@ -3081,7 +3081,7 @@ def test_init_telemetry_accumulates_ordered_spans_and_snapshots():
     telemetry.span("entity.object.total", started)
     telemetry.count_prims(SimpleNamespace(Traverse=lambda: iter([1, 2, 3])), "final")
     telemetry.vram_used_mb = 1234.5
-    report = telemetry.as_dict()
+    report = telemetry.to_wire()
 
     assert report["schema_version"] == 1
     names = [phase["name"] for phase in report["phases"]]

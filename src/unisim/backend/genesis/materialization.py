@@ -22,7 +22,7 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from unisim.backend.materialization_common import TemporarySceneCleanup
+from unisim.backend.scene_cleanup import TemporarySceneCleanup
 from unisim.scene import SceneCfg
 
 # Supported spellings for the explicit owner-YAML global options.  Genesis
@@ -777,7 +777,7 @@ def _map_global_option(name: str, value: str, table: dict[str, str], enum_ns: An
     return getattr(enum_ns, attr)
 
 
-def build_genesis_scene(
+def build_scene(
     deps: Any,
     *,
     sim_dt: float,

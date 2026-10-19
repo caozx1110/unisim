@@ -58,6 +58,7 @@ def _numpy(value: Any) -> np.ndarray:
 
 
 def _rotate(q: np.ndarray, v: np.ndarray, inverse: bool = False) -> np.ndarray:
+    """Rotate vectors with the canonical wxyz formula, optionally inversely."""
     q = np.asarray(q, dtype=np.float64).copy()
     if inverse:
         q[..., 1:] *= -1
@@ -501,7 +502,7 @@ class _InitTelemetry:
         self.overhead_ms += (now - started) * 1e3
         self._mark = now
 
-    def as_dict(self) -> dict[str, Any]:
+    def to_wire(self) -> dict[str, Any]:
         import resource
 
         return {
@@ -2536,7 +2537,7 @@ class SceneWorkerContext:
             telemetry.vram_used_mb = (total - free) / 1e6
         except Exception:  # telemetry must never fail INIT
             telemetry.vram_used_mb = None
-        self._init_telemetry = telemetry.as_dict()
+        self._init_telemetry = telemetry.to_wire()
         return self.get_meta()
 
     def adopt_initialized_context(
@@ -2957,7 +2958,7 @@ class SceneWorkerContext:
             self._cuda_maps = []
             self._cuda_sensor_specs = {}
             raise
-        return {"device_uuid": arena.device_uuid, "layout": arena.layout.as_dict()}
+        return {"device_uuid": arena.device_uuid, "layout": arena.layout.to_wire()}
 
     def _bind_cuda_sensor_specs(
         self, sensor_specs: list[dict[str, Any]]
@@ -4301,8 +4302,8 @@ class SceneWorkerContext:
         self.renderer.shutdown()
         self._temporary.cleanup()
 
-    def init_renderer(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return cast(dict[str, Any], self.renderer.init_renderer(payload))
+    def bind_renderer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return cast(dict[str, Any], self.renderer.bind_renderer(payload))
 
     def render_frame(self) -> dict[str, Any]:
         return cast(dict[str, Any], self.renderer.render_frame())

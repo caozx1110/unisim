@@ -66,7 +66,7 @@ def test_packed_reset_commits_model_fields_and_promotes_baseline(
     assert capabilities.mask_selected_reset
     assert not capabilities.packed_reset_mocap
 
-    transaction = backend.begin_packed_reset(device="cpu")
+    transaction = backend.bind_packed_reset(device="cpu")
     default_qpos, default_qvel = _install_default_state(backend, transaction)
     baseline = transaction.baseline(RESET_TERM_BODY_MASS).clone()
     body_id = int(backend.get_body_ids(("base",))[0])
@@ -103,7 +103,7 @@ def test_packed_reset_commits_model_fields_and_promotes_baseline(
 
 
 def test_packed_reset_mask_commit_preserves_false_rows(backend: MotrixBackend) -> None:
-    transaction = backend.begin_packed_reset(device="cpu")
+    transaction = backend.bind_packed_reset(device="cpu")
     default_qpos, default_qvel = _install_default_state(backend, transaction)
     baseline = transaction.baseline(RESET_TERM_BODY_MASS)
     body_id = int(backend.get_body_ids(("base",))[0])

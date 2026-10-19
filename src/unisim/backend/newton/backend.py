@@ -20,14 +20,14 @@ from typing import Any
 import numpy as np
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
     CameraCfg,
     DebugOverlayGetter,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     PublicStateWidths,
     RenderClosedError,
+    RootStateLayout,
     SelectedResetPublication,
     SimBackend,
     TensorDataPlane,
@@ -37,7 +37,7 @@ from unisim.backend.base import (
     TensorRuntimeDiagnostic,
     normalize_play_render_mode,
 )
-from unisim.backend.playback_common import (
+from unisim.backend.playback import (
     run_offline_snapshot_playback,
     validate_offline_visual_model,
 )
@@ -56,6 +56,12 @@ from unisim.entity_state import (
 )
 from unisim.scene import SceneCfg, require_scene_composition_support
 from unisim.scene_layout import CompiledSceneLayout
+from unisim.utils.quaternion import (
+    torch_cross,
+    torch_quat_mul,
+    torch_quat_rotate,
+    torch_quat_rotate_inverse,
+)
 from unisim.utils.rotation import (
     np_quat_apply_batched,
     np_quat_apply_inverse_batched,
@@ -72,8 +78,8 @@ from .materialization import (
     NewtonSensorPlan,
     audit_newton_model,
     audit_newton_variant_model,
-    build_newton_assigned_world_builder,
-    build_newton_source_builder,
+    build_assigned_world_builder,
+    build_source_builder,
     compute_contact_found_flags,
     scan_newton_model_metadata,
     validate_newton_portable_metadata,
@@ -128,55 +134,6 @@ def _cuda_graph_eligibility(warp: Any, device: Any) -> tuple[bool, str | None]:
     if reasons:
         return False, "; ".join(reasons)
     return True, None
-
-
-def _quat_apply_torch(quat_wxyz: Any, vector: Any) -> Any:
-    """Apply a batched wxyz quaternion to vectors with Torch primitives."""
-    quat_vector = quat_wxyz[..., 1:4]
-    if vector.ndim < quat_vector.ndim:
-        vector = vector.expand_as(quat_vector)
-    cross = torch_cross(quat_vector, vector)
-    return vector + 2.0 * quat_wxyz[..., 0:1] * cross + 2.0 * torch_cross(quat_vector, cross)
-
-
-def _quat_mul_torch(left_wxyz: Any, right_wxyz: Any) -> Any:
-    """Multiply batched wxyz quaternions with Torch device primitives."""
-
-    import torch
-
-    left_w, left_xyz = left_wxyz[..., 0:1], left_wxyz[..., 1:4]
-    right_w, right_xyz = right_wxyz[..., 0:1], right_wxyz[..., 1:4]
-    if right_xyz.ndim < left_xyz.ndim:
-        right_xyz = right_xyz.expand_as(left_xyz)
-    elif left_xyz.ndim < right_xyz.ndim:
-        left_xyz = left_xyz.expand_as(right_xyz)
-    cross = torch_cross(left_xyz, right_xyz)
-    return torch.cat(
-        (
-            left_w * right_w - (left_xyz * right_xyz).sum(dim=-1, keepdim=True),
-            left_w * right_xyz + right_w * left_xyz + cross,
-        ),
-        dim=-1,
-    )
-
-
-def _quat_apply_inverse_torch(quat_wxyz: Any, vector: Any) -> Any:
-    """Rotate vectors into a wxyz-quaternion frame on the Torch device."""
-
-    import torch
-
-    conjugate = torch.cat(
-        (quat_wxyz[..., 0:1], -quat_wxyz[..., 1:4]),
-        dim=-1,
-    )
-    return _quat_apply_torch(conjugate, vector)
-
-
-def torch_cross(left: Any, right: Any) -> Any:
-    """Cross product helper retained on the backend's Torch device."""
-    import torch
-
-    return torch.linalg.cross(left, right, dim=-1)
 
 
 logger = logging.getLogger(__name__)
@@ -472,14 +429,14 @@ class NewtonBackend(SimBackend):
                 assert self._variant_metadata is not None
                 assert self._variant_assignment is not None
                 source_builders = tuple(
-                    build_newton_source_builder(newton, item.source_model_file, item.gravity)
+                    build_source_builder(newton, item.source_model_file, item.gravity)
                     for item in self._variant_metadata
                 )
                 validate_newton_variant_sources(source_builders, self._variant_metadata)
                 has_authored_floor = all(
                     _prepare_newton_render_floor(item, newton) for item in source_builders
                 )
-                builder = build_newton_assigned_world_builder(
+                builder = build_assigned_world_builder(
                     newton,
                     source_builders,
                     self._variant_metadata,
@@ -841,9 +798,9 @@ class NewtonBackend(SimBackend):
                     dtype=torch.float32,
                     device=self._tensor_qpos.device,
                 )
-            root_offset = _quat_apply_torch(root_quat, self._tensor_root_ipos)
-            public_qvel[:, :3] = qvel_raw[:, :3] - torch_cross(root_omega, root_offset)
-            public_qvel[:, 3:6] = _quat_apply_torch(root_quat, root_omega)
+            root_offset = torch_quat_rotate(torch, root_quat, self._tensor_root_ipos)
+            public_qvel[:, :3] = qvel_raw[:, :3] - torch_cross(torch, root_omega, root_offset)
+            public_qvel[:, 3:6] = torch_quat_rotate(torch, root_quat, root_omega)
         self._tensor_qvel.copy_(public_qvel)
         self._tensor_state_stale = False
         self._tensor_body_state_stale = False
@@ -876,13 +833,13 @@ class NewtonBackend(SimBackend):
             (raw_quat[..., 3:4], raw_quat[..., 0:3]),
             dim=-1,
         )
-        offset_w = _quat_apply_torch(public_quat, self._tensor_body_ipos)
+        offset_w = torch_quat_rotate(torch, public_quat, self._tensor_body_ipos)
         omega_w = link_qd[..., 3:6]
 
         self._tensor_body_pos.copy_(link_q[..., :3])
         self._tensor_body_quat.copy_(public_quat)
         self._tensor_body_ang_vel.copy_(omega_w)
-        self._tensor_body_lin_vel.copy_(link_qd[..., :3] - torch_cross(omega_w, offset_w))
+        self._tensor_body_lin_vel.copy_(link_qd[..., :3] - torch_cross(torch, omega_w, offset_w))
         self._tensor_body_state_stale = False
 
     def _tensor_ensure_state(self) -> None:
@@ -1275,7 +1232,7 @@ class NewtonBackend(SimBackend):
     def get_init_qvel(self) -> np.ndarray:
         return np.zeros((self._metadata.nv,), dtype=np.float32)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if self._portable_mode:
             assert self._entity_layout is not None
             entity_name, separator, local_name = str(root_body_name).partition("/")
@@ -1290,14 +1247,12 @@ class NewtonBackend(SimBackend):
                 raise NotImplementedError(
                     f"portable Newton entity {entity.name!r} has no floating root state"
                 )
-            return BackendRootStateLayout(
-                tuple(entity.root_qpos_indices), tuple(entity.root_qvel_indices)
-            )
+            return RootStateLayout(tuple(entity.root_qpos_indices), tuple(entity.root_qvel_indices))
         if root_body_name != self._base_name or not self._metadata.root_qpos_dim:
             raise NotImplementedError(
                 f"backend 'newton' requires {self._base_name!r} as its free root body"
             )
-        return BackendRootStateLayout(tuple(range(7)), tuple(range(6)))
+        return RootStateLayout(tuple(range(7)), tuple(range(6)))
 
     def get_body_ids(self, names: Sequence[str]) -> np.ndarray:
         try:
@@ -1367,7 +1322,7 @@ class NewtonBackend(SimBackend):
     def get_actuator_gains(self) -> tuple[np.ndarray, np.ndarray]:
         return self._metadata.actuator_kp.copy(), self._metadata.actuator_kd.copy()
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         if not self._tensor_lifecycle_supported:
             return TensorExecution.UNSUPPORTED
         return TensorExecution.DEVICE_RESIDENT
@@ -1586,11 +1541,11 @@ class NewtonBackend(SimBackend):
         site_pos, site_quat = constants
 
         body_quat = self._tensor_body_quat[:, row]
-        world_from_site = _quat_mul_torch(body_quat, site_quat)
+        world_from_site = torch_quat_mul(torch, body_quat, site_quat)
         if plan.kind == "framezaxis":
             world_z = torch.zeros_like(body_quat[..., :3])
             world_z[..., 2] = 1.0
-            values = _quat_apply_torch(world_from_site, world_z)
+            values = torch_quat_rotate(torch, world_from_site, world_z)
             output = self._tensor_sensor_views.get(name)
             if output is None:
                 output = torch.empty_like(values)
@@ -1601,11 +1556,11 @@ class NewtonBackend(SimBackend):
         body_lin_vel = self._tensor_body_lin_vel[:, row]
         body_ang_vel = self._tensor_body_ang_vel[:, row]
         if plan.kind == "gyro":
-            values = _quat_apply_inverse_torch(world_from_site, body_ang_vel)
+            values = torch_quat_rotate_inverse(torch, world_from_site, body_ang_vel)
         else:
-            offset_w = _quat_apply_torch(body_quat, site_pos)
-            site_velocity = body_lin_vel + torch_cross(body_ang_vel, offset_w)
-            values = _quat_apply_inverse_torch(world_from_site, site_velocity)
+            offset_w = torch_quat_rotate(torch, body_quat, site_pos)
+            site_velocity = body_lin_vel + torch_cross(torch, body_ang_vel, offset_w)
+            values = torch_quat_rotate_inverse(torch, world_from_site, site_velocity)
 
         output = self._tensor_sensor_views.get(name)
         if output is None:
@@ -1639,15 +1594,15 @@ class NewtonBackend(SimBackend):
         body_quat = self._tensor_body_quat[:, row]
         body_lin_vel = self._tensor_body_lin_vel[:, row]
         body_ang_vel = self._tensor_body_ang_vel[:, row]
-        world_from_site = _quat_mul_torch(body_quat, site_quat)
+        world_from_site = torch_quat_mul(torch, body_quat, site_quat)
         if plan.kind == "framepos":
-            offset_w = _quat_apply_torch(body_quat, site_pos)
+            offset_w = torch_quat_rotate(torch, body_quat, site_pos)
             values = body_pos + offset_w
         elif plan.kind == "framequat":
             values = world_from_site
         elif plan.kind == "framelinvel":
-            offset_w = _quat_apply_torch(body_quat, site_pos)
-            values = body_lin_vel + torch_cross(body_ang_vel, offset_w)
+            offset_w = torch_quat_rotate(torch, body_quat, site_pos)
+            values = body_lin_vel + torch_cross(torch, body_ang_vel, offset_w)
         elif plan.kind == "frameangvel":
             values = body_ang_vel
         else:  # pragma: no cover - guarded by _tensor_named_sensor_plan
@@ -1952,12 +1907,12 @@ class NewtonBackend(SimBackend):
             selected_payload,
         )
 
-    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+    def bind_packed_reset(self, *, device: Any | None = None) -> Any:
         """Begin a device-resident packed reset transaction."""
 
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def _validate_torch_reset_rows(self, env_indices: Any) -> None:
         """Validate selected rows with one bounded device-to-host reduction."""
@@ -2009,15 +1964,15 @@ class NewtonBackend(SimBackend):
                 )
             raw_quat = raw_qpos[:, 3:7]
             raw_qpos[:, 3:7].copy_(raw_quat.index_select(1, self._tensor_raw_quat_indices))
-            omega_world = _quat_apply_torch(qpos[:, 3:7], qvel[:, 3:6])
+            omega_world = torch_quat_rotate(torch, qpos[:, 3:7], qvel[:, 3:6])
             if self._tensor_root_ipos is None:
                 self._tensor_root_ipos = torch.tensor(
                     self._metadata.body_ipos[self._base_body_id + 1],
                     dtype=torch.float32,
                     device=env_indices.device,
                 )
-            offset_w = _quat_apply_torch(qpos[:, 3:7], self._tensor_root_ipos)
-            raw_qvel[env_indices, :3] = qvel[:, :3] + torch_cross(omega_world, offset_w)
+            offset_w = torch_quat_rotate(torch, qpos[:, 3:7], self._tensor_root_ipos)
+            raw_qvel[env_indices, :3] = qvel[:, :3] + torch_cross(torch, omega_world, offset_w)
             raw_qvel[env_indices, 3:6] = omega_world
 
         # A scalar boolean index_put also creates a pageable H2D transfer;
@@ -2311,9 +2266,9 @@ class NewtonBackend(SimBackend):
             return self._metadata.actuator_kd.copy()
         raise NotImplementedError(f"NewtonBackend does not support reset term {term!r}")
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
+    def get_play_capabilities(self) -> PlayCapabilities:
         native = newton_render_dependencies_available()
-        return BackendPlayCapabilities(
+        return PlayCapabilities(
             supports_native_interactive_renderer=native,
             supports_physics_state_playback=True,
             supports_native_video_capture=native,
@@ -2329,7 +2284,7 @@ class NewtonBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         """Resolve playback modes, selecting the concrete renderer.
 
         ``record`` uses the native ViewerGL offscreen renderer (the normal
@@ -2343,7 +2298,7 @@ class NewtonBackend(SimBackend):
         """
         mode = normalize_play_render_mode(play_render_mode)
         if mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="none",
                 headless=True,
                 record_video=False,
@@ -2367,7 +2322,7 @@ class NewtonBackend(SimBackend):
                     "training.play_render_mode=record (offscreen GL needs EGL via "
                     "PYOPENGL_PLATFORM=egl, or GLX under Wayland)."
                 )
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="interactive",
                 headless=False,
                 record_video=False,
@@ -2386,7 +2341,7 @@ class NewtonBackend(SimBackend):
             if newton_render_dependencies_available()
             else MUJOCO_SNAPSHOT_RENDERER
         )
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode="record",
             headless=True,
             record_video=True,
@@ -2490,7 +2445,7 @@ class NewtonBackend(SimBackend):
             on_frame=on_frame,
         )
 
-    def init_renderer(
+    def bind_renderer(
         self,
         spacing: float = 1.0,
         *,
@@ -2520,7 +2475,7 @@ class NewtonBackend(SimBackend):
                 )
             return
         require_newton_render_dependencies()
-        self._require_state("init_renderer")
+        self._require_state("bind_renderer")
         try:
             from newton.viewer import ViewerGL
         except ImportError as exc:
@@ -2546,7 +2501,7 @@ class NewtonBackend(SimBackend):
 
     def _require_viewer(self, operation: str) -> Any:
         if self._viewer is None:
-            raise RuntimeError(f"newton {operation} requires init_renderer first")
+            raise RuntimeError(f"newton {operation} requires bind_renderer first")
         return self._viewer
 
     def _render_viewer_frame(self, viewer: Any) -> None:

@@ -15,7 +15,7 @@ from typing import Any, Callable, TypeVar
 import numpy as np
 
 from unisim.backend.base import CameraCfg
-from unisim.backend.playback_common import env_cfg_value, write_playback_video
+from unisim.backend.playback import env_cfg_value, write_playback_video
 
 ObsT = TypeVar("ObsT")
 
@@ -46,7 +46,7 @@ def run_subprocess_playback(
         if record_video and output_video is None:
             raise ValueError(f"{label} video recording requires an output_video path.")
 
-        backend.init_renderer(
+        backend.bind_renderer(
             headless=headless,
             capture=True,
             width=int(width),
@@ -72,7 +72,7 @@ def run_subprocess_playback(
         return str(output_video)
 
     del render_spacing, render_offset_mode
-    backend.init_renderer(
+    backend.bind_renderer(
         headless=False,
         width=int(width),
         height=int(height),

@@ -75,3 +75,42 @@ def test_public_subprocess_alias_is_removed() -> None:
     import unisim
 
     assert not hasattr(unisim, "SubprocessBackend")
+
+
+def test_normalized_backend_contract_names_are_exported() -> None:
+    from unisim import PackedResetTransaction
+    from unisim.backend import base
+
+    for name in (
+        "MocapPoseBinding",
+        "TerrainSpawnData",
+        "RootStateLayout",
+        "SensorView",
+        "PlayCapabilities",
+        "HeightScanner",
+        "PlayRenderPlan",
+    ):
+        assert hasattr(base, name)
+
+    assert PackedResetTransaction.__name__ == "PackedResetTransaction"
+    assert not hasattr(base, "BackendMocapPoseBinding")
+
+
+def test_documented_host_protocol_remains_protected() -> None:
+    from unisim.backend.base import SimBackend
+
+    for name in (
+        "_host_get_state",
+        "_host_reset",
+        "_host_set_state",
+        "_host_reset_default",
+    ):
+        assert hasattr(SimBackend, name)
+        assert not hasattr(SimBackend, name.removeprefix("_"))
+
+
+def test_backend_namespace_does_not_reexport_implementation_imports() -> None:
+    import unisim.backend as backend
+
+    for leaked in ("np", "abc", "math", "re"):
+        assert not hasattr(backend, leaked)

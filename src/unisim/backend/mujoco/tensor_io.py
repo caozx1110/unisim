@@ -56,7 +56,7 @@ class MuJoCoHostBridgeTransferPlan(HostBridgeTransferPlan):
         }
 
         backend._require_entity_healthy()
-        if backend.tensor_execution() is not TensorExecution.HOST_BRIDGE:
+        if backend.get_tensor_execution() is not TensorExecution.HOST_BRIDGE:
             raise RuntimeError("MuJoCo packed tensor I/O requires the host-bridge lifecycle")
 
         requested_fields = tuple(spec.state_fields)

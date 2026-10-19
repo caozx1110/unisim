@@ -108,6 +108,59 @@ class SelectedResetPublication(Enum):
 COMPLETION_OPERATIONS: frozenset[str] = frozenset({"step"})
 COMPLETION_CONTRACT_VERSION = 3
 
+__all__ = [
+    "COMPLETION_CONTRACT_VERSION",
+    "COMPLETION_OPERATIONS",
+    "DEBUG_PRIMITIVE_KINDS",
+    "CameraCfg",
+    "CapabilityReport",
+    "CompiledSceneLayout",
+    "CompletionToken",
+    "DebugOverlayGetter",
+    "DebugPrimitiveKind",
+    "DomainRandomizationCapabilities",
+    "HeightScanner",
+    "HostBridgeTransferPlan",
+    "ImportReport",
+    "IntervalRandomizationPlan",
+    "IntervalTermOp",
+    "MocapPoseBinding",
+    "PLAY_RENDER_MODES",
+    "PhysicsStateLayout",
+    "PhysicsStateParts",
+    "PlayCapabilities",
+    "PlayRenderPlan",
+    "PreStepControlFn",
+    "PreStepControlOutput",
+    "PreStepControlResult",
+    "PublicStateWidths",
+    "RenderClosedError",
+    "RootStateLayout",
+    "SceneResetRequest",
+    "SelectedResetPublication",
+    "SensorDescriptor",
+    "SensorReadFn",
+    "SensorView",
+    "SimBackend",
+    "TensorDataPlane",
+    "TensorExecution",
+    "TensorIOSpec",
+    "TensorLifecycleCapabilities",
+    "TensorProcessTopology",
+    "TensorResetRandomizationPayload",
+    "TensorRuntimeDiagnostic",
+    "TerrainHeightSampleFn",
+    "TerrainSpawnData",
+    "TrackedBodyStateViews",
+    "backend_capabilities",
+    "log_playback_plan",
+    "normalize_play_render_mode",
+    "torch_device_matches",
+    "unsupported_debug_overlay_error",
+    "validate_debug_overlays",
+    "validate_torch_device",
+]
+
 
 _TENSOR_DEVICE_LABEL = re.compile(r"^(cpu|cuda)(?::([0-9]+))?$")
 
@@ -128,7 +181,7 @@ def _tensor_device_parts(label: str, *, context: str) -> tuple[str, int | None]:
     return family, int(raw_index) if raw_index is not None else None
 
 
-def tensor_device_matches(
+def torch_device_matches(
     accepted_devices: Sequence[str],
     requested_device: Any,
     *,
@@ -163,7 +216,7 @@ def tensor_device_matches(
     return False
 
 
-def validate_tensor_device(
+def validate_torch_device(
     accepted_devices: Sequence[str],
     requested_device: Any,
     *,
@@ -172,7 +225,7 @@ def validate_tensor_device(
 ) -> None:
     """Fail closed when a requested Torch device is outside a declaration."""
 
-    if not tensor_device_matches(accepted_devices, requested_device, current_device=current_device):
+    if not torch_device_matches(accepted_devices, requested_device, current_device=current_device):
         accepted = ", ".join(repr(device) for device in accepted_devices) or "none"
         raise ValueError(
             f"{label} device {str(requested_device)!r} is not supported; "
@@ -817,7 +870,7 @@ def unsupported_debug_overlay_error(owner: str) -> NotImplementedError:
 
 
 @dataclass(frozen=True)
-class BackendMocapPoseBinding:
+class MocapPoseBinding:
     """Cold-bound world-space pose access for one fixed mocap body.
 
     Poses use xyz + unit wxyz quaternion. Writes affect only selected worlds,
@@ -892,7 +945,7 @@ class RenderClosedError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class BackendTerrainSpawnData:
+class TerrainSpawnData:
     """Read-only terrain spawn metadata materialized by a backend.
 
     ``terrain_origins`` is a detached snapshot with shape
@@ -916,7 +969,7 @@ class BackendTerrainSpawnData:
 
 
 @dataclass(frozen=True)
-class BackendRootStateLayout:
+class RootStateLayout:
     """Generalized-state columns for one floating root body.
 
     ``qpos_indices`` address ``[x, y, z, qw, qx, qy, qz]`` in the public
@@ -935,27 +988,27 @@ class BackendRootStateLayout:
             ("qvel_indices", self.qvel_indices, 6),
         ):
             if not isinstance(values, tuple):
-                raise TypeError(f"BackendRootStateLayout {name} must be a tuple")
+                raise TypeError(f"RootStateLayout {name} must be a tuple")
             if len(values) != expected:
                 raise ValueError(
-                    f"BackendRootStateLayout {name} must contain {expected} columns; "
+                    f"RootStateLayout {name} must contain {expected} columns; "
                     f"got {len(values)}"
                 )
             if any(
                 isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer))
                 for value in values
             ):
-                raise TypeError(f"BackendRootStateLayout {name} must contain integer columns")
+                raise TypeError(f"RootStateLayout {name} must contain integer columns")
             normalized = tuple(int(value) for value in values)
             if any(value < 0 for value in normalized):
-                raise ValueError(f"BackendRootStateLayout {name} cannot contain negative columns")
+                raise ValueError(f"RootStateLayout {name} cannot contain negative columns")
             if len(set(normalized)) != expected:
-                raise ValueError(f"BackendRootStateLayout {name} must contain unique columns")
+                raise ValueError(f"RootStateLayout {name} must contain unique columns")
             object.__setattr__(self, name, normalized)
 
 
 @dataclass(frozen=True)
-class BackendSensorView:
+class SensorView:
     """Validated batch view over one or more named backend sensors.
 
     Sensor names and flattened per-sensor widths are resolved while the backend
@@ -974,30 +1027,30 @@ class BackendSensorView:
 
     def __post_init__(self) -> None:
         if not isinstance(self.backend_type, str) or not self.backend_type:
-            raise ValueError("BackendSensorView backend_type must be a non-empty string")
+            raise ValueError("SensorView backend_type must be a non-empty string")
         if not isinstance(self.names, tuple) or not self.names:
-            raise ValueError("BackendSensorView names must be a non-empty tuple")
+            raise ValueError("SensorView names must be a non-empty tuple")
         if any(not isinstance(name, str) or not name for name in self.names):
-            raise ValueError("BackendSensorView names must contain non-empty strings")
+            raise ValueError("SensorView names must contain non-empty strings")
         if len(set(self.names)) != len(self.names):
-            raise ValueError(f"BackendSensorView names must be unique: {self.names}")
+            raise ValueError(f"SensorView names must be unique: {self.names}")
         if not isinstance(self.dimensions, tuple) or len(self.dimensions) != len(self.names):
-            raise ValueError("BackendSensorView dimensions must contain one entry per sensor name")
+            raise ValueError("SensorView dimensions must contain one entry per sensor name")
         if any(
             isinstance(value, (bool, np.bool_))
             or not isinstance(value, (int, np.integer))
             or int(value) <= 0
             for value in self.dimensions
         ):
-            raise ValueError("BackendSensorView dimensions must be positive integers")
+            raise ValueError("SensorView dimensions must be positive integers")
         if (
             isinstance(self.num_envs, (bool, np.bool_))
             or not isinstance(self.num_envs, (int, np.integer))
             or int(self.num_envs) <= 0
         ):
-            raise ValueError("BackendSensorView num_envs must be a positive integer")
+            raise ValueError("SensorView num_envs must be a positive integer")
         if not callable(self._reader):
-            raise TypeError("BackendSensorView reader must be callable")
+            raise TypeError("SensorView reader must be callable")
         object.__setattr__(self, "dimensions", tuple(int(value) for value in self.dimensions))
         object.__setattr__(self, "num_envs", int(self.num_envs))
 
@@ -1037,7 +1090,7 @@ class BackendSensorView:
 
 
 @dataclass(frozen=True)
-class BackendPlayCapabilities:
+class PlayCapabilities:
     """Backend-native play/render capabilities surfaced through env contracts.
 
     ``supports_debug_overlay`` covers the offline/record rendering path;
@@ -1120,14 +1173,14 @@ class PhysicsStateLayout:
         )
 
 
-_NATIVE_RENDERER_PLAY_CAPABILITIES = BackendPlayCapabilities(
+_NATIVE_RENDERER_PLAY_CAPABILITIES = PlayCapabilities(
     supports_native_interactive_renderer=True,
     supports_native_video_capture=True,
 )
 """Shared play capabilities of backends with a native interactive renderer and video capture."""
 
 
-class BackendHeightScanner(abc.ABC):
+class HeightScanner(abc.ABC):
     """Backend-owned height-field scanner created on the env init path."""
 
     @abc.abstractmethod
@@ -1139,7 +1192,7 @@ PLAY_RENDER_MODES = frozenset({"auto", "interactive", "record", "none"})
 
 
 @dataclass(frozen=True)
-class BackendPlayRenderPlan:
+class PlayRenderPlan:
     """Backend-resolved playback rendering behavior.
 
     ``renderer`` names the concrete renderer the backend selected for the
@@ -1163,7 +1216,7 @@ def normalize_play_render_mode(play_render_mode: str | None) -> str:
     return mode
 
 
-def log_playback_plan(plan: BackendPlayRenderPlan, *, prefix: str = "") -> None:
+def log_playback_plan(plan: PlayRenderPlan, *, prefix: str = "") -> None:
     """Print user-facing playback status for a resolved backend plan."""
     if plan.mode == "none":
         print(f"{prefix}Skipping playback because training.play_render_mode=none.")
@@ -1185,7 +1238,7 @@ class SimBackend(abc.ABC):
     _pre_step_control_fn: PreStepControlFn | None = None
     _pre_step_control_active: bool = False
     _scene_cleanup_handle: Any | None
-    _play_capabilities = BackendPlayCapabilities()
+    _play_capabilities = PlayCapabilities()
     backend_type: str
 
     def get_scene_layout(self) -> CompiledSceneLayout:
@@ -1239,7 +1292,7 @@ class SimBackend(abc.ABC):
         return report
 
     @property
-    def capabilities(self):
+    def capability_flags(self):
         """Coarse capability labels for clients that need a cheap feature check.
 
         The detailed contract is expressed by the methods on this class.  The
@@ -1258,13 +1311,13 @@ class SimBackend(abc.ABC):
             }
         )
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         """Declare the optional tensor lifecycle without discovering SDKs."""
         return TensorExecution.UNSUPPORTED
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         """Return fail-closed tensor methods and negotiable state fields."""
-        return TensorLifecycleCapabilities(execution=self.tensor_execution())
+        return TensorLifecycleCapabilities(execution=self.get_tensor_execution())
 
     def get_tensor_runtime_diagnostics(self) -> Mapping[str, TensorRuntimeDiagnostic]:
         """Return runtime-selected diagnostics for optional tensor optimizations.
@@ -1282,25 +1335,25 @@ class SimBackend(abc.ABC):
             f"{self.__class__.__name__} does not expose public tensor state widths"
         )
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
+    def bind_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
         """Compile a persistent transfer plan for a declared host bridge."""
         raise NotImplementedError(
             f"{self.backend_type} does not support packed host-bridge tensor I/O: "
-            f"{self.tensor_execution()}"
+            f"{self.get_tensor_execution()}"
         )
 
-    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+    def bind_packed_reset(self, *, device: Any | None = None) -> Any:
         """Begin a backend-owned packed reset transaction."""
         raise NotImplementedError(
             f"{self.backend_type} does not support packed reset transactions: "
-            f"{self.tensor_execution()}"
+            f"{self.get_tensor_execution()}"
         )
 
     def set_mocap_pose_tensor(self, body_name: str, env_indices: Any, poses: Any) -> None:
         """Write selected mocap poses through the declared tensor lifecycle."""
         raise NotImplementedError(
             f"{self.backend_type} does not support tensor mocap pose writes: "
-            f"{self.tensor_execution()}"
+            f"{self.get_tensor_execution()}"
         )
 
     def get_state_views(
@@ -1322,13 +1375,14 @@ class SimBackend(abc.ABC):
         implementation.
         """
         raise NotImplementedError(
-            f"{self.backend_type} does not support backend state views: {self.tensor_execution()}"
+            f"{self.backend_type} does not support backend state views: "
+            f"{self.get_tensor_execution()}"
         )
 
     def get_sensor_view(self, name: str, device: Any | None = None) -> Any:
         """Return one named sensor view on the declared tensor lifecycle."""
         raise NotImplementedError(
-            f"{self.backend_type} does not support sensor views: {self.tensor_execution()}"
+            f"{self.backend_type} does not support sensor views: {self.get_tensor_execution()}"
         )
 
     def get_tracked_body_views(
@@ -1343,7 +1397,8 @@ class SimBackend(abc.ABC):
         contract avoids one Python projection boundary per body/field sensor.
         """
         raise NotImplementedError(
-            f"{self.backend_type} does not support tracked-body views: {self.tensor_execution()}"
+            f"{self.backend_type} does not support tracked-body views: "
+            f"{self.get_tensor_execution()}"
         )
 
     def step_tensor(self, ctrl: Any, nsteps: int = 1) -> dict | None:
@@ -1354,7 +1409,7 @@ class SimBackend(abc.ABC):
         must be finite. The method consumes it before synchronizing and returning.
         """
         raise NotImplementedError(
-            f"{self.backend_type} does not support tensor stepping: {self.tensor_execution()}"
+            f"{self.backend_type} does not support tensor stepping: {self.get_tensor_execution()}"
         )
 
     def set_state_tensor(
@@ -1390,7 +1445,8 @@ class SimBackend(abc.ABC):
         NumPy boundary through :mod:`unisim.dr._host`.
         """
         raise NotImplementedError(
-            f"{self.backend_type} does not support tensor state writes: {self.tensor_execution()}"
+            f"{self.backend_type} does not support tensor state writes: "
+            f"{self.get_tensor_execution()}"
         )
 
     def set_state_tensor_mask(
@@ -1423,17 +1479,17 @@ class SimBackend(abc.ABC):
         """
         raise NotImplementedError(
             f"{self.backend_type} does not support mask-driven tensor state writes: "
-            f"{self.tensor_execution()}"
+            f"{self.get_tensor_execution()}"
         )
 
     def _host_get_state(
         self, fields: tuple[str, ...] | str | None = None
     ) -> Mapping[str, np.ndarray]:
-        """Adapter-private generalized-state host read."""
+        """Read generalized state through the documented protected adapter protocol."""
         raise NotImplementedError(f"{self.__class__.__name__} has no host state read")
 
     def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
-        """Adapter-private full/selected host reset."""
+        """Reset all or selected environments through the protected adapter protocol."""
         raise NotImplementedError(f"{self.__class__.__name__} has no host reset")
 
     def _host_set_state(
@@ -1443,7 +1499,7 @@ class SimBackend(abc.ABC):
         qvel: np.ndarray,
         randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
-        """Adapter-private selected host state write.
+        """Write selected state through the documented protected adapter protocol.
 
         ``randomization`` is the unified torch-first
         :class:`TensorResetRandomizationPayload` carrying host-plane
@@ -1453,7 +1509,7 @@ class SimBackend(abc.ABC):
         raise NotImplementedError(f"{self.__class__.__name__} has no host state write")
 
     def _host_reset_default(self, env_ids: np.ndarray | None = None) -> None:
-        """Adapter-private host reset retained only for concrete host adapters."""
+        """Reset selected environments to construction defaults on the host plane."""
         ids = (
             np.arange(self.num_envs, dtype=np.int32)
             if env_ids is None
@@ -1530,7 +1586,7 @@ class SimBackend(abc.ABC):
         """
         return None
 
-    def get_terrain_spawn_data(self) -> BackendTerrainSpawnData | None:
+    def get_terrain_spawn_data(self) -> TerrainSpawnData | None:
         """Return backend-materialized terrain metadata on the cold path.
 
         Backends without generated terrain support return ``None``. Callers
@@ -1573,7 +1629,7 @@ class SimBackend(abc.ABC):
             Zero-filled qvel array.
         """
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         """Resolve one body's floating-root columns on the cold path.
 
         Backends must verify that ``root_body_name`` owns a free/floating joint;
@@ -1610,10 +1666,14 @@ class SimBackend(abc.ABC):
         raise NotImplementedError(f"{self.__class__.__name__} does not expose geom ids")
 
     def get_geom_size(self, name: str) -> np.ndarray:
-        """Return one geom size vector through the backend contract."""
+        """Return one geom size vector in backend geom-name order.
+
+        ``get_default_geom_sizes`` returns the complete table of default sizes,
+        while this selector resolves one geom by name.
+        """
         raise NotImplementedError(f"{self.__class__.__name__} does not expose geom sizes")
 
-    def get_geom_sizes(self) -> np.ndarray:
+    def get_default_geom_sizes(self) -> np.ndarray:
         """Return default geometry sizes, shape (ngeom, 3)."""
         raise NotImplementedError(f"{self.__class__.__name__} does not expose geom size defaults")
 
@@ -1633,11 +1693,11 @@ class SimBackend(abc.ABC):
         """Return default joint friction loss, shape (nv,)."""
         raise NotImplementedError(f"{self.__class__.__name__} does not expose dof frictionloss")
 
-    def bind_mocap_pose(self, body_name: str) -> BackendMocapPoseBinding:
+    def bind_mocap_pose(self, body_name: str) -> MocapPoseBinding:
         """Resolve a mocap body once; unavailable capabilities fail at binding."""
         raise NotImplementedError(f"{self.__class__.__name__} does not support mocap pose writes")
 
-    def create_hfield_scanner(
+    def bind_height_scanner(
         self,
         *,
         hfield_geom_id: int,
@@ -1645,7 +1705,7 @@ class SimBackend(abc.ABC):
         frame_body_id: int,
         alignment: str = "yaw",
         output: str = "height",
-    ) -> BackendHeightScanner:
+    ) -> HeightScanner:
         """Create a reusable height-field scanner on the init/cold path.
 
         Backends that support height-field terrain scan must override this method.
@@ -1947,7 +2007,7 @@ class SimBackend(abc.ABC):
             f"{self.__class__.__name__} does not support interval body force perturbation"
         )
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
+    def get_play_capabilities(self) -> PlayCapabilities:
         """Return backend-native play/render capabilities."""
         return self._play_capabilities
 
@@ -1957,7 +2017,7 @@ class SimBackend(abc.ABC):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         """Resolve high-level playback mode into backend-owned render parameters."""
         raise NotImplementedError(
             f"{self.__class__.__name__} does not define playback render mode semantics"
@@ -2015,7 +2075,7 @@ class SimBackend(abc.ABC):
         """
         raise NotImplementedError(f"{self.__class__.__name__} does not support playback execution")
 
-    def init_renderer(
+    def bind_renderer(
         self,
         spacing: float = 1.0,
         *,
@@ -2151,14 +2211,14 @@ class SimBackend(abc.ABC):
         raise NotImplementedError(f"{type(self).__name__} does not implement get_site_ids")
 
     def get_joint_dof_indices(self, names: Sequence[str]) -> np.ndarray:
-        """Resolve joint names to DoF indices in velocity space (qvel).
+        """Resolve joint names to absolute DoF indices in velocity space.
 
         Args:
             names: Joint names.
 
         Returns:
-            ``int32`` index array with shape ``(len(names),)`` relative to
-            the qvel start.
+            ``int32`` index array with shape ``(len(names),)`` addressing the
+            complete qvel vector, including any root coordinates.
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement get_joint_dof_indices")
 
@@ -2179,14 +2239,11 @@ class SimBackend(abc.ABC):
         )
 
     def get_joint_dof_vel_indices(self, names: Sequence[str]) -> np.ndarray:
-        """Resolve joint names to DoF indices in velocity space (qvel).
+        """Resolve joint names to joint-section DoF indices in velocity space.
 
-        Args:
-            names: Joint names.
-
-        Returns:
-            ``int32`` index array with shape ``(len(names),)`` relative to
-            the joint section start.
+        Unlike :meth:`get_joint_dof_indices`, the returned indices exclude any
+        root/free-joint velocity columns. They address the same joint section
+        used by :meth:`get_joint_dof_pos_indices`.
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not implement get_joint_dof_vel_indices"
@@ -2262,7 +2319,7 @@ class SimBackend(abc.ABC):
             descriptors.append(SensorDescriptor(name=name, width=width))
         return tuple(descriptors)
 
-    def bind_sensor_data(self, names: Sequence[str]) -> BackendSensorView:
+    def bind_sensor_data(self, names: Sequence[str]) -> SensorView:
         """Materialize a validated view over named tensor sensors.
 
         This cold-path binding records the flattened public view width and delegates
@@ -2319,7 +2376,7 @@ class SimBackend(abc.ABC):
                 f"{batch.shape}; expected ({self.num_envs}, {expected_width})"
             )
 
-        return BackendSensorView(
+        return SensorView(
             backend_type=self.backend_type,
             names=sensor_names,
             dimensions=tuple(dimensions),

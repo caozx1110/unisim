@@ -1568,7 +1568,7 @@ def test_fixed_variants_preserve_public_layout_and_native_identity(tmp_path: Pat
         with pytest.raises(ValueError, match="is not present in site Jacobian"):
             backend.get_site_jacobian_w(site_id, np.asarray((0,), dtype=np.intp))
         with pytest.raises(NotImplementedError, match="fixed-variant scenes yet"):
-            backend.init_renderer()
+            backend.bind_renderer()
         with pytest.raises(NotImplementedError, match="fixed-variant scenes yet"):
             backend.run_playback(env=None, initialize=None, step=None, num_steps=1)
 
@@ -2196,7 +2196,7 @@ def test_portable_packed_baseline_tracks_committed_writes(tmp_path: Path):
             ),
         )
 
-        transaction = backend.begin_packed_reset(device=torch.device("cpu"))
+        transaction = backend.bind_packed_reset(device=torch.device("cpu"))
         baseline = transaction.baseline(term)
         assert baseline.shape[0] == backend.num_envs
         torch.testing.assert_close(baseline[0], torch.as_tensor(written), rtol=1e-4, atol=1e-5)

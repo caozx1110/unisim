@@ -13,7 +13,7 @@ from unisim import (
     TensorLifecycleCapabilities,
     TensorProcessTopology,
     TensorRuntimeDiagnostic,
-    tensor_device_matches,
+    torch_device_matches,
 )
 from unisim import support as support_module
 from unisim.backend.base import SelectedResetPublication
@@ -349,7 +349,7 @@ def test_valid_tensor_capability_matrices_remain_supported(
 def test_tensor_device_labels_match_family_and_exact_cuda_semantics(
     accepted, requested, current_device, expected
 ):
-    assert tensor_device_matches(accepted, requested, current_device=current_device) is expected
+    assert torch_device_matches(accepted, requested, current_device=current_device) is expected
 
 
 def test_tensor_capability_device_labels_fail_closed() -> None:

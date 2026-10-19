@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from unisim.backend.base import BackendPlayCapabilities
+from unisim.backend.base import PlayCapabilities
 from unisim.backend.isaacgym.backend import IsaacGymBackend, IsaacGymWorkerError
 from unisim.capabilities import SupportLevel, backend_capabilities
 from unisim.dr.interval import (
@@ -113,7 +113,7 @@ def _mapped_backend() -> IsaacGymBackend:
     backend._worker_dead_error = None
     backend._slots = {"ctrl": np.zeros((_NUM_ENVS, _LAYOUT.nu), dtype=np.float32)}
     backend._import_report = SimpleNamespace(profile="default")
-    backend._play_capabilities = BackendPlayCapabilities()
+    backend._play_capabilities = PlayCapabilities()
     return backend
 
 

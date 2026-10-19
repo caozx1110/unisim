@@ -898,7 +898,7 @@ def _cuda_ipc_wire(
         }
 
     return {
-        "arena": layout.wire(),
+        "arena": layout.to_wire(),
         "memory": memory_wire(memory_handle),
         "control_event": event_wire(control_handle),
         "state_event": event_wire(state_handle),

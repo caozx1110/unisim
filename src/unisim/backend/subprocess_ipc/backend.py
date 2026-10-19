@@ -31,14 +31,15 @@ import numpy as np
 
 from unisim.backend.base import (
     _NATIVE_RENDERER_PLAY_CAPABILITIES,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
     CameraCfg,
+    PlayRenderPlan,
     RenderClosedError,
+    RootStateLayout,
     SimBackend,
     normalize_play_render_mode,
     unsupported_debug_overlay_error,
 )
+from unisim.backend.playback import display_available
 from unisim.backend.subprocess_ipc.scene_materialization import (
     PreparedWorkerScene,
     body_sphere_radii_close,
@@ -104,12 +105,6 @@ _ROOT_QVEL_DIM = 6
 # PhysX clamps |force| <= dof effort; MJCF forcerange "0 0" (or absent) means
 # unlimited, mapped to a finite stand-in (float32-safe) for the dof property.
 _UNLIMITED_DOF_EFFORT = 1e20
-
-
-def _display_available() -> bool:
-    """Return whether a display is reachable for an interactive worker viewer."""
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-
 
 def _single_precision_equal(reported: Any, requested: Any) -> bool:
     """Match values that only differ by the engine's float32 storage rounding."""
@@ -472,7 +467,7 @@ class MjcfSubprocessBackend(SimBackend):
         self._closed = False
         # Native rendering state (worker-owned viewer/camera; see the play
         # contract section below).  ``_render_config`` pins the first
-        # init_renderer(headless, capture) pair like the Motrix backend.
+        # bind_renderer(headless, capture) pair like the Motrix backend.
         self._graphics_enabled = False
         self._render_config: tuple[bool, bool] | None = None
         self._viewer_open = False
@@ -2109,13 +2104,13 @@ class MjcfSubprocessBackend(SimBackend):
             return self._entity_scene.qvel[0].copy()
         return np.zeros((_ROOT_QVEL_DIM + self._num_dof(),), dtype=np.float32)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if self._entity_scene is not None:
             for entity in self._entity_scene.layout.entities:
                 if root_body_name == entity.name + "/" + entity.root_body:
                     if entity.root_mode != "floating":
                         raise NotImplementedError("entity root has no generalized coordinates")
-                    return BackendRootStateLayout(
+                    return RootStateLayout(
                         entity.root_qpos_indices, entity.root_qvel_indices
                     )
             raise ValueError(f"unknown entity root body {root_body_name!r}")
@@ -2135,7 +2130,7 @@ class MjcfSubprocessBackend(SimBackend):
                 f"backend '{self._BACKEND_LABEL}' capability 'root-state layout' requires "
                 f"{root_body_name!r} to be the actor root body {root_name!r}"
             )
-        return BackendRootStateLayout(
+        return RootStateLayout(
             qpos_indices=tuple(range(_ROOT_QPOS_DIM)),
             qvel_indices=tuple(range(_ROOT_QVEL_DIM)),
         )
@@ -2357,14 +2352,14 @@ class MjcfSubprocessBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | os.PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         mode = normalize_play_render_mode(play_render_mode)
         if mode == "auto":
             # The interactive viewer needs a reachable display; headless hosts
             # fall back to offscreen camera-sensor recording.
-            mode = "interactive" if _display_available() else "record"
+            mode = "interactive" if display_available() else "record"
         if mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=mode,
                 headless=True,
                 record_video=False,
@@ -2372,7 +2367,7 @@ class MjcfSubprocessBackend(SimBackend):
                 output_video=None,
             )
         if mode == "interactive":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=mode,
                 headless=False,
                 record_video=False,
@@ -2389,7 +2384,7 @@ class MjcfSubprocessBackend(SimBackend):
             raise ValueError(
                 f"{self._BACKEND_LABEL} record playback requires an output video path."
             )
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode=mode,
             headless=True,
             record_video=True,
@@ -2397,7 +2392,7 @@ class MjcfSubprocessBackend(SimBackend):
             output_video=output_video,
         )
 
-    def init_renderer(
+    def bind_renderer(
         self,
         spacing: float = 1.0,
         *,
@@ -2453,7 +2448,7 @@ class MjcfSubprocessBackend(SimBackend):
     def render(self) -> None:
         """Draw one interactive viewer frame through the worker."""
         if not self._viewer_open:
-            self.init_renderer(
+            self.bind_renderer(
                 headless=False,
                 width=self._render_width,
                 height=self._render_height,
@@ -2466,7 +2461,7 @@ class MjcfSubprocessBackend(SimBackend):
     def capture_video_frame(self) -> np.ndarray:
         """Capture one RGB frame from the worker's camera sensor."""
         if not self._capture_ready:
-            self.init_renderer(
+            self.bind_renderer(
                 headless=True,
                 capture=True,
                 width=self._render_width,

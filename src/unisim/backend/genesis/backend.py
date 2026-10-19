@@ -25,13 +25,13 @@ from typing import Any
 import numpy as np
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
     CameraCfg,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     PublicStateWidths,
     RenderClosedError,
+    RootStateLayout,
     SelectedResetPublication,
     SensorDescriptor,
     SimBackend,
@@ -66,6 +66,7 @@ from unisim.dr.types import (
 from unisim.entity_state import entity_state_snapshot, prepare_scene_reset
 from unisim.scene import SceneCfg, require_scene_composition_support
 from unisim.scene_layout import CompiledSceneLayout
+from unisim.utils.quaternion import torch_quat_mul, torch_quat_rotate, torch_quat_rotate_inverse
 from unisim.utils.rotation import (
     np_matrix_from_quat,
     np_quat_apply_batched,
@@ -84,41 +85,6 @@ _TENSOR_TRACKED_BODY_PREFIXES = (
     "track_linvel_w_",
     "track_angvel_w_",
 )
-
-
-def _torch_quat_apply(torch: Any, quat_wxyz: Any, vector: Any) -> Any:
-    """Apply a batched wxyz quaternion with device-resident Torch primitives."""
-
-    quat_vector = quat_wxyz[..., 1:4]
-    if vector.ndim < quat_vector.ndim:
-        vector = vector.expand_as(quat_vector)
-    cross = torch.linalg.cross(quat_vector, vector, dim=-1)
-    second_cross = torch.linalg.cross(quat_vector, cross, dim=-1)
-    return vector + 2.0 * quat_wxyz[..., 0:1] * cross + 2.0 * second_cross
-
-
-def _torch_quat_mul(torch: Any, left_wxyz: Any, right_wxyz: Any) -> Any:
-    """Multiply batched wxyz quaternions without a host detour."""
-
-    left_w, left_xyz = left_wxyz[..., 0:1], left_wxyz[..., 1:4]
-    right_w, right_xyz = right_wxyz[..., 0:1], right_wxyz[..., 1:4]
-    if right_xyz.ndim < left_xyz.ndim:
-        right_xyz = right_xyz.expand_as(left_xyz)
-    elif left_xyz.ndim < right_xyz.ndim:
-        left_xyz = left_xyz.expand_as(right_xyz)
-    cross = torch.linalg.cross(left_xyz, right_xyz, dim=-1)
-    return torch.cat(
-        (
-            left_w * right_w - (left_xyz * right_xyz).sum(dim=-1, keepdim=True),
-            left_w * right_xyz + right_w * left_xyz + cross,
-        ),
-        dim=-1,
-    )
-
-
-def _torch_quat_apply_inverse(torch: Any, quat_wxyz: Any, vector: Any) -> Any:
-    conjugate = torch.cat((quat_wxyz[..., 0:1], -quat_wxyz[..., 1:4]), dim=-1)
-    return _torch_quat_apply(torch, conjugate, vector)
 
 
 @dataclass(frozen=True)
@@ -683,7 +649,7 @@ class GenesisBackend(SimBackend):
             else self._torch.device("cpu")
         )
 
-        self._scene = materialization.build_genesis_scene(
+        self._scene = materialization.build_scene(
             deps,
             sim_dt=float(sim_dt),
             gravity=self._metadata.gravity,
@@ -798,7 +764,7 @@ class GenesisBackend(SimBackend):
         self._closed = False
         # Native rendering state (post-build lazy viewer/camera; see the play
         # contract section below). ``_render_config`` pins the first
-        # init_renderer(headless, capture) pair like the isaacgym backend.
+        # bind_renderer(headless, capture) pair like the isaacgym backend.
         self._render_config: tuple[bool, bool] | None = None
         self._viewer: Any | None = None
         self._render_camera: Any | None = None
@@ -1947,7 +1913,7 @@ class GenesisBackend(SimBackend):
         cuda_backend = getattr(self._gs, "cuda", None)
         return backend is not None and backend == cuda_backend
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return (
             TensorExecution.DEVICE_RESIDENT
             if self._tensor_lifecycle_supported()
@@ -2384,11 +2350,11 @@ class GenesisBackend(SimBackend):
             and self._tensor_body_ang_vel is not None
         )
         body_quat = self._tensor_body_quat[:, body_id]
-        world_from_site = _torch_quat_mul(self._torch, body_quat, site_quat)
+        world_from_site = torch_quat_mul(self._torch, body_quat, site_quat)
         if plan.kind == "framezaxis":
             world_z = self._torch.zeros_like(body_quat[..., :3])
             world_z[..., 2] = 1.0
-            values = _torch_quat_apply(self._torch, world_from_site, world_z)
+            values = torch_quat_rotate(self._torch, world_from_site, world_z)
             output = self._tensor_sensor_views.get(name)
             if output is None:
                 output = self._torch.empty_like(values)
@@ -2399,17 +2365,17 @@ class GenesisBackend(SimBackend):
         body_lin_vel = self._tensor_body_lin_vel[:, body_id]
         body_ang_vel = self._tensor_body_ang_vel[:, body_id]
         if plan.kind == "gyro":
-            values = _torch_quat_apply_inverse(self._torch, world_from_site, body_ang_vel)
+            values = torch_quat_rotate_inverse(self._torch, world_from_site, body_ang_vel)
         elif plan.kind == "framelinvel":
-            offset_w = _torch_quat_apply(self._torch, body_quat, site_pos)
+            offset_w = torch_quat_rotate(self._torch, body_quat, site_pos)
             site_velocity = body_lin_vel + torch.linalg.cross(body_ang_vel, offset_w, dim=-1)
-            values = _torch_quat_apply_inverse(self._torch, world_from_site, site_velocity)
+            values = torch_quat_rotate_inverse(self._torch, world_from_site, site_velocity)
         elif plan.kind == "frameangvel":
-            values = _torch_quat_apply_inverse(self._torch, world_from_site, body_ang_vel)
+            values = torch_quat_rotate_inverse(self._torch, world_from_site, body_ang_vel)
         else:
-            offset_w = _torch_quat_apply(self._torch, body_quat, site_pos)
+            offset_w = torch_quat_rotate(self._torch, body_quat, site_pos)
             site_velocity = body_lin_vel + torch.linalg.cross(body_ang_vel, offset_w, dim=-1)
-            values = _torch_quat_apply_inverse(self._torch, world_from_site, site_velocity)
+            values = torch_quat_rotate_inverse(self._torch, world_from_site, site_velocity)
 
         output = self._tensor_sensor_views.get(name)
         if output is None:
@@ -2454,14 +2420,14 @@ class GenesisBackend(SimBackend):
         body_quat = self._tensor_body_quat[:, body_id]
         body_lin_vel = self._tensor_body_lin_vel[:, body_id]
         body_ang_vel = self._tensor_body_ang_vel[:, body_id]
-        world_from_site = _torch_quat_mul(torch, body_quat, site_quat)
+        world_from_site = torch_quat_mul(torch, body_quat, site_quat)
         if plan.kind == "framepos":
-            offset_w = _torch_quat_apply(torch, body_quat, site_pos)
+            offset_w = torch_quat_rotate(torch, body_quat, site_pos)
             values = body_pos + offset_w
         elif plan.kind == "framequat":
             values = world_from_site
         elif plan.kind == "framelinvel":
-            offset_w = _torch_quat_apply(torch, body_quat, site_pos)
+            offset_w = torch_quat_rotate(torch, body_quat, site_pos)
             values = body_lin_vel + torch.linalg.cross(body_ang_vel, offset_w, dim=-1)
         elif plan.kind == "frameangvel":
             values = body_ang_vel
@@ -2685,12 +2651,12 @@ class GenesisBackend(SimBackend):
         self._host_cache_stale = True
         return {"timing": {"tensor_reset_ms": (time.perf_counter() - started) * 1000.0}}
 
-    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+    def bind_packed_reset(self, *, device: Any | None = None) -> Any:
         """Begin a device-resident packed reset transaction."""
 
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     # ------------------------------------------------------------------ #
     # SimBackend properties and cold metadata                             #
@@ -2751,7 +2717,7 @@ class GenesisBackend(SimBackend):
     def get_init_qvel(self) -> np.ndarray:
         return np.zeros((self._metadata.nv,), dtype=np.float32)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if self._portable_mode:
             assert self._entity_layout is not None
             entity_name, separator, local_name = str(root_body_name).partition("/")
@@ -2766,9 +2732,7 @@ class GenesisBackend(SimBackend):
                 raise NotImplementedError(
                     f"portable genesis entity {entity.name!r} has no floating root state"
                 )
-            return BackendRootStateLayout(
-                tuple(entity.root_qpos_indices), tuple(entity.root_qvel_indices)
-            )
+            return RootStateLayout(tuple(entity.root_qpos_indices), tuple(entity.root_qvel_indices))
         if root_body_name not in self._body_ids:
             raise ValueError(f"Body {root_body_name!r} not found in genesis model")
         link = self._entity.get_link(root_body_name)
@@ -2781,7 +2745,7 @@ class GenesisBackend(SimBackend):
                 f"{root_body_name!r} to own exactly one free joint"
             )
         joint = free_joints[0]
-        return BackendRootStateLayout(
+        return RootStateLayout(
             qpos_indices=tuple(int(v) for v in joint.qs_idx_local),
             qvel_indices=tuple(int(v) for v in joint.dofs_idx_local),
         )
@@ -2838,8 +2802,8 @@ class GenesisBackend(SimBackend):
             )
         return runtime.geom_sizes[0, local_geom_index].copy()
 
-    def get_geom_sizes(self) -> np.ndarray:
-        self._require_state("get_geom_sizes")
+    def get_default_geom_sizes(self) -> np.ndarray:
+        self._require_state("get_default_geom_sizes")
         if not self._portable_mode:
             raise NotImplementedError("GenesisBackend does not expose geom size defaults")
         return self._portable_geometry_sizes().copy()
@@ -4128,14 +4092,14 @@ class GenesisBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         mode = normalize_play_render_mode(play_render_mode)
         if mode == "auto":
             # The interactive viewer needs a reachable display; headless hosts
             # fall back to offscreen camera recording (isaacgym semantics).
             mode = "interactive" if playback.display_available() else "record"
         if mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=mode,
                 headless=True,
                 record_video=False,
@@ -4143,7 +4107,7 @@ class GenesisBackend(SimBackend):
                 output_video=None,
             )
         if mode == "interactive":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=mode,
                 headless=False,
                 record_video=False,
@@ -4155,7 +4119,7 @@ class GenesisBackend(SimBackend):
             raise ValueError("genesis record playback requires a finite training.play_steps value.")
         if output_video is None:
             raise ValueError("genesis record playback requires an output video path.")
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode=mode,
             headless=True,
             record_video=True,
@@ -4163,7 +4127,7 @@ class GenesisBackend(SimBackend):
             output_video=output_video,
         )
 
-    def init_renderer(
+    def bind_renderer(
         self,
         spacing: float = 1.0,
         *,
@@ -4193,7 +4157,7 @@ class GenesisBackend(SimBackend):
                     f"cannot reinitialize it with headless={config[0]}, capture={config[1]}"
                 )
             return
-        self._require_state("init_renderer")
+        self._require_state("bind_renderer")
         self._render_config = config
         self._camera_cfg = CameraCfg.from_kwargs(camera_kwargs)
         self._camera_tracking_env_idx = (
@@ -4260,7 +4224,7 @@ class GenesisBackend(SimBackend):
     def render(self) -> None:
         """Draw one interactive viewer frame (self-initializes interactive)."""
         if self._viewer is None:
-            self.init_renderer(headless=False, camera_kwargs=self._camera_cfg)
+            self.bind_renderer(headless=False, camera_kwargs=self._camera_cfg)
         assert self._viewer is not None
         try:
             self._scene.visualizer.update(force=False)
@@ -4274,7 +4238,7 @@ class GenesisBackend(SimBackend):
     def capture_video_frame(self) -> np.ndarray:
         """Capture one offscreen RGB frame (self-initializes headless+capture)."""
         if self._render_camera is None:
-            self.init_renderer(headless=True, capture=True, camera_kwargs=self._camera_cfg)
+            self.bind_renderer(headless=True, capture=True, camera_kwargs=self._camera_cfg)
         assert self._render_camera is not None
         if self._camera_tracking_env_idx is not None and self._base_link_idx is not None:
             lookat = np.asarray(
@@ -4348,10 +4312,10 @@ class GenesisBackend(SimBackend):
     # Physics-state playback contract (detached MuJoCo replay)            #
     # ------------------------------------------------------------------ #
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
+    def get_play_capabilities(self) -> PlayCapabilities:
         # The native interactive renderer and video capture path is unchanged;
         # physics-state playback adds the detached MuJoCo replay contract.
-        return BackendPlayCapabilities(
+        return PlayCapabilities(
             supports_native_interactive_renderer=True,
             supports_physics_state_playback=True,
             supports_native_video_capture=True,

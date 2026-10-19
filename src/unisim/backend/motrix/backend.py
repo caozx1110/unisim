@@ -67,30 +67,30 @@ except ImportError:
     _MotrixRenderClosedError = ()
 
 from ..base import (
-    BackendHeightScanner,
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
-    BackendTerrainSpawnData,
     CameraCfg,
+    HeightScanner,
     HostBridgeTransferPlan,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     PublicStateWidths,
     RenderClosedError,
+    RootStateLayout,
     SimBackend,
     TensorExecution,
     TensorIOSpec,
     TensorLifecycleCapabilities,
+    TerrainSpawnData,
     normalize_play_render_mode,
     unsupported_debug_overlay_error,
 )
-from ..motrix_camera import (
-    MotrixTrackingCamera,
+from ..reset_impact import ResetImpactIndex, bind_reset_impacts
+from .camera import (
+    TrackingCamera,
     render_offsets,
     resolve_system_camera_view,
     tracking_camera_lookat,
 )
-from ..reset_impact import ResetImpactIndex, bind_reset_impacts
 from .playback import run_motrix_playback
 
 logger = logging.getLogger(__name__)
@@ -308,7 +308,7 @@ class _MotrixUniformMeshVariantPlan:
 
 
 @dataclass
-class _MotrixTerrainScanner(BackendHeightScanner):
+class _MotrixTerrainScanner(HeightScanner):
     scanner: Any
     data: Any
     out: np.ndarray
@@ -344,8 +344,8 @@ def _build_motrix_scene_context(
 ) -> _MotrixSceneContext:
     frame_quat_sensor_names: tuple[str, ...] = ()
     from unisim.backend.motrix.scene import (
-        _materialize_motrix_hfield_attached_scene_with_sensor_names,
-        _materialize_motrix_scene_with_sensor_names,
+        materialize_hfield_attached_scene_with_sensor_inventory,
+        materialize_scene_with_sensor_inventory,
     )
 
     if scene is None:
@@ -354,17 +354,13 @@ def _build_motrix_scene_context(
         raise ValueError("SceneCfg.model_file must be provided")
 
     if scene.terrain is None:
-        materialized = _materialize_motrix_scene_with_sensor_names(
+        materialized = materialize_scene_with_sensor_inventory(
             model_file=scene.model_file,
             fragment_files=scene.fragment_files,
             add_body_sensors=add_body_sensors,
             base_name=base_name,
         )
-        if len(materialized) == 2:
-            model, sensor_names = materialized
-            frame_quat_sensor_names = ()
-        else:
-            model, sensor_names, frame_quat_sensor_names = materialized
+        model, sensor_names, frame_quat_sensor_names = materialized
         return _MotrixSceneContext(
             model=model,
             sensor_names=sensor_names,
@@ -376,7 +372,7 @@ def _build_motrix_scene_context(
         raise ValueError("SceneCfg.terrain.generator must be configured for terrain scenes")
 
     model, terrain_origins, terrain_surface_sampler, sensor_names, frame_quat_sensor_names = (
-        _materialize_motrix_hfield_attached_scene_with_sensor_names(
+        materialize_hfield_attached_scene_with_sensor_inventory(
             model_file=scene.model_file,
             terrain_cfg=scene.terrain.generator,
             fragment_files=scene.fragment_files,
@@ -672,7 +668,7 @@ class MotrixBackend(SimBackend):
         if portable_mode:
             from unisim.scene_compiler import compile_portable_scene
 
-            from .scene import _materialize_motrix_expanded_scene_with_sensor_inventory
+            from .scene import materialize_expanded_scene_with_sensor_inventory
 
             composed = compile_portable_scene(scene, int(num_envs), float(sim_dt))
             self._composed_scene = composed
@@ -721,7 +717,7 @@ class MotrixBackend(SimBackend):
                 )
                 for variant in [0] if uniform_mesh_variants else np.unique(assignment).tolist():
                     model, sensor_inventory = (
-                        _materialize_motrix_expanded_scene_with_sensor_inventory(
+                        materialize_expanded_scene_with_sensor_inventory(
                             model_file=(
                                 composed.model_file
                                 if uniform_mesh_variants
@@ -954,7 +950,7 @@ class MotrixBackend(SimBackend):
         self._terrain_spawn_data = (
             None
             if self.terrain_origins is None
-            else BackendTerrainSpawnData(
+            else TerrainSpawnData(
                 terrain_origins=self.terrain_origins,
                 sample_height=(
                     None
@@ -1180,7 +1176,7 @@ class MotrixBackend(SimBackend):
         self._render_headless: bool | None = None
         self._render_capture_enabled = False
         self._render_offsets_np: np.ndarray | None = None
-        self._render_tracking_camera: MotrixTrackingCamera | None = None
+        self._render_tracking_camera: TrackingCamera | None = None
         self.backend_type = "motrix"
 
         # Pre-cache link objects to avoid repeated get_link() lookups.
@@ -2247,7 +2243,7 @@ class MotrixBackend(SimBackend):
             )
         return tuple(names)
 
-    def get_terrain_spawn_data(self) -> BackendTerrainSpawnData | None:
+    def get_terrain_spawn_data(self) -> TerrainSpawnData | None:
         return self._terrain_spawn_data
 
     def get_keyframe_qpos(self, name: str) -> np.ndarray:
@@ -2316,7 +2312,7 @@ class MotrixBackend(SimBackend):
         )
         return np.zeros((6 + len(indices),), dtype=self._np_dtype)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if self._portable_mode:
             layout = self.get_scene_layout()
             entity_name, separator, local_name = str(root_body_name).partition("/")
@@ -2335,7 +2331,7 @@ class MotrixBackend(SimBackend):
                 raise ValueError(
                     f"portable Motrix root {root_body_name!r} does not own a floating base"
                 )
-            return BackendRootStateLayout(
+            return RootStateLayout(
                 qpos_indices=entity.root_qpos_indices,
                 qvel_indices=entity.root_qvel_indices,
             )
@@ -2348,7 +2344,7 @@ class MotrixBackend(SimBackend):
                 "backend 'motrix' capability 'root-state layout' requires body "
                 f"'{root_body_name}' to own a floating base"
             )
-        return BackendRootStateLayout(
+        return RootStateLayout(
             qpos_indices=tuple(int(index) for index in floating_base.dof_pos_indices),
             qvel_indices=tuple(int(index) for index in floating_base.dof_vel_indices),
         )
@@ -2744,10 +2740,10 @@ class MotrixBackend(SimBackend):
             self._portable_entity_roots()[:, index],
         )
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
+    def get_play_capabilities(self) -> PlayCapabilities:
         # The native interactive renderer and video capture path is unchanged;
         # physics-state playback adds the detached MuJoCo replay contract.
-        return BackendPlayCapabilities(
+        return PlayCapabilities(
             supports_native_interactive_renderer=True,
             supports_physics_state_playback=True,
             supports_native_video_capture=True,
@@ -3834,11 +3830,11 @@ class MotrixBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | os.PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         mode = normalize_play_render_mode(play_render_mode)
         effective_mode = "interactive" if mode == "auto" else mode
         if effective_mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=effective_mode,
                 headless=True,
                 record_video=False,
@@ -3846,7 +3842,7 @@ class MotrixBackend(SimBackend):
                 output_video=None,
             )
         if effective_mode == "interactive":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=effective_mode,
                 headless=False,
                 record_video=False,
@@ -3858,7 +3854,7 @@ class MotrixBackend(SimBackend):
             raise ValueError("Motrix record playback requires a finite training.play_steps value.")
         if output_video is None:
             raise ValueError("Motrix record playback requires an output video path.")
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode=effective_mode,
             headless=True,
             record_video=True,
@@ -4269,15 +4265,15 @@ class MotrixBackend(SimBackend):
             np.asarray(values, dtype=self._np_dtype), sensor_names
         )
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         """Declare MotrixSim's CPU-authoritative tensor execution profile."""
         return TensorExecution.HOST_BRIDGE
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         """Return the MotrixSim packed host-bridge capability matrix."""
-        from .tensor import motrix_tensor_capabilities
+        from .tensor import tensor_capabilities
 
-        return motrix_tensor_capabilities(self)
+        return tensor_capabilities(self)
 
     def get_public_state_widths(self) -> PublicStateWidths:
         """Return the canonical public qpos/qvel tensor reset widths."""
@@ -4287,7 +4283,7 @@ class MotrixBackend(SimBackend):
         widths = _field_widths(self)
         return PublicStateWidths(nq=widths["qpos"], nv=widths["qvel"])
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
+    def bind_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
         """Compile persistent MotrixSim staging and packed device layouts."""
         from .tensor import MotrixHostBridgeTransferPlan
 
@@ -4299,21 +4295,21 @@ class MotrixBackend(SimBackend):
         self, fields: tuple[str, ...] | str | None = None, device: Any | None = None
     ) -> Mapping[str, Any]:
         """Copy authoritative CPU state to an explicitly selected Torch device."""
-        from .tensor import motrix_state_views
+        from .tensor import state_views
 
-        return motrix_state_views(self, fields, device)
+        return state_views(self, fields, device)
 
     def get_sensor_view(self, name: str, device: Any | None = None) -> Any:
         """Copy one authoritative CPU sensor block to a Torch device."""
-        from .tensor import motrix_sensor_view
+        from .tensor import sensor_view
 
-        return motrix_sensor_view(self, name, device)
+        return sensor_view(self, name, device)
 
     def step_tensor(self, ctrl: Any, nsteps: int = 1) -> dict | None:
         """Bridge one accelerator control tensor to CPU MotrixSim physics."""
-        from .tensor import motrix_step_tensor
+        from .tensor import step_tensor
 
-        return motrix_step_tensor(self, ctrl, nsteps)
+        return step_tensor(self, ctrl, nsteps)
 
     def set_state_tensor(
         self,
@@ -4323,9 +4319,9 @@ class MotrixBackend(SimBackend):
         randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         """Bridge selected accelerator reset state to CPU MotrixSim physics."""
-        from .tensor import motrix_set_state_tensor
+        from .tensor import set_state_tensor
 
-        return motrix_set_state_tensor(self, env_indices, qpos, qvel, randomization)
+        return set_state_tensor(self, env_indices, qpos, qvel, randomization)
 
     def set_state_tensor_mask(
         self,
@@ -4337,17 +4333,17 @@ class MotrixBackend(SimBackend):
         full_refresh: bool = False,
     ) -> dict | None:
         """Commit full-width accelerator reset state selected by a bool mask."""
-        from .tensor import motrix_set_state_tensor_mask
+        from .tensor import set_state_tensor_mask
 
-        return motrix_set_state_tensor_mask(
+        return set_state_tensor_mask(
             self, reset_mask, qpos, qvel, randomization, full_refresh=full_refresh
         )
 
-    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+    def bind_packed_reset(self, *, device: Any | None = None) -> Any:
         """Begin a host-bridge transaction with one packed reset commit boundary."""
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def _bind_sensor_data_reader(self, names: tuple[str, ...]) -> Callable[[], np.ndarray]:
         """Retain Motrix's opaque native reader after cold-path name validation.
@@ -4809,7 +4805,7 @@ class MotrixBackend(SimBackend):
                 )
                 applied_force[:] = target_force
 
-    def create_hfield_scanner(
+    def bind_height_scanner(
         self,
         *,
         hfield_geom_id: int,
@@ -4817,7 +4813,7 @@ class MotrixBackend(SimBackend):
         frame_body_id: int,
         alignment: str = "yaw",
         output: str = "height",
-    ) -> BackendHeightScanner:
+    ) -> HeightScanner:
         offsets_np = np.ascontiguousarray(np.asarray(offsets, dtype=np.float32))
         if offsets_np.ndim != 2 or offsets_np.shape[1] != 2:
             raise ValueError(f"offsets must have shape (num_points, 2), got {offsets_np.shape}")
@@ -4888,7 +4884,7 @@ class MotrixBackend(SimBackend):
             )
         return
 
-    def init_renderer(
+    def bind_renderer(
         self,
         spacing: float = 1.0,
         *,
@@ -4968,7 +4964,7 @@ class MotrixBackend(SimBackend):
     def render(self):
         """Render current state (interactive visualization)"""
         if self._render_app is None:
-            self.init_renderer()
+            self.bind_renderer()
         self._assert_render_context_available(headless=False, capture=False)
         assert self._render_app is not None
         self._update_tracking_camera_view()
@@ -4982,7 +4978,7 @@ class MotrixBackend(SimBackend):
     def capture_video_frame(self) -> np.ndarray:
         """Capture one RGB frame from Motrix's system camera."""
         if self._render_app is None:
-            self.init_renderer(headless=True, capture=True)
+            self.bind_renderer(headless=True, capture=True)
         if not self._render_capture_enabled:
             raise RuntimeError("Motrix renderer is not initialized for video capture")
         assert self._render_app is not None

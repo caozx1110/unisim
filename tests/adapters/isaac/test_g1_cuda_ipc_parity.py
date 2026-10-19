@@ -375,7 +375,7 @@ def _run_full_g1_parity(backend_name: str, output_path: str | Path) -> dict[str,
             isaac_initial_reset, isaac_full_reset
         )
 
-        host_steps: list[G1ControlStep] = []
+        _host_steps: list[G1ControlStep] = []
         device_steps: list[G1ControlStep] = []
         isaac_steps: list[G1ControlStep] = []
         for step_index, (control, control_torch) in enumerate(
@@ -387,16 +387,16 @@ def _run_full_g1_parity(backend_name: str, output_path: str | Path) -> dict[str,
             host_after_step = _host_snapshot(mujoco_backend, "mujoco")
             device_after_step = _device_snapshot(mjwarp_backend, "mjwarp")
             isaac_after_step = _device_snapshot(isaac_backend, backend_name)
-            host_steps.append(G1ControlStep(step_index, control, host_after_step))
+            _host_steps.append(G1ControlStep(step_index, control, host_after_step))
             device_steps.append(G1ControlStep(step_index, control, device_after_step))
             isaac_steps.append(G1ControlStep(step_index, control, isaac_after_step))
 
         first_step_refresh = sensor_refresh_magnitude(isaac_full_reset, isaac_steps[0].snapshot)
 
         step_comparisons = {
-            "isaac_vs_mujoco": compare_control_step_trajectories(host_steps, isaac_steps),
+            "isaac_vs_mujoco": compare_control_step_trajectories(_host_steps, isaac_steps),
             "isaac_vs_mjwarp": compare_control_step_trajectories(device_steps, isaac_steps),
-            "mjwarp_vs_mujoco": compare_control_step_trajectories(host_steps, device_steps),
+            "mjwarp_vs_mujoco": compare_control_step_trajectories(_host_steps, device_steps),
         }
         report.update(
             {
@@ -436,12 +436,12 @@ def _run_full_g1_parity(backend_name: str, output_path: str | Path) -> dict[str,
                 "control_steps": {
                     "controls": control_trajectory.tolist(),
                     "snapshots": {
-                        "mujoco": [step.snapshot.report() for step in host_steps],
+                        "mujoco": [step.snapshot.report() for step in _host_steps],
                         "mjwarp": [step.snapshot.report() for step in device_steps],
                         backend_name: [step.snapshot.report() for step in isaac_steps],
                     },
                     "arrays": {
-                        "mujoco": [step.snapshot.array_report() for step in host_steps],
+                        "mujoco": [step.snapshot.array_report() for step in _host_steps],
                         "mjwarp": [step.snapshot.array_report() for step in device_steps],
                         backend_name: [step.snapshot.array_report() for step in isaac_steps],
                     },

@@ -20,10 +20,10 @@ from typing import Any
 import numpy as np
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
     CameraCfg,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     PublicStateWidths,
     SelectedResetPublication,
     SensorDescriptor,
@@ -33,10 +33,10 @@ from unisim.backend.base import (
     TensorProcessTopology,
     TrackedBodyStateViews,
     normalize_play_render_mode,
-    validate_tensor_device,
+    validate_torch_device,
 )
 from unisim.backend.isaacgym.backend import IsaacGymWorkerError
-from unisim.backend.playback_common import display_available
+from unisim.backend.playback import display_available
 from unisim.backend.subprocess_ipc import protocol
 from unisim.backend.subprocess_ipc.backend import (
     MjcfSubprocessBackend,
@@ -81,6 +81,7 @@ from unisim.dr.types import (
 )
 from unisim.entities import SceneResetRequest
 from unisim.progress import progress_enabled
+from unisim.utils.quaternion import torch_quat_mul, torch_quat_rotate
 
 from .dependencies import build_worker_env, resolve_isaacsim_runtime
 from .physx_solver import PHYSX_SOLVER_AUTHORED_FIELDS, PhysxSolverConfig, solver_value_matches
@@ -1111,13 +1112,13 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             ),
         }
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         if not self._tensor_cuda_ipc_requested or self._entity_scene is None:
             return TensorExecution.UNSUPPORTED
         return TensorExecution.DEVICE_RESIDENT
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
-        if self.tensor_execution() is TensorExecution.UNSUPPORTED:
+        if self.get_tensor_execution() is TensorExecution.UNSUPPORTED:
             return super().get_tensor_capabilities()
         return TensorLifecycleCapabilities(
             execution=TensorExecution.DEVICE_RESIDENT,
@@ -1143,7 +1144,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
 
     def get_public_state_widths(self) -> PublicStateWidths:
         """Return the mapped public qpos/qvel arena widths."""
-        if self.tensor_execution() is TensorExecution.UNSUPPORTED:
+        if self.get_tensor_execution() is TensorExecution.UNSUPPORTED:
             raise NotImplementedError(
                 "isaacsim public tensor state widths require tensor_cuda_ipc=true and a "
                 "mapped Manager-Based scene"
@@ -1228,7 +1229,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             if (
                 not isinstance(reply, dict)
                 or reply.get("device_uuid") != arena.device_uuid
-                or reply.get("layout") != arena.layout.as_dict()
+                or reply.get("layout") != arena.layout.to_wire()
             ):
                 raise IsaacSimWorkerError("IsaacSim worker returned an invalid CUDA IPC handshake")
         except Exception:
@@ -1325,7 +1326,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
 
     def _cuda_body_inventory(self) -> tuple[str, ...]:
         """Return canonical tracked-body names in frozen public entity order."""
-        if self.tensor_execution() is TensorExecution.UNSUPPORTED:
+        if self.get_tensor_execution() is TensorExecution.UNSUPPORTED:
             raise NotImplementedError(
                 "IsaacSim tracked-body views require tensor_cuda_ipc=true and a mapped "
                 "Manager-Based scene"
@@ -1356,28 +1357,6 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             if mapped[0].kind in ("framepos", "framequat", "framezaxis")
         }
 
-    @staticmethod
-    def _cuda_quat_rotate(torch: Any, quat_wxyz: Any, vectors: Any) -> Any:
-        vector = quat_wxyz[..., 1:4]
-        cross = torch.cross(vector, vectors, dim=-1)
-        return (
-            vectors + quat_wxyz[..., 0:1] * (2.0 * cross) + 2.0 * torch.cross(vector, cross, dim=-1)
-        )
-
-    @staticmethod
-    def _cuda_quat_mul(torch: Any, left_wxyz: Any, right_wxyz: Any) -> Any:
-        left_vector = left_wxyz[..., 1:4]
-        right_vector = right_wxyz[..., 1:4]
-        vector = (
-            left_wxyz[..., 0:1] * right_vector
-            + right_wxyz[..., 0:1] * left_vector
-            + torch.cross(left_vector, right_vector, dim=-1)
-        )
-        scalar = left_wxyz[..., 0:1] * right_wxyz[..., 0:1] - torch.sum(
-            left_vector * right_vector, dim=-1, keepdim=True
-        )
-        return torch.cat((scalar, vector), dim=-1)
-
     def _cuda_derived_sensor_view(self, name: str, arena: Any) -> Any:
         candidates = [
             (qualified, mapped)
@@ -1393,16 +1372,16 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             local_pos = torch.as_tensor(
                 spec.local_pos, dtype=torch.float32, device=body.device
             ).expand(body.shape[0], 3)
-            return body[:, 0:3] + self._cuda_quat_rotate(torch, body[:, 3:7], local_pos)
+            return body[:, 0:3] + torch_quat_rotate(torch, body[:, 3:7], local_pos)
         local_quat = torch.as_tensor(
             spec.local_quat, dtype=torch.float32, device=body.device
         ).expand(body.shape[0], 4)
-        world_quat = self._cuda_quat_mul(torch, body[:, 3:7], local_quat)
+        world_quat = torch_quat_mul(torch, body[:, 3:7], local_quat)
         if spec.kind == "framequat":
             return world_quat
         world_z = torch.zeros_like(body[:, 0:3])
         world_z[:, 2] = 1.0
-        return self._cuda_quat_rotate(torch, world_quat, world_z)
+        return torch_quat_rotate(torch, world_quat, world_z)
 
     def _cuda_sensor_inventory(self) -> tuple[SensorDescriptor, ...]:
         scalar_aliases = sorted(
@@ -1445,7 +1424,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             raise KeyError("IsaacSim CUDA IPC state views only support qpos and qvel")
         arena = self._ensure_cuda_ipc_arena()
         if device is not None:
-            validate_tensor_device(
+            validate_torch_device(
                 (str(arena.qpos.device),),
                 device,
                 current_device=arena.device_index,
@@ -1473,7 +1452,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         body_id: int | None = None
         arena = self._ensure_cuda_ipc_arena()
         if device is not None:
-            validate_tensor_device(
+            validate_torch_device(
                 (str(arena.qpos.device),),
                 device,
                 current_device=arena.device_index,
@@ -1545,7 +1524,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         """Return four ordered tracked-body blocks from one public IPC read."""
         arena = self._ensure_cuda_ipc_arena()
         if device is not None:
-            validate_tensor_device(
+            validate_torch_device(
                 (str(arena.qpos.device),),
                 device,
                 current_device=arena.device_index,
@@ -1592,7 +1571,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         expected = (self._num_envs, self.num_actuators)
         if tuple(ctrl.shape) != expected:
             raise ValueError(f"control must have shape {expected}, got {tuple(ctrl.shape)}")
-        validate_tensor_device(
+        validate_torch_device(
             (str(arena.ctrl.device),),
             ctrl.device,
             current_device=arena.device_index,
@@ -1621,7 +1600,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         qvel: Any,
         randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
-        if self.tensor_execution() is TensorExecution.UNSUPPORTED:
+        if self.get_tensor_execution() is TensorExecution.UNSUPPORTED:
             return super().set_state_tensor(env_indices, qpos, qvel, randomization)
         if randomization is not None and not isinstance(
             randomization, TensorResetRandomizationPayload
@@ -1639,7 +1618,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             (qpos, "IsaacSim CUDA IPC reset qpos"),
             (qvel, "IsaacSim CUDA IPC reset qvel"),
         ):
-            validate_tensor_device(
+            validate_torch_device(
                 (str(device),),
                 tensor.device,
                 current_device=arena.device_index,
@@ -1712,7 +1691,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         import_torch()
         if full_refresh:
             raise NotImplementedError("isaacsim CUDA IPC mask reset is a selected-row boundary")
-        if self.tensor_execution() is TensorExecution.UNSUPPORTED:
+        if self.get_tensor_execution() is TensorExecution.UNSUPPORTED:
             raise NotImplementedError("isaacsim CUDA IPC tensor lifecycle requires a mapped scene")
         require_cuda_tensor_of_dtype(reset_mask, rank=1, name="reset mask", dtype="bool")
         require_cuda_tensor(qpos, rank=2, name="reset qpos")
@@ -1752,12 +1731,12 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             selected_payload,
         )
 
-    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+    def bind_packed_reset(self, *, device: Any | None = None) -> Any:
         """Begin a packed transaction over the external CUDA IPC reset boundary."""
 
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def close(self) -> None:
         arena = getattr(self, "_cuda_ipc_arena", None)
@@ -2860,7 +2839,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             result[:, offset : offset + len(entity.geoms), :] = friction
         return result
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
+    def get_play_capabilities(self) -> PlayCapabilities:
         """Return the Kit viewer/camera plus physics-state playback capabilities.
 
         Both scene profiles implement the playback contract.  The mapped
@@ -2871,7 +2850,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         cannot replay (fixed base, ball joints, reordered freejoints) keep
         failing closed here.
         """
-        return BackendPlayCapabilities(
+        return PlayCapabilities(
             supports_native_interactive_renderer=True,
             supports_physics_state_playback=self._active_playback_state_layout() is not None,
             supports_native_video_capture=True,
@@ -3119,10 +3098,10 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | os.PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         requested_mode = normalize_play_render_mode(play_render_mode)
         if requested_mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="none",
                 headless=True,
                 record_video=False,
@@ -3145,7 +3124,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
                 "before env creation."
             )
         if mode == "interactive":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=mode,
                 headless=False,
                 record_video=False,
@@ -3158,7 +3137,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             )
         if output_video is None:
             raise ValueError("isaacsim record playback requires an output video path.")
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode="record",
             headless=True,
             record_video=True,
@@ -3166,7 +3145,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             output_video=output_video,
         )
 
-    def init_renderer(
+    def bind_renderer(
         self,
         spacing: float = 1.0,
         *,
@@ -3205,7 +3184,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             )
         # ``super`` owns the protocol/lifecycle and is intentionally called
         # only after the mode/dimension checks above.
-        super().init_renderer(
+        super().bind_renderer(
             spacing=spacing,
             offset_mode=offset_mode,
             headless=headless,

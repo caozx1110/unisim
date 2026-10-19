@@ -6,7 +6,7 @@
 
 ## 决策
 
-`SimBackend.bind_mocap_pose(body_name)` 在冷路径解析一个固定 mocap body，并返回 `unisim.backend.base` 的 `BackendMocapPoseBinding`。不可变绑定包含 `backend_type`、`body_name`、`num_envs`、形状为 `(7,)` 的分离只读 `default_pose`，以及后端拥有的回调。其公共方法是：
+`SimBackend.bind_mocap_pose(body_name)` 在冷路径解析一个固定 mocap body，并返回 `unisim.backend.base` 的 `MocapPoseBinding`。不可变绑定包含 `backend_type`、`body_name`、`num_envs`、形状为 `(7,)` 的分离只读 `default_pose`，以及后端拥有的回调。其公共方法是：
 
 - `read() -> np.ndarray`：分离的 `(num_envs, 7)` 世界姿态。
 - `write(env_ids, poses) -> None`：唯一整数环境 ID 与浮点 `(len(env_ids), 7)` 姿态。布局为世界坐标 xyz 后接单位 wxyz 四元数。空选择是经过校验的 no-op。
@@ -27,7 +27,7 @@
 | `dof_damping` | `(R, nv)` | 非负关节阻尼 |
 | `dof_frictionloss` | `(R, nv)` | 非负关节摩擦损耗 |
 
-`unisim.dr.types` 中的常量是 `RESET_TERM_GEOM_SIZE`、`RESET_TERM_GEOM_SOLREF`、`RESET_TERM_GEOM_SOLIMP`、`RESET_TERM_DOF_DAMPING` 和 `RESET_TERM_DOF_FRICTIONLOSS`。`get_geom_sizes`、`get_geom_solref`、`get_geom_solimp`、`get_dof_damping` 与 `get_dof_frictionloss` 为冷路径消费者绑定暴露分离默认表；它们不是逐世界当前模型视图。模型随机化在仅重置状态的 reset 后持久存在。
+`unisim.dr.types` 中的常量是 `RESET_TERM_GEOM_SIZE`、`RESET_TERM_GEOM_SOLREF`、`RESET_TERM_GEOM_SOLIMP`、`RESET_TERM_DOF_DAMPING` 和 `RESET_TERM_DOF_FRICTIONLOSS`。`get_default_geom_sizes`、`get_geom_solref`、`get_geom_solimp`、`get_dof_damping` 与 `get_dof_frictionloss` 为冷路径消费者绑定暴露分离默认表；它们不是逐世界当前模型视图。模型随机化在仅重置状态的 reset 后持久存在。
 
 MJWarp 在改变状态或上传模型数据前校验新表。Solref 接受两个正的时间常数/阻尼比值，或两个非正的直接格式值。Solimp 要求阻抗端点在 `[0,1]` 内、宽度为正、中点在 `(0,1)` 内，且幂至少为 1。几何尺寸写入要求基本几何半径或范围为正；未使用分量可以为零。所有表值都必须能表示为有限 float32。
 

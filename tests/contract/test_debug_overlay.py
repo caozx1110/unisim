@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
     CameraCfg,
     DebugPrimitive,
+    PlayCapabilities,
     validate_debug_overlays,
 )
 from unisim.fake import FakeBackend
@@ -172,8 +172,8 @@ class TestCameraCfg:
 
 class TestPlayCapabilities:
     def test_default_is_false(self) -> None:
-        assert not BackendPlayCapabilities().supports_debug_overlay
-        assert not BackendPlayCapabilities().supports_interactive_debug_overlay
+        assert not PlayCapabilities().supports_debug_overlay
+        assert not PlayCapabilities().supports_interactive_debug_overlay
 
     def test_fake_backend_default(self) -> None:
         capabilities = FakeBackend().get_play_capabilities()
@@ -785,13 +785,13 @@ class TestInteractiveOverlayInjection:
 
 class TestOnFrameCallback:
     def test_none_passthrough(self) -> None:
-        from unisim.backend.playback_common import apply_on_frame_callback
+        from unisim.backend.playback import apply_on_frame_callback
 
         frames = [np.zeros((4, 4, 3), dtype=np.uint8)]
         assert apply_on_frame_callback(frames, None, backend_label="test") is frames
 
     def test_replacement_and_keep(self) -> None:
-        from unisim.backend.playback_common import apply_on_frame_callback
+        from unisim.backend.playback import apply_on_frame_callback
 
         frames = [np.zeros((4, 4, 3), dtype=np.uint8) for _ in range(3)]
         calls: list[int] = []
@@ -808,7 +808,7 @@ class TestOnFrameCallback:
         assert out[1].min() == 255
 
     def test_bad_replacement_fails_closed(self) -> None:
-        from unisim.backend.playback_common import apply_on_frame_callback
+        from unisim.backend.playback import apply_on_frame_callback
 
         frames = [np.zeros((4, 4, 3), dtype=np.uint8)]
         with pytest.raises(ValueError, match="on_frame must return None"):

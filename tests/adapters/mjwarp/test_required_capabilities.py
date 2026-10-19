@@ -99,7 +99,7 @@ def test_mocap_sparse_pose_effect_reset_and_other_worlds(backend) -> None:
 
 def test_extended_model_rows_bounds_and_contact_effect(backend) -> None:
     _reset(backend, position=0.08)
-    sizes = backend.get_geom_sizes()[None].copy()
+    sizes = backend.get_default_geom_sizes()[None].copy()
     ball = backend.get_geom_id("ball")
     sizes[0, ball, 0] = 0.1
     solref = backend.get_geom_solref()[None] * 1.2
@@ -179,7 +179,7 @@ def test_new_field_validation_precedes_state_or_model_mutation(backend) -> None:
     before = backend._host_get_state(("qpos",))["qpos"].copy()
     size_before = backend._device_model.geom_size.numpy().copy()
     rows = np.array([0], dtype=np.int32)
-    payload = _payload(geom_size=backend.get_geom_sizes()[None].copy())
+    payload = _payload(geom_size=backend.get_default_geom_sizes()[None].copy())
     payload.geom_size[0, backend.get_geom_id("ball"), 0] = 0.2
     payload.dof_damping = torch.full((1, backend.get_init_qvel().size), torch.nan)
     with pytest.raises(ValueError, match="finite"):
@@ -195,7 +195,7 @@ def test_new_field_validation_precedes_state_or_model_mutation(backend) -> None:
 @pytest.mark.parametrize("field", ("geom_solref", "geom_solimp"))
 def test_contact_parameters_change_selected_world_contact_force(backend, field) -> None:
     defaults = {
-        "geom_size": backend.get_geom_sizes(),
+        "geom_size": backend.get_default_geom_sizes(),
         "geom_solref": backend.get_geom_solref(),
         "geom_solimp": backend.get_geom_solimp(),
     }
@@ -239,7 +239,10 @@ def test_contact_parameters_change_selected_world_contact_force(backend, field) 
     ),
 )
 def test_extended_field_shapes_ranges_and_dtypes_fail_before_mutation(backend, field, kind) -> None:
-    getter = backend.get_geom_sizes if field == "geom_size" else getattr(backend, f"get_{field}")
+    if field == "geom_size":
+        getter = backend.get_default_geom_sizes
+    else:
+        getter = getattr(backend, f"get_{field}")
     values = getter()[None]
     if kind == "shape":
         values = values[:, :-1]

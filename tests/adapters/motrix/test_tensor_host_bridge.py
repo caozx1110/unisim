@@ -66,7 +66,7 @@ def backend(tmp_path: Path) -> MotrixBackend:
 def test_tensor_capability_matrix_is_narrow_and_fail_closed(backend: MotrixBackend) -> None:
     capabilities = backend.get_tensor_capabilities()
     _assert_tensor_platform_capabilities("motrix", capabilities)
-    assert backend.tensor_execution() is TensorExecution.HOST_BRIDGE
+    assert backend.get_tensor_execution() is TensorExecution.HOST_BRIDGE
     assert capabilities.execution is TensorExecution.HOST_BRIDGE
     assert capabilities.state_fields == frozenset({"qpos", "qvel", "ctrl"})
     assert capabilities.sensor_views
@@ -108,7 +108,7 @@ def test_packed_lifecycle_and_semantic_transfer_counts(
     if device_name == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
     device = torch.device(device_name)
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("angle", "speed"),
@@ -203,7 +203,7 @@ def test_selected_read_before_full_read_preserves_all_rows_or_fails_closed(
             return original_empty(*args, **kwargs).fill_(-123.0)
 
         patch.setattr(torch, "empty", sentinel_empty)
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=("angle", "speed"),
@@ -233,7 +233,7 @@ def test_selected_read_before_full_read_preserves_all_rows_or_fails_closed(
 
 
 def test_mask_reset_publishes_selected_rows_to_host_bridge_plans(backend: MotrixBackend) -> None:
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("angle", "speed"),
@@ -262,7 +262,7 @@ def test_mask_reset_publishes_selected_rows_to_host_bridge_plans(backend: Motrix
 def test_selected_physical_sensors_use_one_batched_read(
     backend: MotrixBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("angle", "speed"),
@@ -316,7 +316,7 @@ def test_selected_physical_sensors_use_one_batched_read(
 def test_selected_reset_payload_matches_canonical_reread(backend: MotrixBackend) -> None:
     """The cached reset packet remains equivalent to authoritative state reads."""
 
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("angle", "speed"),
@@ -355,7 +355,7 @@ def test_selected_read_does_not_compute_unselected_rows(
 ) -> None:
     """Selected publication must avoid full-batch body-state allocation."""
 
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("angle", "speed"),
@@ -400,7 +400,7 @@ def test_selected_read_does_not_compute_unselected_rows(
 def test_selected_body_read_matches_full_world_views(backend: MotrixBackend) -> None:
     """Selected body aliases remain numerically identical to full world reads."""
 
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos",),
             sensor_names=(
@@ -476,7 +476,7 @@ def test_cuda_packed_hot_path_avoids_hidden_cpu_detours(
         patch.setattr(torch.Tensor, "cpu", lambda self, *a, **k: fail_detour("cpu"))
         patch.setattr(torch.Tensor, "item", lambda self, *a, **k: fail_detour("item"))
         patch.setattr(torch.Tensor, "tolist", lambda self, *a, **k: fail_detour("tolist"))
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=("angle", "speed"),
@@ -568,7 +568,7 @@ def test_portable_generalized_tensor_parity_and_persistent_counters(
     candidate = MotrixBackend(_scene(tmp_path / "candidate"), 3, 0.002, base_name="robot/base")
     try:
         sensor_names = tuple(sorted(candidate._sensor_names))[:2]
-        plan = candidate.compile_host_bridge_io(
+        plan = candidate.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=sensor_names,
@@ -627,7 +627,7 @@ def test_portable_generalized_tensor_parity_and_persistent_counters(
 def test_packed_reset_validation_is_bounded_timed_and_producer_owned(
     backend: MotrixBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plan = backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
+    plan = backend.bind_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
     finite_ctrl = torch.zeros((backend.num_envs, backend.num_actuators), dtype=torch.float32)
     plan.write_control(finite_ctrl)
     before_stats = dict(plan.transfer_stats)
@@ -712,7 +712,7 @@ def test_body_state_sensor_aliases_use_public_world_views(backend: MotrixBackend
         atol=1e-6,
     )
 
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=(
@@ -748,13 +748,13 @@ def test_body_state_sensor_aliases_use_public_world_views(backend: MotrixBackend
 
 def test_host_bridge_rejects_unsupported_layouts_and_inputs(backend: MotrixBackend) -> None:
     with pytest.raises(ValueError, match="supports qpos, qvel, and ctrl"):
-        backend.compile_host_bridge_io(TensorIOSpec(state_fields=("time",)))
+        backend.bind_host_bridge_io(TensorIOSpec(state_fields=("time",)))
     with pytest.raises(KeyError, match="Unknown Motrix sensor"):
-        backend.compile_host_bridge_io(
+        backend.bind_host_bridge_io(
             TensorIOSpec(state_fields=("qpos",), sensor_names=("missing",))
         )
 
-    plan = backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
+    plan = backend.bind_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
     with pytest.raises(RuntimeError, match="write_control.*before"):
         plan.step()
     with pytest.raises(TypeError, match="contiguous float32"):
@@ -778,7 +778,7 @@ def test_tensor_stepping_fails_closed_with_host_callback(backend: MotrixBackend)
     backend._pre_step_control_fn = lambda ctrl: ctrl
     try:
         with pytest.raises(NotImplementedError, match="host pre-step control"):
-            backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
+            backend.bind_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
         with pytest.raises(NotImplementedError, match="host pre-step control"):
             backend.step_tensor(torch.zeros((3, 1), dtype=torch.float32))
     finally:
@@ -802,7 +802,7 @@ def test_direct_tensor_apis_fail_closed_with_fixed_variants(tmp_path: Path) -> N
         with pytest.raises(NotImplementedError, match="does not support fixed variants"):
             backend.get_sensor_view("source_joint")
         with pytest.raises(NotImplementedError, match="does not support fixed variants"):
-            backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
+            backend.bind_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
         with pytest.raises(NotImplementedError, match="does not support fixed variants"):
             backend.step_tensor(torch.zeros((2, backend.num_actuators), dtype=torch.float32))
         with pytest.raises(NotImplementedError, match="does not support fixed variants"):
@@ -816,7 +816,7 @@ def test_direct_tensor_apis_fail_closed_with_fixed_variants(tmp_path: Path) -> N
 
 
 def test_backend_close_releases_compiled_host_bridge_plan(backend: MotrixBackend) -> None:
-    plan = backend.compile_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
+    plan = backend.bind_host_bridge_io(TensorIOSpec(state_fields=("qpos", "qvel")))
     backend.close()
     with pytest.raises(RuntimeError, match="plan is closed"):
         plan.read_state_sensors()
@@ -874,7 +874,7 @@ def test_portable_zero_actuator_tensor_lifecycle_does_not_submit_empty_control(
         )
         assert result is not None
         after = backend.get_state_views(("qpos", "qvel"))
-        assert backend.tensor_execution() is TensorExecution.HOST_BRIDGE
+        assert backend.get_tensor_execution() is TensorExecution.HOST_BRIDGE
         assert torch.isfinite(after["qpos"]).all()
         assert torch.isfinite(after["qvel"]).all()
     finally:
@@ -891,7 +891,7 @@ def test_packed_reads_do_not_reread_sensor_layout(
     goes through the batched/row-local readers instead.
     """
 
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("angle", "speed"),
@@ -942,7 +942,7 @@ def test_compile_fails_closed_on_sensor_layout_drift(
 
     monkeypatch.setattr(backend, "_host_read_sensor", drifting_get_sensor_data)
     with pytest.raises(RuntimeError, match="layout changed after compilation"):
-        backend.compile_host_bridge_io(
+        backend.bind_host_bridge_io(
             TensorIOSpec(
                 state_fields=("qpos", "qvel"),
                 sensor_names=("angle", "speed"),
@@ -954,7 +954,7 @@ def test_compile_fails_closed_on_sensor_layout_drift(
 def test_packed_reads_fail_closed_on_buffer_layout_change(backend: MotrixBackend) -> None:
     """Hot reads still re-check the plan-owned staging buffer shapes."""
 
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("angle",),

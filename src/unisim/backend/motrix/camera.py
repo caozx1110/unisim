@@ -10,7 +10,7 @@ from unisim.backend.base import CameraCfg
 
 
 @dataclass(frozen=True)
-class MotrixTrackingCamera:
+class TrackingCamera:
     env_idx: int
     distance: float
     elevation: float
@@ -18,12 +18,12 @@ class MotrixTrackingCamera:
 
 
 @dataclass(frozen=True)
-class MotrixCameraView:
+class CameraView:
     lookat: list[float]
     distance: float
     elevation: float
     azimuth: float
-    tracking: MotrixTrackingCamera | None = None
+    tracking: TrackingCamera | None = None
 
 
 def render_offsets(num_envs: int, spacing: float, offset_mode: str = "grid") -> list[list[float]]:
@@ -42,7 +42,7 @@ def render_offsets(num_envs: int, spacing: float, offset_mode: str = "grid") -> 
 
 def tracking_camera_lookat(
     base_positions: np.ndarray,
-    tracking_camera: MotrixTrackingCamera,
+    tracking_camera: TrackingCamera,
     offsets: np.ndarray,
 ) -> list[float]:
     base_pos = np.asarray(base_positions[tracking_camera.env_idx], dtype=np.float64)
@@ -56,13 +56,13 @@ def resolve_system_camera_view(
     base_positions: np.ndarray | None,
     offsets: Sequence[Sequence[float]],
     camera_kwargs: CameraCfg | Mapping[str, Any] | None,
-) -> MotrixCameraView:
+) -> CameraView:
     camera = CameraCfg.from_kwargs(camera_kwargs)
     if camera.cam_tracking:
         if base_positions is None:
             raise ValueError("base_positions is required when cam_tracking=true")
         env_idx = max(0, min(camera.cam_tracking_env_idx, num_envs - 1))
-        tracking_camera = MotrixTrackingCamera(
+        tracking_camera = TrackingCamera(
             env_idx=env_idx,
             distance=camera.cam_distance,
             elevation=camera.cam_elevation,
@@ -73,7 +73,7 @@ def resolve_system_camera_view(
             tracking_camera,
             np.asarray(offsets, dtype=np.float64),
         )
-        return MotrixCameraView(
+        return CameraView(
             lookat=lookat,
             distance=tracking_camera.distance,
             elevation=tracking_camera.elevation,
@@ -91,7 +91,7 @@ def resolve_system_camera_view(
     else:
         lookat = [float(v) for v in camera.cam_lookat]
 
-    return MotrixCameraView(
+    return CameraView(
         lookat=lookat,
         distance=camera.cam_distance,
         elevation=camera.cam_elevation,

@@ -61,7 +61,7 @@ def test_mujoco_packed_host_bridge_plan_matches_tensor_views(tmp_path: Path) -> 
         device="cpu",
     )
     assert backend.get_tensor_capabilities().packed_host_bridge
-    plan = backend.compile_host_bridge_io(spec)
+    plan = backend.bind_host_bridge_io(spec)
     plan.write_control(torch.full((3, 1), 2.0, dtype=torch.float32))
     result = plan.step(nsteps=2)
     assert result is not None
@@ -139,7 +139,7 @@ def test_mujoco_packed_host_bridge_sensor_order_falls_back_correctly(
         for prefix in _TRACKED_SENSOR_ORDER_FALLBACK_PREFIXES
         for body in ("arm", "base")
     )
-    plan = backend.compile_host_bridge_io(
+    plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=sensor_names,
@@ -234,7 +234,7 @@ def test_mujoco_host_bridge_tensor_lifecycle(tmp_path: Path) -> None:
     model_path.write_text(MODEL)
     backend = MuJoCoBackend(SceneCfg(model_file=str(model_path)), num_envs=2, sim_dt=0.01)
     backend.materialize()
-    assert backend.tensor_execution().value == "host_bridge"
+    assert backend.get_tensor_execution().value == "host_bridge"
     capabilities = backend.get_tensor_capabilities()
     _assert_tensor_platform_capabilities("mujoco", capabilities)
     assert capabilities.execution is TensorExecution.HOST_BRIDGE
@@ -245,7 +245,7 @@ def test_mujoco_host_bridge_tensor_lifecycle(tmp_path: Path) -> None:
     assert capabilities.selected_reset
     assert capabilities.packed_host_bridge
     assert not capabilities.host_pre_step_control
-    packed_plan = backend.compile_host_bridge_io(
+    packed_plan = backend.bind_host_bridge_io(
         TensorIOSpec(
             state_fields=("qpos", "qvel"),
             sensor_names=("base_pos",),

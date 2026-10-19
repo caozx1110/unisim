@@ -37,7 +37,7 @@ def _arena_payload(
         "schema_version": tensor_ipc.ISAACSIM_TENSOR_SCHEMA_VERSION,
         "device_uuid": "0" * 32,
         "device_index": 0,
-        "layout": layout.as_dict(),
+        "layout": layout.to_wire(),
         "memory": CudaIpcMemHandle(
             opaque_handle=b"\0" * 64,
             device_uuid="0" * 32,
@@ -90,11 +90,11 @@ def test_cuda_arena_layout_is_aligned_and_rejects_noncanonical_offsets() -> None
     ) == (0, 256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2816)
     assert layout.size_bytes == 3072
 
-    encoded = layout.as_dict()
-    assert IsaacSimCudaArenaLayout.from_dict(encoded) == layout
+    encoded = layout.to_wire()
+    assert IsaacSimCudaArenaLayout.from_wire(encoded) == layout
     encoded["qvel_offset"] += 1
     with pytest.raises(ValueError, match="not canonical"):
-        IsaacSimCudaArenaLayout.from_dict(encoded)
+        IsaacSimCudaArenaLayout.from_wire(encoded)
     with pytest.raises(ValueError, match="invalid CUDA arena dimensions"):
         IsaacSimCudaArenaLayout.create(0, 1, 1, 1)
     with pytest.raises(ValueError, match="nbody=-1"):
@@ -165,7 +165,7 @@ def test_cuda_ipc_capabilities_are_opt_in_and_minimal() -> None:
     backend._tensor_cuda_ipc_requested = False
     backend._entity_scene = SimpleNamespace(layout=SimpleNamespace(nq=7, nv=6, nu=5))
     backend.backend_type = "isaacsim"
-    assert backend.tensor_execution().value == "unsupported"
+    assert backend.get_tensor_execution().value == "unsupported"
     assert backend.get_tensor_capabilities().state_views is False
     with pytest.raises(NotImplementedError, match="public tensor state widths"):
         backend.get_public_state_widths()
@@ -203,7 +203,7 @@ def test_cuda_ipc_capabilities_are_opt_in_and_minimal() -> None:
     with pytest.raises(NotImplementedError, match="fixed variants"):
         backend.get_state_views()
     with pytest.raises(NotImplementedError):
-        backend.compile_host_bridge_io(SimpleNamespace())  # type: ignore[arg-type]
+        backend.bind_host_bridge_io(SimpleNamespace())  # type: ignore[arg-type]
 
 
 def test_cuda_ipc_tensor_step_fails_closed_with_host_pre_step_callback() -> None:
@@ -1718,7 +1718,7 @@ def test_real_raw_cuda_arena_exports_stable_torch_views() -> None:
         assert payload["schema_version"] == 4
         assert payload["sensors"] == []
         assert "reset_event" in payload
-        assert payload["layout"] == arena.layout.as_dict()
+        assert payload["layout"] == arena.layout.to_wire()
     finally:
         arena.close()
 

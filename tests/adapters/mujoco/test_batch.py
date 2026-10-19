@@ -708,7 +708,7 @@ def test_scanner_yaw_heights_match_serial_reference(tmp_path: Path) -> None:
     geom_id = b.get_geom_id("terrain")
     body_id = int(b.get_body_ids(["base"])[0])
     offsets = np.array([[i * 0.11, j * 0.13] for i in (-1, 0, 1) for j in (-1, 0, 1)])
-    scanner = b.create_hfield_scanner(
+    scanner = b.bind_height_scanner(
         hfield_geom_id=geom_id,
         offsets=offsets,
         frame_body_id=body_id,
@@ -743,7 +743,7 @@ def test_scanner_preserves_sensor_data(tmp_path: Path) -> None:
         SceneCfg(model_file=path), num_envs=4, sim_dt=0.002, base_name="base", np_dtype=np.float64
     )
     b.materialize()
-    scanner = b.create_hfield_scanner(
+    scanner = b.bind_height_scanner(
         hfield_geom_id=b.get_geom_id("terrain"),
         offsets=np.zeros((2, 2)),
         frame_body_id=int(b.get_body_ids(["base"])[0]),
@@ -767,7 +767,7 @@ def test_scanner_rejects_unsupported_output_and_alignment(tmp_path: Path) -> Non
     geom_id = b.get_geom_id("terrain")
     body_id = int(b.get_body_ids(["base"])[0])
     with pytest.raises(ValueError, match="output='height'"):
-        b.create_hfield_scanner(
+        b.bind_height_scanner(
             hfield_geom_id=geom_id,
             offsets=np.zeros((2, 2)),
             frame_body_id=body_id,
@@ -775,7 +775,7 @@ def test_scanner_rejects_unsupported_output_and_alignment(tmp_path: Path) -> Non
             output="clearance",
         )
     b.materialize()
-    scanner = b.create_hfield_scanner(
+    scanner = b.bind_height_scanner(
         hfield_geom_id=geom_id,
         offsets=np.zeros((2, 2)),
         frame_body_id=body_id,

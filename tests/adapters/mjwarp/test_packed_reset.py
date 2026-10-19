@@ -38,7 +38,7 @@ def test_mjwarp_packed_reset_capabilities_and_geom_size_fail_closed(tmp_path: Pa
     assert {RESET_TERM_BODY_MASS, RESET_TERM_KP} <= capabilities.packed_reset_fields
     assert RESET_TERM_GEOM_SIZE not in capabilities.packed_reset_fields
 
-    transaction = backend.begin_packed_reset()
+    transaction = backend.bind_packed_reset()
     with pytest.raises(NotImplementedError, match="does not support packed reset field"):
         transaction.write_model_field(
             RESET_TERM_GEOM_SIZE,
@@ -50,7 +50,7 @@ def test_mjwarp_packed_reset_capabilities_and_geom_size_fail_closed(tmp_path: Pa
 
 def test_mjwarp_packed_reset_commits_device_resident_merge(tmp_path: Path) -> None:
     backend = _make_backend(tmp_path)
-    transaction = backend.begin_packed_reset()
+    transaction = backend.bind_packed_reset()
     baseline = transaction.baseline(RESET_TERM_BODY_MASS).clone()
     rows = torch.tensor([1], dtype=torch.int64, device="cuda")
     transaction.write_model_field(

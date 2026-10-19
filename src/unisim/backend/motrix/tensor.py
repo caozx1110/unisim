@@ -17,7 +17,7 @@ from unisim.backend.base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
-    tensor_device_matches,
+    torch_device_matches,
 )
 from unisim.dr.types import TensorResetRandomizationPayload
 
@@ -36,7 +36,7 @@ _BODY_VIEW_WIDTHS = {
 }
 
 
-def motrix_tensor_capabilities(backend: MotrixBackend) -> TensorLifecycleCapabilities:
+def tensor_capabilities(backend: MotrixBackend) -> TensorLifecycleCapabilities:
     """Return the deliberately narrow MotrixSim tensor capability matrix."""
     from unisim.backend.packed_reset import PACKED_RESET_MODEL_FIELDS
 
@@ -401,7 +401,7 @@ def _pack_state_sensors(
             )
 
 
-def motrix_state_views(
+def state_views(
     backend: MotrixBackend, fields: tuple[str, ...] | str | None, device: Any | None
 ) -> dict[str, Any]:
     """Copy requested state blocks to one Torch device in one packed H2D."""
@@ -437,7 +437,7 @@ def motrix_state_views(
     return {name: packet[:, offsets[name] : offsets[name] + widths[name]] for name in names}
 
 
-def motrix_sensor_view(backend: MotrixBackend, name: str, device: Any | None) -> Any:
+def sensor_view(backend: MotrixBackend, name: str, device: Any | None) -> Any:
     """Copy one authoritative CPU sensor block to a Torch device."""
     import torch
 
@@ -452,7 +452,7 @@ def motrix_sensor_view(backend: MotrixBackend, name: str, device: Any | None) ->
     return result
 
 
-def motrix_step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> dict | None:
+def step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> dict | None:
     """Bridge control through one persistent packed direct-API plan."""
     import torch
 
@@ -474,7 +474,7 @@ def motrix_step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> di
     if plan is None or plan.device != target:
         if plan is not None:
             plan.close()
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
         )
         backend._direct_host_bridge_plan = plan
@@ -485,7 +485,7 @@ def motrix_step_tensor(backend: MotrixBackend, ctrl: Any, nsteps: int = 1) -> di
     return result
 
 
-def motrix_set_state_tensor(
+def set_state_tensor(
     backend: MotrixBackend,
     env_indices: Any,
     qpos: Any,
@@ -564,7 +564,7 @@ def motrix_set_state_tensor(
     if plan is None or plan.device != target:
         if plan is not None:
             plan.close()
-        plan = backend.compile_host_bridge_io(
+        plan = backend.bind_host_bridge_io(
             TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
         )
         backend._direct_host_bridge_plan = plan
@@ -574,7 +574,7 @@ def motrix_set_state_tensor(
     return result
 
 
-def motrix_set_state_tensor_mask(
+def set_state_tensor_mask(
     backend: MotrixBackend,
     reset_mask: Any,
     qpos: Any,
@@ -689,7 +689,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         }
 
         require_motrix_tensor_runtime(backend, require_callback_free=True)
-        if backend.tensor_execution() is not TensorExecution.HOST_BRIDGE:
+        if backend.get_tensor_execution() is not TensorExecution.HOST_BRIDGE:
             raise RuntimeError("MotrixSim packed tensor I/O requires the host-bridge lifecycle")
         unsupported = set(spec.state_fields) - _SUPPORTED_STATE_FIELDS
         if unsupported:
@@ -874,7 +874,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
             raise ValueError(f"MotrixSim packed ctrl must have shape {expected}")
         if ctrl.dtype != torch.float32 or not bool(ctrl.is_contiguous()):
             raise TypeError("MotrixSim packed ctrl must be contiguous float32")
-        if not tensor_device_matches(
+        if not torch_device_matches(
             (str(self.device),), ctrl.device, current_device=self.device.index
         ):
             raise ValueError(f"MotrixSim packed ctrl must live on {self.device}, got {ctrl.device}")
@@ -962,7 +962,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         if qpos.dtype != torch.float32 or qvel.dtype != torch.float32:
             raise TypeError("MotrixSim packed reset qpos and qvel must be float32")
         if any(
-            not tensor_device_matches(
+            not torch_device_matches(
                 (str(self.device),), value.device, current_device=self.device.index
             )
             for value in (env_indices, qpos, qvel)
@@ -1097,6 +1097,11 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
 
 __all__ = [
     "MotrixHostBridgeTransferPlan",
-    "motrix_tensor_capabilities",
     "require_motrix_tensor_runtime",
+    "sensor_view",
+    "set_state_tensor",
+    "set_state_tensor_mask",
+    "state_views",
+    "step_tensor",
+    "tensor_capabilities",
 ]

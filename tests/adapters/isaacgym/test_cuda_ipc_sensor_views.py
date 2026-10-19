@@ -146,6 +146,8 @@ class _WorkerTensor:
         self.values = np.asarray(values)
         self.dtype = "float32"
         self.device = "cpu"
+        self.ndim = self.values.ndim
+        self.shape = self.values.shape
 
     def numel(self) -> int:
         return int(self.values.size)
@@ -198,9 +200,20 @@ class _WorkerTensor:
         return self
 
 
+class _WorkerTensorList:
+    @staticmethod
+    def cross(left: _WorkerTensor, right: _WorkerTensor, *, dim: int) -> _WorkerTensor:
+        return _WorkerTensor(np.cross(left.values, right.values, axis=dim))
+
+
 class _WorkerTorch:
     float32 = "float32"
     cuda = _WorkerCuda
+    linalg = _WorkerTensorList
+
+    @staticmethod
+    def cat(tensors: tuple[_WorkerTensor, ...], *, dim: int) -> _WorkerTensor:
+        return _WorkerTensor(np.concatenate([tensor.values for tensor in tensors], axis=dim))
 
     @staticmethod
     def cross(left: _WorkerTensor, right: _WorkerTensor, *, dim: int) -> _WorkerTensor:

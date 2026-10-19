@@ -7,7 +7,7 @@
 | MuJoCo | `unisim.MuJoCoBackend` | `uv sync --extra mujoco`（mjbatch 运行时） | available |
 | Motrix | `unisim.MotrixBackend` | `uv sync --extra motrix` | available |
 | Drake | `unisim.DrakeBackend` | `uv sync --extra drake`（`drake-uni`）及其原生批处理扩展 | available |
-| MJWarp | `unisim.MJWarpBackend` | `uv sync --extra mjwarp`，CUDA | available |
+| MJWarp | `unisim.MjwarpBackend` | `uv sync --extra mjwarp`，CUDA | available |
 | Genesis | `unisim.GenesisBackend` | `uv sync --extra genesis`（`genesis-world==1.3.3`） | available（CPU；窄条件 CUDA tensor profile） |
 | Newton | `unisim.NewtonBackend` | `uv sync --extra newton`，Newton 1.5.1 与 MuJoCo-Warp 3.11.0 | available（CUDA） |
 | SuperDex | `unisim.SuperDexBackend` | `uv sync --extra superdex`，CPython 3.12 或 3.13，SuperDex 1.3.0 | 实验性 CPU；见[配置说明](superdex.md) |

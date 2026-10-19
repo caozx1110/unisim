@@ -24,7 +24,7 @@ def test_unsupported_camera_override_rejects_before_any_worker_access(override, 
     owner = MjcfSubprocessBackend.__new__(MjcfSubprocessBackend)
     owner._render_config = (True, True) if initialized else None
     with pytest.raises(NotImplementedError, match=next(iter(override))):
-        owner.init_renderer(headless=True, capture=True, camera_kwargs=override)
+        owner.bind_renderer(headless=True, capture=True, camera_kwargs=override)
 
 
 def test_native_capture_camera_preserves_supported_angles_and_distance():
@@ -39,4 +39,4 @@ def test_native_capture_camera_preserves_supported_angles_and_distance():
 def test_interactive_viewer_rejects_ignored_spherical_options(override):
     owner = MjcfSubprocessBackend.__new__(MjcfSubprocessBackend)
     with pytest.raises(NotImplementedError, match="interactive viewers"):
-        owner.init_renderer(camera_kwargs=override)
+        owner.bind_renderer(camera_kwargs=override)

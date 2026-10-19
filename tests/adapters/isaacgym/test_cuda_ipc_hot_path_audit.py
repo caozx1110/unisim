@@ -89,10 +89,10 @@ def test_isaacgym_hot_paths_have_no_hidden_host_detours() -> None:
         assert not attrs & {"cpu", "numpy", "item", "synchronize", "from_numpy"}, label
         assert not _has_numpy_reference(node), label
 
-    host_reset = methods["host.reset"]
-    host_reset_attrs = _attribute_names(host_reset)
-    assert not host_reset_attrs & {"cpu", "numpy", "item", "synchronize", "from_numpy"}
-    assert not _has_numpy_reference(host_reset)
+    _host_reset = methods["host.reset"]
+    _host_reset_attrs = _attribute_names(_host_reset)
+    assert not _host_reset_attrs & {"cpu", "numpy", "item", "synchronize", "from_numpy"}
+    assert not _has_numpy_reference(_host_reset)
 
     assert _attribute_count(methods["worker.reset"], "tolist") == 0
     assert _attribute_count(methods["host.reset"], "tolist") == 1

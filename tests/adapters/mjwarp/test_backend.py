@@ -430,7 +430,7 @@ def test_mjwarp_device_tensor_lifecycle_matches_host_path(tmp_path: Path) -> Non
         xml=NONZERO_CTRL_KEYFRAME_MODEL,
         default_keyframe_name="stand",
     )
-    assert device.tensor_execution().value == "device_resident"
+    assert device.get_tensor_execution().value == "device_resident"
     capabilities = device.get_tensor_capabilities()
     _assert_tensor_platform_capabilities("mjwarp", capabilities)
     assert capabilities.execution is TensorExecution.DEVICE_RESIDENT

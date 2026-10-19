@@ -13,13 +13,13 @@ from typing import Any
 import numpy as np
 
 from unisim.backend.base import (
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
     CameraCfg,
     HostBridgeTransferPlan,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     PublicStateWidths,
+    RootStateLayout,
     SimBackend,
     TensorExecution,
     TensorIOSpec,
@@ -1437,7 +1437,7 @@ class SuperDexBackend(SimBackend):
         )
         self._refresh(rows, refresh_contacts=False)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         if self.model.actor_plans:
             assert self.model.layout is not None
             entity_name, separator, local_name = str(root_body_name).partition("/")
@@ -1452,7 +1452,7 @@ class SuperDexBackend(SimBackend):
                 raise NotImplementedError(
                     f"portable SuperDex entity {entity.name!r} has no floating root state"
                 )
-            return BackendRootStateLayout(
+            return RootStateLayout(
                 tuple(entity.root_qpos_indices), tuple(entity.root_qvel_indices)
             )
         body = self.get_body_id(root_body_name)
@@ -1460,7 +1460,7 @@ class SuperDexBackend(SimBackend):
             raise NotImplementedError(
                 f"superdex body {root_body_name!r} does not own a floating root"
             )
-        return BackendRootStateLayout(
+        return RootStateLayout(
             qpos_indices=(0, 1, 2, 3, 4, 5, 6),
             qvel_indices=(0, 1, 2, 3, 4, 5),
         )
@@ -1475,8 +1475,8 @@ class SuperDexBackend(SimBackend):
             supported_fixed_variant_layouts=layouts,
         )
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
-        return BackendPlayCapabilities(
+    def get_play_capabilities(self) -> PlayCapabilities:
+        return PlayCapabilities(
             supports_physics_state_playback=True,
             supports_debug_overlay=True,
             # The native Polyscope viewer reads the scene on the calling
@@ -1496,17 +1496,17 @@ class SuperDexBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | os.PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         """Resolve playback: native interactive viewer or shared MuJoCo recorder."""
         mode = normalize_play_render_mode(play_render_mode)
         if mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="none", headless=True, record_video=False, num_steps=None, output_video=None
             )
         if mode == "interactive":
             # Serial-mode enforcement happens in run_playback, where the
             # instance (and its execution mode) is available.
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="interactive",
                 headless=False,
                 record_video=False,
@@ -1517,7 +1517,7 @@ class SuperDexBackend(SimBackend):
             raise ValueError("superdex MuJoCo playback requires positive training.play_steps")
         if output_video is None:
             raise ValueError("superdex MuJoCo playback requires an output video path")
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode="record",
             headless=True,
             record_video=True,
@@ -1553,7 +1553,7 @@ class SuperDexBackend(SimBackend):
                 debug_overlay_getter=debug_overlay_getter,
                 on_frame=on_frame,
             )
-        from unisim.backend.playback_common import run_offline_snapshot_playback
+        from unisim.backend.playback import run_offline_snapshot_playback
 
         if self.scene_visual_model_file is None:
             raise RuntimeError(
@@ -1605,7 +1605,7 @@ class SuperDexBackend(SimBackend):
 
         if not VIEWER_AVAILABLE:
             raise RuntimeError("superdex native interactive rendering requires Polyscope >= 2.5.0")
-        from unisim.backend.playback_common import env_cfg_value
+        from unisim.backend.playback import env_cfg_value
 
         viewer_cfg = ViewerCfg()
         viewer_cfg.offscreen = offscreen
@@ -1700,15 +1700,15 @@ class SuperDexBackend(SimBackend):
             return getattr(self, attribute)[:, body_id]
         raise KeyError(f"unknown SuperDex sensor {name!r}")
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         """Declare SuperDex's CPU-authoritative tensor execution profile."""
         return TensorExecution.HOST_BRIDGE
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         """Return the deliberately narrow initial packed host-bridge profile."""
-        from .tensor import superdex_tensor_capabilities
+        from .tensor import tensor_capabilities
 
-        return superdex_tensor_capabilities(self)
+        return tensor_capabilities(self)
 
     def get_public_state_widths(self) -> PublicStateWidths:
         """Return the canonical public qpos/qvel tensor reset widths."""
@@ -1723,7 +1723,7 @@ class SuperDexBackend(SimBackend):
             )
         return PublicStateWidths(nq=nq, nv=nv)
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
+    def bind_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
         """Compile persistent SuperDex staging and packed device layouts."""
         from .tensor import SuperDexHostBridgeTransferPlan
 
@@ -1787,7 +1787,7 @@ class SuperDexBackend(SimBackend):
         if plan is None or plan.device != target:
             if plan is not None:
                 plan.close()
-            plan = self.compile_host_bridge_io(
+            plan = self.bind_host_bridge_io(
                 TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
             )
             self._direct_host_bridge_plan = plan

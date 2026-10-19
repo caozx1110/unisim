@@ -65,7 +65,7 @@ _PyCapsule_SetName.argtypes = [ctypes.py_object, ctypes.c_char_p]
 _PyCapsule_SetName.restype = ctypes.c_int
 
 
-class RawArenaViewToken:
+class RawCudaViewToken:
     """Release callback owned by a public DLPack tensor view."""
 
     def __init__(self, on_release: Optional[Callable[[], None]] = None) -> None:
@@ -221,7 +221,7 @@ class IsaacSimCudaArenaLayout:
             "sensor_state": "float32",
         }
 
-    def as_dict(self) -> dict[str, int]:
+    def to_wire(self) -> dict[str, int]:
         return {
             "num_envs": self.num_envs,
             "nq": self.nq,
@@ -242,7 +242,7 @@ class IsaacSimCudaArenaLayout:
         }
 
     @classmethod
-    def from_dict(cls, value: Any) -> "IsaacSimCudaArenaLayout":
+    def from_wire(cls, value: Any) -> "IsaacSimCudaArenaLayout":
         if not isinstance(value, dict) or set(value) != {
             "num_envs",
             "nq",
@@ -310,12 +310,12 @@ class RawCudaTensorView:
         shape: tuple[int, ...],
         device_index: int,
         dtype: str = "float32",
-        token: Optional[RawArenaViewToken] = None,
+        token: Optional[RawCudaViewToken] = None,
     ) -> None:
         self.pointer = int(pointer)
         self.device_index = int(device_index)
         self.dtype = str(dtype)
-        self.token = token if token is not None else RawArenaViewToken()
+        self.token = token if token is not None else RawCudaViewToken()
         if len(shape) not in (1, 2, 3) or any(
             isinstance(value, bool) or value < 0 for value in shape
         ):
@@ -491,7 +491,7 @@ class HostCudaIpcArena:
         def release_view() -> None:
             self._active_view_names.pop(token_id, None)
 
-        token = RawArenaViewToken(release_view)
+        token = RawCudaViewToken(release_view)
         self._active_view_names[token_id] = name
         try:
             view = RawCudaTensorView(
@@ -523,7 +523,7 @@ class HostCudaIpcArena:
             "schema_version": ISAACSIM_TENSOR_SCHEMA_VERSION,
             "device_uuid": self._transport.identity.uuid,
             "device_index": self._device_index,
-            "layout": self.layout.as_dict(),
+            "layout": self.layout.to_wire(),
             "memory": self._allocation.export_handle(),
             "control_event": self._control_event.export_handle(),
             "state_event": self._state_event.export_handle(),
@@ -647,7 +647,7 @@ class WorkerCudaIpcArena:
             or schema_version != ISAACSIM_TENSOR_SCHEMA_VERSION
         ):
             raise ValueError("unsupported IsaacSim CUDA IPC schema version")
-        layout = IsaacSimCudaArenaLayout.from_dict(payload["layout"])
+        layout = IsaacSimCudaArenaLayout.from_wire(payload["layout"])
         payload_device_index = payload["device_index"]
         device_uuid = payload["device_uuid"]
         if (
@@ -768,7 +768,7 @@ class WorkerCudaIpcArena:
         def release_view() -> None:
             self._active_view_names.pop(token_id, None)
 
-        token = RawArenaViewToken(release_view)
+        token = RawCudaViewToken(release_view)
         self._active_view_names[token_id] = name
         try:
             view = RawCudaTensorView(

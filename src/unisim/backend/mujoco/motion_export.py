@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from unisim.backend.mujoco.xml import inject_mujoco_tracking_sensors
+from unisim.backend.mujoco.xml import bind_tracking_sensors
 
 _SENSOR_DIMS = (3, 4, 3, 3)
 _SENSOR_PREFIXES = (
@@ -60,7 +60,7 @@ def compute_tracking_fk(
     """
     import mujoco
 
-    tmp_model_path, _, _ = inject_mujoco_tracking_sensors(model_file)
+    tmp_model_path, _, _ = bind_tracking_sensors(model_file)
     try:
         model = mujoco.MjModel.from_xml_path(tmp_model_path)
     finally:

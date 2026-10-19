@@ -17,6 +17,7 @@ from unisim.backend.mjcf_layout import (  # noqa: F401
     MjcfJointLayoutEntry,
     extract_mjcf_joint_layout,
 )
+from unisim.backend.scene_cleanup import remove_temporary_file
 from unisim.scene import resolve_scene_fragment_path
 from unisim.terrain.generator import TerrainGeneratorCfg
 
@@ -120,7 +121,7 @@ def _motrix_contact_sensor_identities(
     return tuple(identities)
 
 
-def _materialize_motrix_expanded_scene_with_sensor_inventory(
+def materialize_expanded_scene_with_sensor_inventory(
     *,
     model_file: str,
     add_body_sensors: bool,
@@ -141,7 +142,7 @@ def _materialize_motrix_expanded_scene_with_sensor_inventory(
             geom_variant_sets=geom_variant_sets or {},
         )
     if add_body_sensors:
-        add_motrix_tracking_frame_sensors(world, base_name=base_name)
+        add_tracking_frame_sensors(world, base_name=base_name)
     frame_identities = _motrix_frame_sensor_identities(world)
     names = _motrix_sensor_names(world)
     sensor_count = sum(
@@ -277,15 +278,6 @@ def _materialize_fragment_without_keyframes(fragment_file: Path) -> Path:
     return Path(tmp.name)
 
 
-def _cleanup_temp_xml(path: Path, original: Path) -> None:
-    if path == original:
-        return
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-
-
 def _attach_motrix_scene_fragment(world: World, fragment_file: Path) -> None:
     import motrixsim.msd as msd
 
@@ -293,7 +285,7 @@ def _attach_motrix_scene_fragment(world: World, fragment_file: Path) -> None:
     try:
         fragment = msd.from_file(str(sanitized))  # pyright: ignore[reportAttributeAccessIssue]
     finally:
-        _cleanup_temp_xml(sanitized, fragment_file)
+        remove_temporary_file(sanitized, original=fragment_file)
     world.attach(fragment)
 
 
@@ -312,7 +304,7 @@ def _motrix_world_link_names(world: World) -> list[str]:
     return names
 
 
-def add_motrix_tracking_frame_sensors(world: World, *, base_name: str) -> None:
+def add_tracking_frame_sensors(world: World, *, base_name: str) -> None:
     """Add Motrix-native frame sensors matching the model-file tracking sensor contract.
 
     Only pose sensors are added: body-frame velocities are computed
@@ -347,7 +339,7 @@ def add_motrix_tracking_frame_sensors(world: World, *, base_name: str) -> None:
             world.sensors.frame.append(sensor)
 
 
-def _materialize_motrix_scene_with_sensor_inventory(
+def materialize_scene_with_sensor_inventory(
     *,
     model_file: str,
     fragment_files: Sequence[str] = (),
@@ -367,7 +359,7 @@ def _materialize_motrix_scene_with_sensor_inventory(
         for fragment_path in fragment_paths:
             _attach_motrix_scene_fragment(world, fragment_path)
         if add_body_sensors:
-            add_motrix_tracking_frame_sensors(world, base_name=base_name)
+            add_tracking_frame_sensors(world, base_name=base_name)
         model = msd.build(world)
         return (
             model,
@@ -375,33 +367,10 @@ def _materialize_motrix_scene_with_sensor_inventory(
             _motrix_frame_quat_sensor_names(world),
         )
     finally:
-        _cleanup_temp_xml(robot_path, model_path)
+        remove_temporary_file(robot_path, original=model_path)
 
 
-def _materialize_motrix_scene_with_sensor_names(
-    *,
-    model_file: str,
-    fragment_files: Sequence[str] = (),
-    add_body_sensors: bool = False,
-    base_name: str = "base",
-) -> tuple["SceneModel", tuple[str, ...]] | tuple["SceneModel", tuple[str, ...], tuple[str, ...]]:
-    """Build a Motrix model and return its validated cold-path sensor inventory.
-
-    The historical private name is retained because SDK-free downstream tests
-    patch this materialization boundary. In addition to the model and sensor
-    names, production callers receive the FrameQuat inventory needed for public
-    ``wxyz`` conversion; a two-tuple remains accepted at the backend boundary
-    for fake models without physical sensors.
-    """
-    return _materialize_motrix_scene_with_sensor_inventory(
-        model_file=model_file,
-        fragment_files=fragment_files,
-        add_body_sensors=add_body_sensors,
-        base_name=base_name,
-    )
-
-
-def materialize_motrix_scene(
+def materialize_scene(
     *,
     model_file: str,
     fragment_files: Sequence[str] = (),
@@ -409,7 +378,7 @@ def materialize_motrix_scene(
     base_name: str = "base",
 ) -> "SceneModel":
     """Build a MotrixSim model through MSD scene composition."""
-    return _materialize_motrix_scene_with_sensor_names(
+    return materialize_scene_with_sensor_inventory(
         model_file=model_file,
         fragment_files=fragment_files,
         add_body_sensors=add_body_sensors,
@@ -417,28 +386,7 @@ def materialize_motrix_scene(
     )[0]
 
 
-def materialize_motrix_expanded_scene_with_sensor_names(
-    *,
-    model_file: str,
-    add_body_sensors: bool = False,
-    base_name: str = "base",
-) -> tuple["SceneModel", tuple[str, ...]]:
-    """Import an already-expanded portable MJCF source and collect its sensors.
-
-    The caller remains responsible for owning the common compiler artifact. This
-    cold-path boundary keeps Motrix import and native sensor-name validation in
-    the Motrix materialization owner rather than duplicating XML handling in the
-    backend state machine.
-    """
-    model, inventory = _materialize_motrix_expanded_scene_with_sensor_inventory(
-        model_file=model_file,
-        add_body_sensors=add_body_sensors,
-        base_name=base_name,
-    )
-    return model, inventory.names
-
-
-def _materialize_motrix_hfield_attached_scene_with_sensor_names(
+def materialize_hfield_attached_scene_with_sensor_inventory(
     *,
     model_file: str,
     terrain_cfg: TerrainGeneratorCfg,
@@ -449,7 +397,7 @@ def _materialize_motrix_hfield_attached_scene_with_sensor_names(
     base_name: str = "base",
     return_surface_sampler: bool = False,
 ) -> tuple[SceneModel, np.ndarray, object | None, tuple[str, ...], tuple[str, ...]]:
-    """Build a Motrix terrain model and return its cold-path sensor names."""
+    """Build a Motrix terrain model and return its cold-path sensor inventory."""
     import motrixsim.msd as msd
 
     from unisim.terrain.generator import TerrainGenerator
@@ -493,12 +441,12 @@ def _materialize_motrix_hfield_attached_scene_with_sensor_names(
         # TODO(motrixsim): remove this once msd.World.attach carries keyframes.
         world.keyframes.extend(robot_world.keyframes)
     finally:
-        _cleanup_temp_xml(merged_robot_path, robot_path)
+        remove_temporary_file(merged_robot_path, original=robot_path)
 
     for fragment_path in fragment_paths:
         _attach_motrix_scene_fragment(world, fragment_path)
     if add_body_sensors:
-        add_motrix_tracking_frame_sensors(world, base_name=base_name)
+        add_tracking_frame_sensors(world, base_name=base_name)
 
     model = msd.build(world)
     sampler = generated.surface_sampler() if return_surface_sampler else None
@@ -512,7 +460,7 @@ def _materialize_motrix_hfield_attached_scene_with_sensor_names(
 
 
 @overload
-def materialize_motrix_hfield_attached_scene(
+def materialize_hfield_attached_scene(
     *,
     model_file: str,
     terrain_cfg: TerrainGeneratorCfg,
@@ -526,7 +474,7 @@ def materialize_motrix_hfield_attached_scene(
 
 
 @overload
-def materialize_motrix_hfield_attached_scene(
+def materialize_hfield_attached_scene(
     *,
     model_file: str,
     terrain_cfg: TerrainGeneratorCfg,
@@ -539,7 +487,7 @@ def materialize_motrix_hfield_attached_scene(
 ) -> tuple[SceneModel, np.ndarray, object]: ...
 
 
-def materialize_motrix_hfield_attached_scene(
+def materialize_hfield_attached_scene(
     *,
     model_file: str,
     terrain_cfg: TerrainGeneratorCfg,
@@ -551,7 +499,7 @@ def materialize_motrix_hfield_attached_scene(
     return_surface_sampler: bool = False,
 ) -> tuple[SceneModel, np.ndarray] | tuple[SceneModel, np.ndarray, object]:
     """Build a MotrixSim model with generated hfield terrain and attached robot."""
-    model, origins, sampler, _, _ = _materialize_motrix_hfield_attached_scene_with_sensor_names(
+    model, origins, sampler, _, _ = materialize_hfield_attached_scene_with_sensor_inventory(
         model_file=model_file,
         terrain_cfg=terrain_cfg,
         fragment_files=fragment_files,

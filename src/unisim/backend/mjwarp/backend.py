@@ -23,15 +23,15 @@ import numpy as np
 
 from unisim.backend.base import (
     COMPLETION_CONTRACT_VERSION,
-    BackendMocapPoseBinding,
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
     CameraCfg,
     CompletionToken,
     DebugOverlayGetter,
+    MocapPoseBinding,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     PublicStateWidths,
+    RootStateLayout,
     SelectedResetPublication,
     SensorDescriptor,
     SimBackend,
@@ -93,7 +93,7 @@ from unisim.scene_layout import CompiledSceneLayout
 from ..body_state import copy_selected_body_state
 from ..reset_impact import bind_reset_impacts
 from .dependencies import load_mjwarp_dependencies
-from .materialization import materialize_mjwarp_scene
+from .materialization import materialize_scene
 from .playback import run_mjwarp_playback, validate_mjwarp_visual_model
 from .randomization import PrimitiveGeomBounds, expand_model_fields
 from .state_commit import ModelUpdates, StateCommitPlan, float_values
@@ -333,7 +333,7 @@ class MjwarpBackend(SimBackend):
                 "host or select the mujoco backend."
             )
 
-        scene_context = materialize_mjwarp_scene(scene, add_body_sensors=add_body_sensors)
+        scene_context = materialize_scene(scene, add_body_sensors=add_body_sensors)
         self._scene_cleanup_handle = scene_context.cleanup_handle
         self.scene_model_file = scene_context.diagnostic_model_file
         self.scene_visual_model_file = str(scene.visual_model_file or scene.model_file)
@@ -1986,7 +1986,7 @@ class MjwarpBackend(SimBackend):
             raise KeyError(f"unknown {self.backend_type} state field(s): {sorted(unknown)}")
         return result
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return TensorExecution.DEVICE_RESIDENT
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
@@ -2018,11 +2018,11 @@ class MjwarpBackend(SimBackend):
             mask_selected_reset_full_refresh=True,
         )
 
-    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+    def bind_packed_reset(self, *, device: Any | None = None) -> Any:
         """Begin a device-resident transaction with one scatter commit boundary."""
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
     def get_public_state_widths(self) -> PublicStateWidths:
         return PublicStateWidths(nq=self._nq, nv=self._nv)
@@ -2203,9 +2203,9 @@ class MjwarpBackend(SimBackend):
         index = {name: position for position, name in enumerate(declared)}
         return names, torch.tensor([index[name] for name in names], device=reference.device)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         qpos, qvel = self._compiled_index.free_root_layout(root_body_name)
-        return BackendRootStateLayout(qpos_indices=qpos, qvel_indices=qvel)
+        return RootStateLayout(qpos_indices=qpos, qvel_indices=qvel)
 
     def get_body_ids(self, names: Sequence[str]) -> np.ndarray:
         resolved: list[int] = []
@@ -2229,7 +2229,7 @@ class MjwarpBackend(SimBackend):
             return np.asarray(self._dr_geom_size[:, geom_id], dtype=np.float32).copy()
         return np.asarray(self._cpu_model.geom_size[geom_id], dtype=np.float32).copy()
 
-    def get_geom_sizes(self) -> np.ndarray:
+    def get_default_geom_sizes(self) -> np.ndarray:
         if self._fixed_variant_realization is not None:
             self._require_fresh_dr_mirror("geom_size")
             return self._dr_geom_size.copy()
@@ -2247,7 +2247,7 @@ class MjwarpBackend(SimBackend):
     def get_dof_frictionloss(self) -> np.ndarray:
         return np.asarray(self._cpu_model.dof_frictionloss, dtype=np.float32).copy()
 
-    def bind_mocap_pose(self, body_name: str) -> BackendMocapPoseBinding:
+    def bind_mocap_pose(self, body_name: str) -> MocapPoseBinding:
         if not isinstance(body_name, str) or not body_name:
             raise TypeError("mjwarp mocap body_name must be a non-empty string")
         if body_name not in self._body_ids:
@@ -2255,7 +2255,7 @@ class MjwarpBackend(SimBackend):
         mocap_id = int(self._cpu_model.body_mocapid[self._body_ids[body_name]])
         if mocap_id < 0:
             raise NotImplementedError(f"mjwarp body {body_name!r} is not a mocap body")
-        return BackendMocapPoseBinding(
+        return MocapPoseBinding(
             backend_type=self.backend_type,
             body_name=body_name,
             num_envs=self.num_envs,
@@ -3771,8 +3771,8 @@ class MjwarpBackend(SimBackend):
         self._require_entity_healthy()
         """Resources are fully materialized during the constructor cold path."""
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
-        return BackendPlayCapabilities(
+    def get_play_capabilities(self) -> PlayCapabilities:
+        return PlayCapabilities(
             supports_physics_state_playback=True,
             supports_debug_overlay=True,
             supports_interactive_debug_overlay=True,
@@ -3787,10 +3787,10 @@ class MjwarpBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         mode = normalize_play_render_mode(play_render_mode)
         if mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="none",
                 headless=True,
                 record_video=False,
@@ -3806,7 +3806,7 @@ class MjwarpBackend(SimBackend):
                 raise ValueError(
                     "mjwarp interactive playback requires positive play_steps or None."
                 )
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode="interactive",
                 headless=False,
                 record_video=False,
@@ -3819,7 +3819,7 @@ class MjwarpBackend(SimBackend):
             )
         if output_video is None:
             raise ValueError("mjwarp record playback requires an output video path.")
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode="record",
             headless=True,
             record_video=True,

@@ -241,3 +241,12 @@ assert 'unisim' not in sys.modules
 assert not {'torch','mujoco','warp'}.intersection(sys.modules)
 """
     subprocess.run([sys.executable, "-c", code, str(Path(protocol.__file__))], check=True)
+
+
+def test_shared_kinematics_quaternion_primitives_match_identity_composition() -> None:
+    from unisim.backend.subprocess_ipc.kinematics import quat_mul, quat_rotate
+
+    identity = np.asarray((1.0, 0.0, 0.0, 0.0))
+    vectors = np.asarray(((1.0, 2.0, 3.0), (4.0, 5.0, 6.0)))
+    np.testing.assert_allclose(quat_rotate(np.broadcast_to(identity, (2, 4)), vectors), vectors)
+    np.testing.assert_allclose(quat_mul(identity, identity), identity)

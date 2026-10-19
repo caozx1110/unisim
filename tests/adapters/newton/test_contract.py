@@ -334,9 +334,9 @@ def test_newton_play_capabilities_follow_render_deps(monkeypatch: pytest.MonkeyP
 
 
 def test_newton_log_playback_plan_reports_renderer(capsys: pytest.CaptureFixture) -> None:
-    from unisim.backend.base import BackendPlayRenderPlan, log_playback_plan
+    from unisim.backend.base import PlayRenderPlan, log_playback_plan
 
-    plan = BackendPlayRenderPlan(
+    plan = PlayRenderPlan(
         mode="record",
         headless=True,
         record_video=True,
@@ -361,7 +361,7 @@ def test_newton_render_dependency_probe_is_fail_closed_when_dependencies_absent(
         require_newton_render_dependencies()
 
 
-def test_newton_init_renderer_fails_closed_without_render_deps(
+def test_newton_bind_renderer_fails_closed_without_render_deps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _raise() -> None:
@@ -372,7 +372,7 @@ def test_newton_init_renderer_fails_closed_without_render_deps(
     backend._viewer = None
     backend._render_config = None
     with pytest.raises(NewtonDependencyError, match="missing viewer deps"):
-        backend.init_renderer(headless=True, capture=True)
+        backend.bind_renderer(headless=True, capture=True)
 
 
 def test_newton_native_playback_validates_before_renderer_init() -> None:

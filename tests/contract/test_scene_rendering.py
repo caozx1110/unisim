@@ -45,7 +45,7 @@ def test_native_capture_preserves_state_and_does_not_introduce_ground(tmp_path, 
                 SceneResetRequest((1,), (EntityStatePatch("object", root_pose=pose),))
             )
             if mode == "record":
-                owner.init_renderer(headless=True, capture=True, width=320, height=240)
+                owner.bind_renderer(headless=True, capture=True, width=320, height=240)
             states = []
             for step in range(20):
                 owner._host_step(np.zeros((2, 1), dtype=np.float32))

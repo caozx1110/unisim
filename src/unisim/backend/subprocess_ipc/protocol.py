@@ -306,6 +306,21 @@ def wxyz_to_xyzw(quat: np.ndarray) -> np.ndarray:
     return np.asarray(quat)[..., [1, 2, 3, 0]]
 
 
+def quat_mul(left_wxyz: np.ndarray, right_wxyz: np.ndarray) -> np.ndarray:
+    """Multiply broadcast-compatible wxyz quaternions without package imports."""
+    w1, x1, y1, z1 = left_wxyz[..., 0], left_wxyz[..., 1], left_wxyz[..., 2], left_wxyz[..., 3]
+    w2, x2, y2, z2 = right_wxyz[..., 0], right_wxyz[..., 1], right_wxyz[..., 2], right_wxyz[..., 3]
+    return np.stack(
+        (
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ),
+        axis=-1,
+    )
+
+
 def quat_rotate(quat_wxyz: np.ndarray, vec: np.ndarray) -> np.ndarray:
     q = np.asarray(quat_wxyz, dtype=np.float64)
     v = np.asarray(vec, dtype=np.float64)
@@ -345,6 +360,7 @@ __all__ = [
     "decode_message",
     "format_worker_error",
     "pack_message",
+    "quat_mul",
     "quat_rotate",
     "quat_rotate_inverse",
     "recv_message",

@@ -1871,7 +1871,7 @@ def test_portable_entities_layout_variants_selected_state_and_control(tmp_path: 
         with pytest.raises(NotImplementedError, match="non-uniform public geometry sizes"):
             backend.get_geom_size("object/object_geom")
         with pytest.raises(NotImplementedError, match="non-uniform public geometry sizes"):
-            backend.get_geom_sizes()
+            backend.get_default_geom_sizes()
         native_vgeoms = list(object_runtime.entity.vgeoms)
         assert len(native_vgeoms) == 2
         assert native_vgeoms[0].active_envs_idx is not None

@@ -25,14 +25,14 @@ Runtime-owned caches and worker installations use `UNISIM_*` environment variabl
 | Removed in 1.7.16 | Public replacement |
 | --- | --- |
 | `step()` | `step_tensor()` |
-| `reset()` and selected `set_state()` | `set_state_tensor()`, or `begin_packed_reset()` plus the packed transaction for declaring adapters |
+| `reset()` and selected `set_state()` | `set_state_tensor()`, or `bind_packed_reset()` plus the packed transaction for declaring adapters |
 | `get_state()` | `get_state_views()` |
 | base and DoF getters | the applicable columns of `get_state_views()`, or `get_tracked_body_views()` for tracked root/body state |
 | body getters and `copy_body_state_w()` | `get_tracked_body_views()` |
 | named sensor getters | `get_sensor_view()` / `bind_sensor_data()` |
-| per-transfer host I/O | `compile_host_bridge_io()` |
+| per-transfer host I/O | `bind_host_bridge_io()` |
 
-The old training lifecycle no longer exists on `SimBackend`, including on concrete CPU adapters. Adapter-private `_host_*`, `_wire_*`, `_model_file_*`, and `_playback_*` names describe owner boundaries and must not be called by UniLab. Cold metadata/layout/default tables, mapped entity transactions, playback/rendering, and serialization retain their explicit NumPy contracts. Public DR payloads are torch-only — `TensorResetRandomizationPayload` and `TensorIntervalPayload`, with the payload device selecting the host or device plane — and NumPy conversion lives behind adapter-private `unisim.dr._host` helpers; see [the torch-first DR payload ADR](adr-dr-torch-first-payloads.md). See the [legacy NumPy removal ADR](adr-legacy-numpy-removal.md).
+The old training lifecycle no longer exists on `SimBackend`, including on concrete CPU adapters. `_host_*` names are the documented protected adapter protocol, while `_wire_*`, `_model_file_*`, and `_playback_*` remain adapter-private. UniLab must use the public tensor lifecycle rather than calling either family directly. Cold metadata/layout/default tables, mapped entity transactions, playback/rendering, and serialization retain their explicit NumPy contracts. Public DR payloads are torch-only — `TensorResetRandomizationPayload` and `TensorIntervalPayload`, with the payload device selecting the host or device plane — and NumPy conversion lives behind adapter-private `unisim.dr._host` helpers; see [the torch-first DR payload ADR](adr-dr-torch-first-payloads.md). See the [legacy NumPy removal ADR](adr-legacy-numpy-removal.md).
 
 ## Semantic requirements
 

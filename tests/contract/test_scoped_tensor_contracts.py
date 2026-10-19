@@ -252,7 +252,7 @@ def test_base_tracked_body_views_is_fail_closed() -> None:
     class Backend:
         backend_type = "fake"
 
-        def tensor_execution(self) -> TensorExecution:
+        def get_tensor_execution(self) -> TensorExecution:
             return TensorExecution.UNSUPPORTED
 
     with pytest.raises(NotImplementedError, match="fake does not support tracked-body views"):

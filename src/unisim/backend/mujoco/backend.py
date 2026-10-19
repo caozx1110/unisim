@@ -74,17 +74,16 @@ from unisim.scene_layout import CompiledSceneLayout
 from unisim.utils.rotation import np_quat_apply_batched, np_quat_apply_inverse_batched
 
 from ..base import (
-    BackendHeightScanner,
-    BackendMocapPoseBinding,
-    BackendPlayCapabilities,
-    BackendPlayRenderPlan,
-    BackendRootStateLayout,
-    BackendTerrainSpawnData,
     CameraCfg,
     DebugOverlayGetter,
+    HeightScanner,
     HostBridgeTransferPlan,
+    MocapPoseBinding,
     PhysicsStateLayout,
+    PlayCapabilities,
+    PlayRenderPlan,
     PublicStateWidths,
+    RootStateLayout,
     SelectedResetPublication,
     SimBackend,
     TensorDataPlane,
@@ -92,11 +91,13 @@ from ..base import (
     TensorIOSpec,
     TensorLifecycleCapabilities,
     TensorProcessTopology,
+    TerrainSpawnData,
     normalize_play_render_mode,
-    validate_tensor_device,
+    validate_torch_device,
 )
 from ..body_state import copy_selected_body_state
 from ..reset_impact import bind_reset_impacts
+from ..scene_cleanup import remove_temporary_file
 from .playback import run_mujoco_playback
 from .state_commit import MocapWrite, ModelWrite, StateCommitPlan, selected_rows, state_values
 
@@ -231,7 +232,7 @@ class _StateLayout:
 
 
 @dataclass
-class _MuJoCoHeightScanner(BackendHeightScanner):
+class _MuJoCoHeightScanner(HeightScanner):
     backend: "MuJoCoBackend"
     hfield_geom_id: int
     offsets: np.ndarray
@@ -305,15 +306,12 @@ def _apply_position_actuator_gains_to_mj_model(
     model.actuator_biasprm[actuator_ids, 2] = -kd_arr
 
 
-def _remove_temp_xml(path: str) -> None:
-    if os.path.exists(path):
-        os.remove(path)
+class TemporaryXmlCleanup:
+    """Finalizer-backed cleanup for one temporary MuJoCo XML."""
 
-
-class _TempXmlCleanup:
     def __init__(self, path: str) -> None:
         self.path = path
-        self._finalizer = weakref.finalize(self, _remove_temp_xml, path)
+        self._finalizer = weakref.finalize(self, remove_temporary_file, path)
 
     def cleanup(self) -> None:
         self._finalizer()
@@ -601,7 +599,7 @@ class _MuJoCoSceneContext:
 
 def _build_mujoco_scene_context(scene: SceneCfg) -> _MuJoCoSceneContext:
     from unisim.backend.mujoco.xml import (
-        materialize_mujoco_hfield_attached_scene,
+        materialize_hfield_attached_scene,
         materialize_scene_fragments,
     )
 
@@ -625,7 +623,7 @@ def _build_mujoco_scene_context(scene: SceneCfg) -> _MuJoCoSceneContext:
             model_source=model_source,
             model_file=scene.model_file,
             visual_model_file=model_source,
-            cleanup_handle=_TempXmlCleanup(model_source),
+            cleanup_handle=TemporaryXmlCleanup(model_source),
         )
 
     if scene.terrain.generator is None:
@@ -633,7 +631,7 @@ def _build_mujoco_scene_context(scene: SceneCfg) -> _MuJoCoSceneContext:
 
     output_dir = tempfile.TemporaryDirectory(prefix="unilab_scene_")
     try:
-        _, terrain_origins, terrain_surface_sampler = materialize_mujoco_hfield_attached_scene(
+        _, terrain_origins, terrain_surface_sampler = materialize_hfield_attached_scene(
             model_file=scene.model_file,
             terrain_cfg=scene.terrain.generator,
             output_dir=output_dir.name,
@@ -698,7 +696,7 @@ class MuJoCoBackend(SimBackend):
 
         self._composed_scene = None
         self._host_bridge_plans: weakref.WeakSet[Any] = weakref.WeakSet()
-        self._mocap_pose_bindings: dict[str, BackendMocapPoseBinding] = {}
+        self._mocap_pose_bindings: dict[str, MocapPoseBinding] = {}
         self._entity_layout: CompiledSceneLayout | None = None
         self._entity_faulted = False
         self._entity_closed = False
@@ -793,7 +791,7 @@ class MuJoCoBackend(SimBackend):
         self._terrain_spawn_data = (
             None
             if self.terrain_origins is None
-            else BackendTerrainSpawnData(
+            else TerrainSpawnData(
                 terrain_origins=self.terrain_origins,
                 sample_height=(
                     None
@@ -1671,14 +1669,14 @@ class MuJoCoBackend(SimBackend):
 
     def _prepare_model_xml(self) -> tuple[str, list[str], list[int], list[str]]:
         from unisim.backend.mujoco.xml import (
+            bind_tracking_sensors,
             create_discardvisual_xml,
-            inject_mujoco_tracking_sensors,
         )
 
         model_path = create_discardvisual_xml(str(self._model_file))
         tmp_paths = [model_path]
         if self.add_body_sensors:
-            model_path, tracked_body_ids, valid_bnames = inject_mujoco_tracking_sensors(
+            model_path, tracked_body_ids, valid_bnames = bind_tracking_sensors(
                 model_path,
                 baselink_name=self._base_name,
                 tracked_body_names=self._tracked_body_names,
@@ -1746,8 +1744,8 @@ class MuJoCoBackend(SimBackend):
         variant is what OOMed large pools).
         """
         from unisim.backend.mujoco.xml import (
+            bind_tracking_sensors,
             create_discardvisual_xml,
-            inject_mujoco_tracking_sensors,
         )
 
         report_fields: list[ConfigurationField] = []
@@ -1769,7 +1767,7 @@ class MuJoCoBackend(SimBackend):
                 physics_path = create_discardvisual_xml(source)
                 temp_paths.append(physics_path)
                 if self.add_body_sensors:
-                    physics_path, _, names = inject_mujoco_tracking_sensors(
+                    physics_path, _, names = bind_tracking_sensors(
                         physics_path,
                         baselink_name=self._base_name,
                         tracked_body_names=self._tracked_body_names,
@@ -1921,7 +1919,7 @@ class MuJoCoBackend(SimBackend):
             return build, list(valid_bnames or [])
         finally:
             for path in reversed(temp_paths):
-                _remove_temp_xml(path)
+                remove_temporary_file(path)
 
     @staticmethod
     def _variant_source(descriptor: ModelSourceDescriptor) -> str:
@@ -2187,7 +2185,7 @@ class MuJoCoBackend(SimBackend):
     def get_scene_visual_model_file(self) -> str | None:
         return str(self.scene_visual_model_file) if self.scene_visual_model_file else None
 
-    def get_terrain_spawn_data(self) -> BackendTerrainSpawnData | None:
+    def get_terrain_spawn_data(self) -> TerrainSpawnData | None:
         return self._terrain_spawn_data
 
     def get_keyframe_qpos(self, name: str) -> np.ndarray:
@@ -2250,7 +2248,7 @@ class MuJoCoBackend(SimBackend):
             raise KeyError(f"unknown {self.backend_type} state field(s): {sorted(unknown)}")
         return result
 
-    def tensor_execution(self) -> TensorExecution:
+    def get_tensor_execution(self) -> TensorExecution:
         return TensorExecution.HOST_BRIDGE
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
@@ -2286,7 +2284,7 @@ class MuJoCoBackend(SimBackend):
     def get_public_state_widths(self) -> PublicStateWidths:
         return PublicStateWidths(nq=self.nq, nv=self.nv)
 
-    def compile_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
+    def bind_host_bridge_io(self, spec: TensorIOSpec) -> HostBridgeTransferPlan:
         """Compile persistent pinned staging and packed device layouts."""
         from .tensor_io import MuJoCoHostBridgeTransferPlan
 
@@ -2294,13 +2292,13 @@ class MuJoCoBackend(SimBackend):
         self._host_bridge_plans.add(plan)
         return plan
 
-    def begin_packed_reset(self, *, device: Any | None = None) -> Any:
+    def bind_packed_reset(self, *, device: Any | None = None) -> Any:
         """Begin a device-composed transaction with one reset commit boundary."""
-        from unisim.backend.packed_reset import TorchPackedResetComposer
+        from unisim.backend.packed_reset import PackedResetTransaction
 
-        return TorchPackedResetComposer(self, device=device)
+        return PackedResetTransaction(self, device=device)
 
-    def bind_mocap_pose(self, body_name: str) -> BackendMocapPoseBinding:
+    def bind_mocap_pose(self, body_name: str) -> MocapPoseBinding:
         """Bind one kinematic entity root's mocap pose on the cold path."""
         self._require_entity_healthy()
         layout = self._entity_layout
@@ -2339,7 +2337,7 @@ class MuJoCoBackend(SimBackend):
             pool.forward(np.sort(ids))
             self._tracked_body_state_dirty[ids] = False
 
-        binding = BackendMocapPoseBinding(
+        binding = MocapPoseBinding(
             backend_type=self.backend_type,
             body_name=body_name,
             num_envs=self._num_envs,
@@ -2441,9 +2439,9 @@ class MuJoCoBackend(SimBackend):
         qvel = np.zeros((ids.size, self.nv), dtype=self._np_dtype)
         self._host_set_state(ids, qpos, qvel)
 
-    def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
+    def get_root_state_layout(self, root_body_name: str) -> RootStateLayout:
         qpos, qvel = self._compiled_index.free_root_layout(root_body_name)
-        return BackendRootStateLayout(qpos_indices=qpos, qvel_indices=qvel)
+        return RootStateLayout(qpos_indices=qpos, qvel_indices=qvel)
 
     def _resolve_interval_root_velocity_qvel_ids(
         self,
@@ -2482,7 +2480,7 @@ class MuJoCoBackend(SimBackend):
     def get_geom_size(self, name: str) -> np.ndarray:
         return np.asarray(self._model.geom_size[self.get_geom_id(name)], dtype=np.float64).copy()
 
-    def create_hfield_scanner(
+    def bind_height_scanner(
         self,
         *,
         hfield_geom_id: int,
@@ -2490,7 +2488,7 @@ class MuJoCoBackend(SimBackend):
         frame_body_id: int,
         alignment: str = "yaw",
         output: str = "height",
-    ) -> BackendHeightScanner:
+    ) -> HeightScanner:
         """Create a reusable height-field scanner on the init/cold path.
 
         The MuJoCo backend supports ``alignment="world"`` and
@@ -2999,7 +2997,7 @@ class MuJoCoBackend(SimBackend):
 
         capabilities = self.get_tensor_capabilities()
         current_device = torch.cuda.current_device() if source_device.type == "cuda" else None
-        validate_tensor_device(
+        validate_torch_device(
             capabilities.torch_devices,
             source_device,
             current_device=current_device,
@@ -3511,8 +3509,8 @@ class MuJoCoBackend(SimBackend):
             ),
         )
 
-    def get_play_capabilities(self) -> BackendPlayCapabilities:
-        return BackendPlayCapabilities(
+    def get_play_capabilities(self) -> PlayCapabilities:
+        return PlayCapabilities(
             supports_physics_state_playback=True,
             supports_debug_overlay=True,
             supports_mocap_playback=self._playback_nmocap() > 0,
@@ -3524,11 +3522,11 @@ class MuJoCoBackend(SimBackend):
         play_render_mode: str | None,
         play_steps: int | None,
         output_video: str | os.PathLike[str] | None,
-    ) -> BackendPlayRenderPlan:
+    ) -> PlayRenderPlan:
         mode = normalize_play_render_mode(play_render_mode)
         effective_mode = "record" if mode == "auto" else mode
         if effective_mode == "none":
-            return BackendPlayRenderPlan(
+            return PlayRenderPlan(
                 mode=effective_mode,
                 headless=True,
                 record_video=False,
@@ -3542,7 +3540,7 @@ class MuJoCoBackend(SimBackend):
             raise ValueError("MuJoCo record playback requires a finite training.play_steps value.")
         if output_video is None:
             raise ValueError("MuJoCo record playback requires an output video path.")
-        return BackendPlayRenderPlan(
+        return PlayRenderPlan(
             mode=effective_mode,
             headless=True,
             record_video=True,

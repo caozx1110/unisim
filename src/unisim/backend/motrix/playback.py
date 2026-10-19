@@ -10,7 +10,7 @@ from typing import Any, Callable, TypeVar
 import numpy as np
 
 from unisim.backend.base import CameraCfg
-from unisim.backend.playback_common import env_cfg_value, write_playback_video
+from unisim.backend.playback import env_cfg_value, write_playback_video
 
 ObsT = TypeVar("ObsT")
 
@@ -43,7 +43,7 @@ def run_motrix_playback(
             if render_spacing is not None
             else float(env_cfg_value(env, "render_spacing", 1.0))
         )
-        backend.init_renderer(
+        backend.bind_renderer(
             spacing=effective_spacing,
             offset_mode=str(render_offset_mode) if render_offset_mode is not None else "grid",
             headless=headless,
@@ -75,7 +75,7 @@ def run_motrix_playback(
         if render_spacing is not None
         else float(env_cfg_value(env, "render_spacing", 1.0))
     )
-    backend.init_renderer(
+    backend.bind_renderer(
         spacing=effective_spacing,
         offset_mode=str(render_offset_mode) if render_offset_mode is not None else "grid",
     )

@@ -288,7 +288,7 @@ class TensorResetRandomizationPayload:
     table shaped ``(num_rows, *canonical_tail)``. Non-delta terms hold FINAL
     ABSOLUTE values. The delta terms ``base_mass_delta`` and
     ``base_com_offset`` hold deltas that the consuming adapter merges with its
-    baseline (``final = baseline + delta``); the packed reset composer performs
+    baseline (``final = baseline + delta``); the packed reset transaction performs
     that merge in Torch at commit time. Tensors on ``torch.cpu`` form the host
     plane; tensors on any other device form the device plane. Backends check
     the requested terms against the matching
