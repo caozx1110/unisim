@@ -1,17 +1,20 @@
 """Declarative interval domain-randomization term descriptors.
 
 An interval randomization plan is a tuple of :class:`IntervalTermOp` entries:
-a term name, a host NumPy or device payload, and optional target body IDs.
-The builtin specs below pin the payload contract for the terms shared between
-UniLab's domain-randomization manager and the backend adapters. Custom terms are
+a term name, a torch-first payload, and optional target body IDs. The builtin
+specs below pin the payload contract for the terms shared between UniLab's
+domain-randomization manager and the backend adapters. Custom terms are
 free-form strings owned by a backend and validated only against that
 backend's declared capability set; there is intentionally no mutable global
 registry for them.
 
-The module is stdlib + NumPy only and never imports an engine SDK. Host NumPy
-ops and plans stay pickle-safe (protocol 4) across spawn-based collector
-processes; device payloads are process-local by design and are validated by
-the receiving in-process tensor adapter.
+The module is stdlib + NumPy only and never imports an engine SDK or a tensor
+runtime. Payloads are Torch tensors (typed ``Any``) or
+:class:`TensorIntervalPayload`; producers sample values, adapters consume them
+on their declared data plane, and host adapters convert through the private
+:mod:`unisim.dr._host` helpers. Device payloads are process-local by design;
+plans that must cross spawn-based collector processes (pickle protocol 4)
+carry producer ranges rather than tensors.
 """
 
 from __future__ import annotations
@@ -39,7 +42,6 @@ __all__ = [
     "TensorIntervalPayload",
     "interval_term_spec",
     "require_op_body_ids",
-    "require_op_host_payload",
     "validate_interval_op",
 ]
 
@@ -55,9 +57,10 @@ class IntervalTermSpec:
 
 INTERVAL_TERM_SPECS: tuple[IntervalTermSpec, ...] = (
     IntervalTermSpec(
+        # Producer-sampled full-width force table, one (3,) force per env.
         name=INTERVAL_TERM_PUSH,
         requires_body_ids=False,
-        payload_ndim=1,
+        payload_ndim=2,
     ),
     IntervalTermSpec(
         name=INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
@@ -94,21 +97,23 @@ def interval_term_spec(name: str) -> IntervalTermSpec:
 class IntervalTermOp:
     """One interval randomization operation: term, payload, optional bodies.
 
-    ``payload`` remains a NumPy array for host-resident plans. Device-resident
-    producers package engine-native arrays in :class:`TensorIntervalPayload`
-    and pass that object here; base validation deliberately stays Torch-free.
+    ``payload`` is torch-first: a Torch tensor (typed ``Any`` so the base
+    contract never imports a tensor runtime) or a :class:`TensorIntervalPayload`
+    packaging engine-native arrays. Host adapters convert tensors at their
+    private boundary; the public contract performs no host conversion.
+    ``body_ids`` is likewise a Torch tensor of integer body IDs when present.
     """
 
     term: str
-    payload: np.ndarray | TensorIntervalPayload
-    body_ids: np.ndarray | None = None
+    payload: Any
+    body_ids: Any | None = None
 
     def validate(self) -> None:
         """Check the builtin spec contract; custom terms pass through."""
         validate_interval_op(self)
 
 
-def require_op_body_ids(op: IntervalTermOp) -> np.ndarray:
+def require_op_body_ids(op: IntervalTermOp) -> Any:
     """Return a validated body-targeted op's ids, failing closed when absent.
 
     Builtin body terms are checked by :func:`validate_interval_op` before the
@@ -118,18 +123,6 @@ def require_op_body_ids(op: IntervalTermOp) -> np.ndarray:
     if op.body_ids is None:
         raise ValueError(f"interval term '{op.term}' requires body_ids")
     return op.body_ids
-
-
-def require_op_host_payload(op: IntervalTermOp) -> np.ndarray:
-    """Return one host NumPy interval payload, rejecting device payloads.
-
-    Host adapters own this explicit conversion point. A device payload is not
-    silently coerced or copied to NumPy; unsupported tensor data planes fail
-    closed with an actionable type error.
-    """
-    if isinstance(op.payload, TensorIntervalPayload):
-        raise TypeError(f"interval term '{op.term}' does not accept a device-resident payload")
-    return op.payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +150,9 @@ def validate_interval_op(op: IntervalTermOp) -> None:
     """Validate ``op`` against its builtin spec, ignoring custom terms.
 
     Builtin terms must carry ``body_ids`` exactly when their spec requires
-    them, and their payload must have the declared ndim.  A
+    them, and their payload must have the declared ndim (checked by
+    duck-typed ``.ndim`` so Torch tensors validate without importing Torch;
+    array-likes fall back to ``np.asarray``).  A
     :class:`TensorIntervalPayload` defers structural checks to its
     device-resident adapter, which owns the accepted engine type, dtype,
     device, contiguity, and value rules. Unknown (custom) terms are
@@ -178,7 +173,9 @@ def validate_interval_op(op: IntervalTermOp) -> None:
                 f"TensorIntervalPayload does not carry exactly the interval term {op.term!r}"
             )
         return
-    payload_ndim = np.asarray(payload).ndim
+    payload_ndim = getattr(payload, "ndim", None)
+    if payload_ndim is None:
+        payload_ndim = np.asarray(payload).ndim
     if payload_ndim != spec.payload_ndim:
         raise ValueError(
             f"interval term '{op.term}' payload must have ndim "

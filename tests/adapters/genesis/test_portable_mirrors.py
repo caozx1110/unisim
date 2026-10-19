@@ -15,10 +15,10 @@ pytest.importorskip("torch")
 
 from tests.adapters.genesis.test_portable_entities import (
     _enable_source_gravity,
+    _payload,
     _scene,
 )
 from unisim.backend.genesis.backend import GenesisBackend
-from unisim.dr.types import ResetRandomizationPayload
 from unisim.entities import (
     EntityInitialState,
     EntityStatePatch,
@@ -410,7 +410,7 @@ def test_visual_mirror_physical_mutation_and_contact_fragments_fail_closed(
                 np.asarray((1,), dtype=np.intp),
                 qpos[[1]],
                 qvel[[1]],
-                randomization=ResetRandomizationPayload(body_mass=requested_mass[[1]]),
+                randomization=_payload(body_mass=requested_mass[[1]]),
             )
         np.testing.assert_array_equal(backend.get_body_mass(), default_mass)
         for name in backend.get_entity_names():

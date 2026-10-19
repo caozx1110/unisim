@@ -6,11 +6,18 @@ import numpy as np
 import pytest
 
 from unisim import create_backend
-from unisim.dr.types import ResetRandomizationPayload
+from unisim.dr.types import TensorResetRandomizationPayload
 from unisim.entities import EntityStatePatch, SceneResetRequest
 from unisim.scene import SceneCfg
 
 from .test_entity_runtime import _scene
+
+
+def _reset_payload(**fields: np.ndarray) -> TensorResetRandomizationPayload:
+    torch = pytest.importorskip("torch")
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(np.asarray(value)) for name, value in fields.items()}
+    )
 
 
 def _legacy(tmp_path: Path):
@@ -165,17 +172,13 @@ def test_all_host_inputs_validate_before_any_native_write(tmp_path, problem):
         elif problem == "bool_row":
             ids = np.array([True, False])
         elif problem == "late_dr_shape":
-            randomization = ResetRandomizationPayload(
-                body_mass=mass[[2, 0]] * 2, kd=np.zeros((2, 9))
-            )
+            randomization = _reset_payload(body_mass=mass[[2, 0]] * 2, kd=np.zeros((2, 9)))
         elif problem == "late_dr_nan":
-            randomization = ResetRandomizationPayload(
-                body_mass=mass[[2, 0]] * 2, kd=np.full((2, 1), np.nan)
-            )
+            randomization = _reset_payload(body_mass=mass[[2, 0]] * 2, kd=np.full((2, 1), np.nan))
         elif problem == "dr_object":
             randomization = object()
         elif problem == "late_base_offset":
-            randomization = ResetRandomizationPayload(
+            randomization = _reset_payload(
                 body_mass=mass[[2, 0]] * 2, base_com_offset=np.zeros((2, 7))
             )
         with pytest.raises((ValueError, TypeError)):
@@ -284,7 +287,7 @@ def test_invalid_model_domain_rejected_before_native_reset_or_model_write(tmp_pa
                 value[:, backend._base_body_id] = 0
             else:
                 value.reshape(2, -1)[:, -1] = -0.1
-        payload = ResetRandomizationPayload(**{field: value})
+        payload = _reset_payload(**{field: value})
         native = _CountingPool(backend._pool)
         backend._pool = native
         error = "unit wxyz" if field == "body_iquat" else "nonnegative"
@@ -314,7 +317,7 @@ def test_negative_mass_delta_is_valid_when_result_stays_nonnegative(tmp_path):
             np.array([2, 0]),
             before["qpos"][[2, 0]],
             before["qvel"][[2, 0]],
-            ResetRandomizationPayload(base_mass_delta=np.array([-0.2, -0.4])),
+            _reset_payload(base_mass_delta=np.array([-0.2, -0.4])),
         )
         np.testing.assert_allclose(
             backend._pool.expand("body_mass")[[2, 0], backend._base_body_id], [0.8, 0.6]

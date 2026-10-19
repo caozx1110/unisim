@@ -23,7 +23,6 @@ import tempfile
 import time
 from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, replace
-from dataclasses import fields as dataclass_fields
 from multiprocessing import shared_memory
 from pathlib import Path
 from typing import Any, BinaryIO, cast
@@ -47,9 +46,10 @@ from unisim.backend.subprocess_ipc.scene_materialization import (
     prepare_worker_scene,
     validate_body_sphere_radii,
 )
+from unisim.dr._host import reset_payload_to_host_dict
 from unisim.dr.types import (
     DomainRandomizationCapabilities,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 from unisim.entities import EntityStatePatch, SceneResetRequest
 from unisim.entity_state import entity_state_snapshot, prepare_scene_reset, row_columns
@@ -642,7 +642,7 @@ class MjcfSubprocessBackend(SimBackend):
         self,
         request: SceneResetRequest,
         control_values: np.ndarray | None = None,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> None:
         layout = self.get_scene_layout()
         # Do not even materialize a native worker for a malformed request.
@@ -672,11 +672,11 @@ class MjcfSubprocessBackend(SimBackend):
         randomization_wire: dict[str, Any] = {}
         if randomization is not None:
             # The subclass validator already fail-closed every unsupported term;
-            # forward each present field verbatim under its contract name.
-            for field in dataclass_fields(ResetRandomizationPayload):
-                values = getattr(randomization, field.name)
-                if values is not None:
-                    randomization_wire[field.name] = np.asarray(values).tolist()
+            # project the torch-first payload to host NumPy at this adapter's
+            # private boundary, then forward each present field verbatim under
+            # its contract name.
+            for term, values in reset_payload_to_host_dict(randomization).items():
+                randomization_wire[term] = values.tolist()
         response = self._request(
             protocol.CMD_RESET_ENTITIES,
             {
@@ -716,7 +716,7 @@ class MjcfSubprocessBackend(SimBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, dict[str, float]]:
         layout = self.get_scene_layout()
         ids = np.asarray(env_indices)
@@ -746,8 +746,8 @@ class MjcfSubprocessBackend(SimBackend):
         return {"timing": {}}
 
     def _validated_mapped_reset_randomization(
-        self, randomization: ResetRandomizationPayload | None, rows: np.ndarray
-    ) -> ResetRandomizationPayload | None:
+        self, randomization: TensorResetRandomizationPayload | None, rows: np.ndarray
+    ) -> TensorResetRandomizationPayload | None:
         if randomization is None or randomization.is_empty():
             return None
         requested = ", ".join(sorted(randomization.requested_terms()))
@@ -2276,9 +2276,16 @@ class MjcfSubprocessBackend(SimBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, dict[str, float]]:
         self._require_state("set_state")
+        if randomization is not None and not isinstance(
+            randomization, TensorResetRandomizationPayload
+        ):
+            raise TypeError(
+                f"{self._BACKEND_LABEL} reset randomization must be a "
+                "TensorResetRandomizationPayload carrying host-plane (torch.cpu) tensors"
+            )
         if self._entity_scene is not None:
             return self._set_mapped_state(env_indices, qpos, qvel, randomization)
         if randomization is not None and not randomization.is_empty():

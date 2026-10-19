@@ -29,9 +29,22 @@ import mjbatch
 import mujoco
 
 from unisim import MuJoCoBackend, PreStepControlOutput, create_backend
-from unisim.dr.interval import INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA
-from unisim.dr.types import IntervalRandomizationPlan, IntervalTermOp, ResetRandomizationPayload
+from unisim.dr.interval import INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, INTERVAL_TERM_PUSH
+from unisim.dr.types import (
+    IntervalRandomizationPlan,
+    IntervalTermOp,
+    TensorIntervalPayload,
+    TensorResetRandomizationPayload,
+)
 from unisim.scene import SceneCfg
+
+
+def _reset_payload(**fields):
+    torch = pytest.importorskip("torch")
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(np.asarray(value)) for name, value in fields.items()}
+    )
+
 
 MODEL = """<mujoco model='batch-obligation-test'>
   <option timestep='0.002' iterations='100'/>
@@ -178,6 +191,43 @@ def test_xfrc_written_absolutely_on_idle_steps(backend: MuJoCoBackend) -> None:
     np.testing.assert_allclose(backend._xfrc_view, 0.0, atol=1e-12)
 
 
+def test_push_requires_producer_sampled_payload(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    backend = MuJoCoBackend(
+        SceneCfg(model_file=_write(tmp_path, MODEL)), num_envs=2, sim_dt=0.002, base_name="base"
+    )
+    backend.materialize()
+    try:
+        force = torch.tensor([[1.0, 2.0, 3.0], [-1.0, 0.0, 0.5]])
+        # The producer owns sampling; a full-width TensorIntervalPayload flows
+        # through the interval plan and is bridged to host at the boundary.
+        backend.apply_interval_randomization(
+            IntervalRandomizationPlan(
+                ops=(IntervalTermOp(INTERVAL_TERM_PUSH, TensorIntervalPayload(push_force=force)),)
+            )
+        )
+        np.testing.assert_allclose(
+            backend._pending_xfrc_applied[:, backend._push_body_force_slice],
+            force.numpy(),
+            rtol=0.0,
+        )
+        # A bare full-width torch tensor is accepted by the direct entry point.
+        backend.push_robots(torch.zeros((2, 3)))
+        np.testing.assert_allclose(
+            backend._pending_xfrc_applied[:, backend._push_body_force_slice], 0.0, atol=0.0
+        )
+        with pytest.raises(ValueError, match="producer-sampled"):
+            backend.push_robots(None)
+        with pytest.raises(ValueError, match="producer-sampled"):
+            backend.push_robots(TensorIntervalPayload())
+        with pytest.raises(ValueError, match="push force must have shape"):
+            backend.push_robots(TensorIntervalPayload(push_force=torch.zeros((2, 2))))
+        with pytest.raises(ValueError, match="finite"):
+            backend.push_robots(torch.full((2, 3), float("nan")))
+    finally:
+        backend.close()
+
+
 # --------------------------------------------------------------------- #
 # Obligation 2: warmstart zeroing                                       #
 # --------------------------------------------------------------------- #
@@ -242,9 +292,7 @@ def test_reset_cross_episode_isolation(backend: MuJoCoBackend) -> None:
     np.testing.assert_array_equal(current_qpos, episode_qpos[0])
     for expected in episode_qpos[1:]:
         backend._host_step(ctrl)
-        np.testing.assert_array_equal(
-            backend._host_get_state("qpos")["qpos"], expected
-        )
+        np.testing.assert_array_equal(backend._host_get_state("qpos")["qpos"], expected)
 
 
 # --------------------------------------------------------------------- #
@@ -338,7 +386,7 @@ def test_get_physics_state_layout(backend: MuJoCoBackend) -> None:
 # --------------------------------------------------------------------- #
 
 
-def test_reset_term_defaults_are_canonical_and_read_only(backend: MuJoCoBackend) -> None:
+def test_reset_term_defaults_track_committed_per_env_values(backend: MuJoCoBackend) -> None:
     capabilities = backend.get_dr_capabilities()
     assert capabilities.supported_reset_terms
     for term in sorted(capabilities.supported_reset_terms):
@@ -346,21 +394,28 @@ def test_reset_term_defaults_are_canonical_and_read_only(backend: MuJoCoBackend)
         assert isinstance(default, np.ndarray)
         assert not default.flags.writeable
 
-    np.testing.assert_allclose(backend.get_reset_term_default("body_mass"), backend.model.body_mass)
-    np.testing.assert_allclose(backend.get_reset_term_default("gravity"), backend.model.opt.gravity)
+    # Before any randomization the live per-env values match the canonical model.
     np.testing.assert_allclose(
-        backend.get_reset_term_default("kp"), backend.model.actuator_gainprm[:, 0]
+        backend.get_reset_term_default("body_mass"),
+        np.broadcast_to(backend.model.body_mass, (backend.num_envs, backend.model.nbody)),
+    )
+    np.testing.assert_allclose(
+        backend.get_reset_term_default("gravity"),
+        np.broadcast_to(backend.model.opt.gravity, (backend.num_envs, 3)),
+    )
+    np.testing.assert_allclose(
+        backend.get_reset_term_default("kp"),
+        np.broadcast_to(backend.model.actuator_gainprm[:, 0], (backend.num_envs, backend.model.nu)),
     )
 
 
-def test_body_ipos_default_stability_and_per_env_current_query(
+def test_body_ipos_live_default_and_per_env_current_query(
     backend: MuJoCoBackend,
 ) -> None:
     model = backend.model
     base_id = int(backend._base_body_id)
     canonical = backend.get_body_ipos()
     assert canonical.shape == (model.nbody, 3)
-    default_before = backend.get_reset_term_default("body_ipos")
 
     num_envs = backend.num_envs
     ids = np.arange(num_envs, dtype=np.int32)
@@ -368,13 +423,12 @@ def test_body_ipos_default_stability_and_per_env_current_query(
     ipos = np.tile(canonical, (num_envs, 1, 1))
     ipos[:, base_id, 0] += offsets
     qpos, qvel = _episode_start_state(backend)
-    backend._host_set_state(
-        ids, qpos, qvel, randomization=ResetRandomizationPayload(body_ipos=ipos)
-    )
+    backend._host_set_state(ids, qpos, qvel, randomization=_reset_payload(body_ipos=ipos))
 
-    # Default-facing queries never drift with reset randomization.
+    # The canonical query never drifts with reset randomization, while the
+    # reset-term default tracks the committed per-environment values.
     np.testing.assert_array_equal(backend.get_body_ipos(), canonical)
-    np.testing.assert_array_equal(backend.get_reset_term_default("body_ipos"), default_before)
+    np.testing.assert_allclose(backend.get_reset_term_default("body_ipos"), ipos, rtol=1e-12)
 
     # The per-env query reflects the applied values in env_ids order.
     current = backend.get_body_ipos(env_ids=[3, 0])
@@ -392,7 +446,7 @@ def test_body_ipos_default_stability_and_per_env_current_query(
         np.array([1], dtype=np.int32),
         qpos[[1]],
         qvel[[1]],
-        randomization=ResetRandomizationPayload(
+        randomization=_reset_payload(
             body_ipos=np.tile(canonical, (1, 1, 1)),
             base_com_offset=np.array([[0.3, 0.0, 0.0]]),
         ),
@@ -403,7 +457,7 @@ def test_body_ipos_default_stability_and_per_env_current_query(
         np.testing.assert_allclose(
             after[env, base_id, 0], canonical[base_id, 0] + offsets[env], rtol=1e-12
         )
-    np.testing.assert_array_equal(backend.get_reset_term_default("body_ipos"), default_before)
+    np.testing.assert_allclose(backend.get_reset_term_default("body_ipos"), after, rtol=1e-12)
 
     with pytest.raises(ValueError, match="env_ids"):
         backend.get_body_ipos(env_ids=[num_envs])
@@ -438,7 +492,7 @@ def test_set_state_dr_roundtrip(backend: MuJoCoBackend) -> None:
 
     mass_rows = np.broadcast_to(base_mass, (n, model.nbody)).copy()
     mass_rows[:, backend._base_body_id] += np.array([0.7, 1.2])
-    payload = ResetRandomizationPayload(
+    payload = _reset_payload(
         base_mass_delta=np.array([0.7, 1.2]),
         base_com_offset=np.array([[0.01, 0.0, 0.0], [0.0, 0.02, 0.0]]),
         gravity=np.array([[0.0, 0.0, -7.0], [0.0, 0.0, -11.0]]),
@@ -467,7 +521,7 @@ def test_set_state_dr_roundtrip(backend: MuJoCoBackend) -> None:
         rtol=1e-12,
     )
     expected_ipos = np.broadcast_to(base_ipos, (n, model.nbody, 3)).copy()
-    expected_ipos[:, backend._base_body_id, :] += payload.base_com_offset
+    expected_ipos[:, backend._base_body_id, :] += payload.base_com_offset.numpy()
     np.testing.assert_allclose(pool.expand("body_ipos")[ids], expected_ipos, rtol=1e-12)
     np.testing.assert_allclose(pool.expand("gravity")[ids], payload.gravity, rtol=1e-12)
     np.testing.assert_allclose(pool.expand("body_iquat")[ids], payload.body_iquat, rtol=1e-12)
@@ -516,9 +570,7 @@ def test_set_state_dr_roundtrip(backend: MuJoCoBackend) -> None:
         np.arange(2),
         q0,
         v0,
-        randomization=ResetRandomizationPayload(
-            gravity=np.array([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])
-        ),
+        randomization=_reset_payload(gravity=np.array([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])),
     )
     ctrl = np.zeros((2, backend.num_actuators))
     for _ in range(20):

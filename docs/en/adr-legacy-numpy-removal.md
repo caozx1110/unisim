@@ -32,7 +32,7 @@ Test-only private hooks and compatibility aliases are deleted rather than rename
 | Body getters and body-state copy helpers | `get_tracked_body_views(...)` or public tensor sensor projections |
 | Scattered CPU host exchange | `compile_host_bridge_io(...)` and its plan boundaries |
 
-NumPy remains valid behind explicitly scoped public leaves: cold model/default/layout metadata and index tables, declarative interval-DR inputs and pre-step callback formats, mapped entity transactions, playback/rendering APIs, physics-state snapshots, and serialization. These leaves do not restore a NumPy training lifecycle and must not be used as hidden fallbacks from tensor-capable Manager code.
+NumPy remains valid behind explicitly scoped public leaves: cold model/default/layout metadata and index tables, pre-step callback formats, mapped entity transactions, playback/rendering APIs, physics-state snapshots, and serialization. Public DR payloads are torch-only; adapter-private host conversion (for example the `unisim.dr._host` helpers) is an adapter-internal leaf rather than a public one, as recorded in [the torch-first DR payload ADR](adr-dr-torch-first-payloads.md). These leaves do not restore a NumPy training lifecycle and must not be used as hidden fallbacks from tensor-capable Manager code.
 
 The repository gates both the base contract and concrete backend classes against reappearance of the removed method names. It also gates runtime and test source against reintroducing the `_legacy_*` prefix.
 

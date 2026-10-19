@@ -39,16 +39,15 @@ from unisim.backend.drake.properties import (
     scan_expected_native_properties,
     validate_native_model_properties,
 )
+from unisim.dr._host import interval_payload_to_host
 from unisim.dr.types import (
     INTERVAL_TERM_BODY_FORCE,
     DomainRandomizationCapabilities,
     FixedVariantLayout,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     require_op_body_ids,
-    require_op_host_payload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.entity_state import (
@@ -702,14 +701,16 @@ class DrakeBackend(SimBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> None:
         self._require_entity_healthy()
         # Reset is the handoff from UniLab's sampled state tensors into
         # DrakeUni's per-env runtime contexts.
         if randomization is not None and not randomization.is_empty():
+            requested = ", ".join(sorted(randomization.requested_terms()))
             raise NotImplementedError(
-                "DrakeUni batch backend does not apply reset randomization yet"
+                "DrakeUni batch backend does not support reset randomization terms: "
+                f"{requested}."
             )
         indices = np.asarray(env_indices, dtype=np.int32)
         qpos_rows = np.asarray(qpos, dtype=np.float64)
@@ -767,7 +768,7 @@ class DrakeBackend(SimBackend):
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), require_op_host_payload(op)
+                    require_op_body_ids(op), interval_payload_to_host(op.payload)
                 ),
             }
         return self._interval_term_handler_cache
@@ -1089,7 +1090,7 @@ class DrakeBackend(SimBackend):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         """Bridge selected accelerator reset state to CPU Drake physics."""
 
@@ -1099,7 +1100,16 @@ class DrakeBackend(SimBackend):
 
         require_drake_tensor_runtime(self)
         if randomization is not None:
-            raise NotImplementedError("Drake tensor reset does not support randomization")
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "Drake tensor reset randomization must be a "
+                    "TensorResetRandomizationPayload"
+                )
+            if not randomization.is_empty():
+                requested = ", ".join(sorted(randomization.requested_terms()))
+                raise NotImplementedError(
+                    f"Drake tensor reset does not support randomization terms: {requested}."
+                )
         if not isinstance(env_indices, torch.Tensor):
             raise TypeError("Drake tensor reset env_indices must be a torch.Tensor")
         source_device = env_indices.device

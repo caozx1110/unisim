@@ -32,7 +32,7 @@ Runtime-owned caches and worker installations use `UNISIM_*` environment variabl
 | named sensor getters | `get_sensor_view()` / `bind_sensor_data()` |
 | per-transfer host I/O | `compile_host_bridge_io()` |
 
-The old training lifecycle no longer exists on `SimBackend`, including on concrete CPU adapters. Adapter-private `_host_*`, `_wire_*`, `_model_file_*`, and `_playback_*` names describe owner boundaries and must not be called by UniLab. Cold metadata/layout/default tables, explicit `IntervalTermOp` sequences, mapped entity transactions, playback/rendering, and serialization retain their explicit NumPy contracts. See the [legacy NumPy removal ADR](adr-legacy-numpy-removal.md).
+The old training lifecycle no longer exists on `SimBackend`, including on concrete CPU adapters. Adapter-private `_host_*`, `_wire_*`, `_model_file_*`, and `_playback_*` names describe owner boundaries and must not be called by UniLab. Cold metadata/layout/default tables, mapped entity transactions, playback/rendering, and serialization retain their explicit NumPy contracts. Public DR payloads are torch-only — `TensorResetRandomizationPayload` and `TensorIntervalPayload`, with the payload device selecting the host or device plane — and NumPy conversion lives behind adapter-private `unisim.dr._host` helpers; see [the torch-first DR payload ADR](adr-dr-torch-first-payloads.md). See the [legacy NumPy removal ADR](adr-legacy-numpy-removal.md).
 
 ## Semantic requirements
 

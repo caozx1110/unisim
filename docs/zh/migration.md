@@ -32,7 +32,7 @@ Motrix 是第二个进程内适配器。它在相同的公共状态、控制和�
 | 具名 sensor getter | `get_sensor_view()` / `bind_sensor_data()` |
 | 每次传输的 host I/O | `compile_host_bridge_io()` |
 
-旧训练生命周期不再存在于 `SimBackend`，包括 concrete CPU adapter。Adapter 私有 `_host_*`、`_wire_*`、`_model_file_*` 与 `_playback_*` 名称描述 owner 边界，UniLab 不得调用。冷 metadata/layout/default 表、显式 `IntervalTermOp` 序列、mapped entity transaction、playback/render 与 serialization 保留各自显式 NumPy 契约。见[legacy NumPy removal ADR](adr-legacy-numpy-removal.md)。
+旧训练生命周期不再存在于 `SimBackend`，包括 concrete CPU adapter。Adapter 私有 `_host_*`、`_wire_*`、`_model_file_*` 与 `_playback_*` 名称描述 owner 边界，UniLab 不得调用。冷 metadata/layout/default 表、mapped entity transaction、playback/render 与 serialization 保留各自显式 NumPy 契约。公开 DR payload 为 torch-only——`TensorResetRandomizationPayload` 与 `TensorIntervalPayload`，由 payload 设备选择 host 或 device 平面——NumPy 转换位于 adapter 私有的 `unisim.dr._host` helper 之后；见 [torch-first DR payload ADR](adr-dr-torch-first-payloads.md)。见[legacy NumPy removal ADR](adr-legacy-numpy-removal.md)。
 
 ## 语义要求
 

@@ -54,6 +54,7 @@ from unisim.backend.subprocess_ipc.sensors import (
     SceneSensorSpec,
     UnsupportedSensorSpec,
 )
+from unisim.dr._host import interval_payload_to_host, reset_payload_to_host_dict
 from unisim.dr.interval import (
     INTERVAL_TERM_BODY_FORCE,
     INTERVAL_TERM_BODY_TORQUE,
@@ -74,10 +75,9 @@ from unisim.dr.types import (
     DomainRandomizationCapabilities,
     FixedVariantLayout,
     IntervalRandomizationPlan,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
-    require_op_host_payload,
+    validate_tensor_reset_payload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.progress import progress_enabled
@@ -389,7 +389,11 @@ class IsaacSimBackend(MjcfSubprocessBackend):
     )
 
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
-        """Advertise only reset and wrench terms implemented by mapped scenes."""
+        """Advertise only reset and wrench terms implemented by mapped scenes.
+
+        Host-plane sets cover ``torch.cpu`` payloads; the device plane
+        (``torch.cuda``) carries the CUDA IPC PD-gain lane only.
+        """
         if self._entity_scene is None:
             return super().get_dr_capabilities()
         terms = frozenset({INTERVAL_TERM_BODY_FORCE, INTERVAL_TERM_BODY_TORQUE})
@@ -400,6 +404,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         return DomainRandomizationCapabilities(
             supported_interval_terms=terms,
             supported_reset_terms=reset_terms,
+            supported_device_reset_terms=frozenset({RESET_TERM_KP, RESET_TERM_KD}),
             supports_fixed_variants=has_variants,
             supported_fixed_variant_layouts=(
                 self._FIXED_VARIANT_LAYOUTS if has_variants else frozenset()
@@ -589,14 +594,23 @@ class IsaacSimBackend(MjcfSubprocessBackend):
                 )
 
     def _validated_mapped_reset_randomization(
-        self, randomization: ResetRandomizationPayload | None, rows: np.ndarray
-    ) -> ResetRandomizationPayload | None:
-        if randomization is None or randomization.is_empty():
+        self, randomization: TensorResetRandomizationPayload | None, rows: np.ndarray
+    ) -> TensorResetRandomizationPayload | None:
+        if randomization is None:
+            return None
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "isaacsim reset randomization must be a TensorResetRandomizationPayload"
+            )
+        if randomization.is_empty():
             return None
         scene = self._require_mapped_entity_scene()
         layout = scene.layout
+        # Host plane: the mapped subprocess worker is a NumPy boundary, so the
+        # torch-first payload must carry torch.cpu tensors.
+        validate_tensor_reset_payload(randomization, device="cpu")
         unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
-            randomization.requested_terms()
+            randomization.requested_terms(), plane="host"
         )
         if unsupported:
             details = "; ".join(
@@ -607,11 +621,12 @@ class IsaacSimBackend(MjcfSubprocessBackend):
                 f"isaacsim does not support reset domain randomization terms: {details}."
             )
         count = rows.size
+        host_values = reset_payload_to_host_dict(randomization)
 
         geom_friction: np.ndarray | None = None
-        if randomization.geom_friction is not None:
+        if RESET_TERM_GEOM_FRICTION in host_values:
             geom_friction = self._coerce_mapped_reset_field(
-                randomization.geom_friction,
+                host_values[RESET_TERM_GEOM_FRICTION],
                 "geom_friction",
                 (count, layout.ngeom, 3),
             )
@@ -625,17 +640,21 @@ class IsaacSimBackend(MjcfSubprocessBackend):
                 )
 
         body_mass: np.ndarray | None = None
-        if randomization.body_mass is not None or randomization.base_mass_delta is not None:
+        if (
+            RESET_TERM_BODY_MASS in host_values
+            or RESET_TERM_BASE_MASS in host_values
+        ):
             body_mass = (
                 self._coerce_mapped_reset_field(
-                    randomization.body_mass, "body_mass", (count, layout.nbody)
+                    host_values[RESET_TERM_BODY_MASS], "body_mass", (count, layout.nbody)
                 )
-                if randomization.body_mass is not None
+                if RESET_TERM_BODY_MASS in host_values
                 else self._mapped_default_body_rows("body_mass", rows)
             )
-            if randomization.base_mass_delta is not None:
+            if RESET_TERM_BASE_MASS in host_values:
+                # Adapter-private host-side delta merge: final = baseline + delta.
                 delta = self._coerce_mapped_reset_field(
-                    randomization.base_mass_delta, "base_mass_delta", (count,)
+                    host_values[RESET_TERM_BASE_MASS], "base_mass_delta", (count,)
                 )
                 body_mass[:, self._mapped_base_body_column()] += delta
             # Unowned public rows (for example the world body) carry zero
@@ -647,17 +666,18 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             )
 
         body_ipos: np.ndarray | None = None
-        if randomization.body_ipos is not None or randomization.base_com_offset is not None:
+        if RESET_TERM_BODY_IPOS in host_values or RESET_TERM_BASE_COM in host_values:
             body_ipos = (
                 self._coerce_mapped_reset_field(
-                    randomization.body_ipos, "body_ipos", (count, layout.nbody, 3)
+                    host_values[RESET_TERM_BODY_IPOS], "body_ipos", (count, layout.nbody, 3)
                 )
-                if randomization.body_ipos is not None
+                if RESET_TERM_BODY_IPOS in host_values
                 else self._mapped_default_body_rows("body_ipos", rows, width=3)
             )
-            if randomization.base_com_offset is not None:
+            if RESET_TERM_BASE_COM in host_values:
+                # Adapter-private host-side delta merge: final = baseline + delta.
                 offset = self._coerce_mapped_reset_field(
-                    randomization.base_com_offset, "base_com_offset", (count, 3)
+                    host_values[RESET_TERM_BASE_COM], "base_com_offset", (count, 3)
                 )
                 body_ipos[:, self._mapped_base_body_column(), :] += offset
             self._check_mapped_body_columns(
@@ -668,9 +688,9 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             )
 
         body_inertia: np.ndarray | None = None
-        if randomization.body_inertia is not None:
+        if RESET_TERM_BODY_INERTIA in host_values:
             body_inertia = self._coerce_mapped_reset_field(
-                randomization.body_inertia, "body_inertia", (count, layout.nbody, 3)
+                host_values[RESET_TERM_BODY_INERTIA], "body_inertia", (count, layout.nbody, 3)
             )
             if np.any(body_inertia[:, self._mapped_owned_body_columns(), :] <= 0.0):
                 raise ValueError("isaacsim body_inertia values must be strictly positive")
@@ -682,8 +702,10 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             )
 
         kp: np.ndarray | None = None
-        if randomization.kp is not None:
-            kp = self._coerce_mapped_reset_field(randomization.kp, "kp", (count, layout.nu))
+        if RESET_TERM_KP in host_values:
+            kp = self._coerce_mapped_reset_field(
+                host_values[RESET_TERM_KP], "kp", (count, layout.nu)
+            )
             if np.any(kp < 0.0):
                 raise ValueError("isaacsim kp values must be nonnegative")
             self._check_mapped_actuator_columns(
@@ -691,8 +713,10 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             )
 
         kd: np.ndarray | None = None
-        if randomization.kd is not None:
-            kd = self._coerce_mapped_reset_field(randomization.kd, "kd", (count, layout.nu))
+        if RESET_TERM_KD in host_values:
+            kd = self._coerce_mapped_reset_field(
+                host_values[RESET_TERM_KD], "kd", (count, layout.nu)
+            )
             if np.any(kd < 0.0):
                 raise ValueError("isaacsim kd values must be nonnegative")
             self._check_mapped_actuator_columns(
@@ -706,7 +730,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             ("dof_armature", "dof_armature"),
             ("dof_frictionloss", "dof_friction"),
         ):
-            requested = getattr(randomization, term)
+            requested = host_values.get(term)
             if requested is None:
                 dof_values[term] = None
                 continue
@@ -726,16 +750,26 @@ class IsaacSimBackend(MjcfSubprocessBackend):
             self._check_mapped_dof_columns(term, values, defaults)
             dof_values[term] = values
 
-        return ResetRandomizationPayload(
-            body_mass=body_mass,
-            body_ipos=body_ipos,
-            body_inertia=body_inertia,
-            geom_friction=geom_friction,
-            kp=kp,
-            kd=kd,
-            dof_damping=dof_values["dof_damping"],
-            dof_armature=dof_values["dof_armature"],
-            dof_frictionloss=dof_values["dof_frictionloss"],
+        import torch
+
+        # The delta terms are consumed by the merge above; the returned payload
+        # carries final absolute host-plane tables only.
+        return TensorResetRandomizationPayload(
+            **{
+                term: torch.from_numpy(values)
+                for term, values in (
+                    (RESET_TERM_BODY_MASS, body_mass),
+                    (RESET_TERM_BODY_IPOS, body_ipos),
+                    (RESET_TERM_BODY_INERTIA, body_inertia),
+                    (RESET_TERM_GEOM_FRICTION, geom_friction),
+                    (RESET_TERM_KP, kp),
+                    (RESET_TERM_KD, kd),
+                    ("dof_damping", dof_values["dof_damping"]),
+                    ("dof_armature", dof_values["dof_armature"]),
+                    ("dof_frictionloss", dof_values["dof_frictionloss"]),
+                )
+                if values is not None
+            }
         )
 
     def get_reset_term_default(self, term: str) -> np.ndarray:
@@ -796,12 +830,12 @@ class IsaacSimBackend(MjcfSubprocessBackend):
     def _apply_interval_body_force(self, op: IntervalTermOp) -> None:
         if op.body_ids is None:
             raise ValueError("interval body force requires body_ids")
-        self.apply_body_force(op.body_ids, require_op_host_payload(op))
+        self.apply_body_force(op.body_ids, interval_payload_to_host(op.payload))
 
     def _apply_interval_body_torque(self, op: IntervalTermOp) -> None:
         if op.body_ids is None:
             raise ValueError("interval body torque requires body_ids")
-        self._apply_body_torque(op.body_ids, require_op_host_payload(op))
+        self._apply_body_torque(op.body_ids, interval_payload_to_host(op.payload))
 
     def _apply_body_torque(self, body_ids: np.ndarray, torque: np.ndarray) -> None:
         zero_force = np.zeros((self._num_envs, len(body_ids), 3), dtype=np.float32)
@@ -1043,7 +1077,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         self,
         request: SceneResetRequest,
         control_values: np.ndarray | None = None,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> None:
         super()._commit_entity_reset(request, control_values, randomization)
         if self._entity_scene is None:
@@ -1119,7 +1153,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
 
     def _cuda_tensor_reset_wire_payload(
         self,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None,
+        randomization: TensorResetRandomizationPayload | None,
         *,
         row_count: int,
         device: Any,
@@ -1585,7 +1619,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         if self.tensor_execution() is TensorExecution.UNSUPPORTED:
             return super().set_state_tensor(env_indices, qpos, qvel, randomization)
@@ -1669,7 +1703,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         reset_mask: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
         *,
         full_refresh: bool = False,
     ) -> dict | None:
@@ -2958,7 +2992,7 @@ class IsaacSimBackend(MjcfSubprocessBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, dict[str, float]]:
         result = super()._host_set_state(env_indices, qpos, qvel, randomization)
         # A full state write restarts the playback clock for its rows,

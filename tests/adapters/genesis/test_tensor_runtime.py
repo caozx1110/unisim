@@ -763,6 +763,22 @@ def test_genesis_tensor_operands_and_sensor_views_fail_closed() -> None:
         )
 
 
+def test_genesis_tensor_reset_rejects_host_plane_payload() -> None:
+    backend, _, _ = _cuda_backend()
+    device = backend._device
+    capabilities = backend.get_dr_capabilities()
+    assert capabilities.supported_device_reset_terms == frozenset({"body_mass", "kp", "kd"})
+    # A torch.cpu (host-plane) payload on the device reset path fails closed
+    # naming the offending term.
+    with pytest.raises(ValueError, match="kp"):
+        backend.set_state_tensor(
+            torch.asarray((1,), dtype=torch.int64, device=device),
+            torch.zeros((1, 4), dtype=torch.float32, device=device),
+            torch.zeros((1, 3), dtype=torch.float32, device=device),
+            TensorResetRandomizationPayload(kp=torch.ones((1, 1), dtype=torch.float32)),
+        )
+
+
 def test_real_genesis_cuda_public_state_and_partial_lifecycle(tmp_path: Path) -> None:
     pytest.importorskip("mujoco")
     genesis = pytest.importorskip("genesis")

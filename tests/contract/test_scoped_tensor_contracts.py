@@ -160,9 +160,81 @@ def test_tensor_reset_randomization_payload_terms_and_public_export() -> None:
     assert not payload.is_empty()
     assert payload.requested_terms() == frozenset({"body_mass", "kd", "geom_friction"})
 
-    # Delta-merge terms remain host-only by construction.
-    assert not hasattr(payload, "base_mass_delta")
-    assert not hasattr(payload, "base_com_offset")
+    # Delta-merge terms are first-class fields of the single payload family.
+    delta = TensorResetRandomizationPayload(base_mass_delta=object(), base_com_offset=object())
+    assert delta.requested_terms() == frozenset({"base_mass_delta", "base_com_offset"})
+
+
+def test_reset_term_specs_are_the_single_field_table_source() -> None:
+    from unisim.backend.packed_reset import (
+        _PACKED_RESET_CANONICAL_NDIMS,
+        PACKED_RESET_MODEL_FIELDS,
+    )
+    from unisim.dr.types import (
+        _RESET_TERM_NAMES,
+        RESET_TERM_SPECS,
+        TensorResetRandomizationPayload,
+    )
+
+    assert len(RESET_TERM_SPECS) == 16
+    names = {spec.name for spec in RESET_TERM_SPECS}
+    assert names == set(TensorResetRandomizationPayload.__dataclass_fields__)
+    assert names == _RESET_TERM_NAMES == PACKED_RESET_MODEL_FIELDS
+    assert _PACKED_RESET_CANONICAL_NDIMS == {spec.name: spec.tail_ndim for spec in RESET_TERM_SPECS}
+    assert {spec.name for spec in RESET_TERM_SPECS if spec.is_delta} == frozenset(
+        {"base_mass_delta", "base_com_offset"}
+    )
+    assert not hasattr(unisim.dr, "ResetRandomizationPayload")
+    assert not hasattr(unisim.dr.types, "ResetRandomizationPayload")
+
+
+def test_validate_tensor_reset_payload_lazy_torch() -> None:
+    torch = pytest.importorskip("torch")
+    from unisim.dr.types import TensorResetRandomizationPayload, validate_tensor_reset_payload
+
+    payload = TensorResetRandomizationPayload(kp=torch.ones(2, 3))
+    validate_tensor_reset_payload(payload, device="cpu", allowed_terms={"kp"})
+    with pytest.raises(ValueError, match="kp"):
+        validate_tensor_reset_payload(payload, allowed_terms={"kd"})
+    with pytest.raises(TypeError, match="torch.Tensor"):
+        validate_tensor_reset_payload(TensorResetRandomizationPayload(kp=object()))
+    with pytest.raises(ValueError, match="cuda"):
+        validate_tensor_reset_payload(payload, device="cuda")
+    with pytest.raises(TypeError, match="TensorResetRandomizationPayload"):
+        validate_tensor_reset_payload(object())  # pyright: ignore[reportArgumentType]
+    # An empty payload validates without importing Torch.
+    validate_tensor_reset_payload(TensorResetRandomizationPayload())
+
+
+def test_dr_package_has_no_star_import_leakage() -> None:
+    assert not hasattr(unisim.dr, "np")
+    assert not hasattr(unisim.dr, "Any")
+    assert not hasattr(unisim.dr, "require_op_host_payload")
+    assert not hasattr(unisim.dr, "ResetRandomizationPayload")
+
+
+def test_dr_capabilities_split_host_and_device_planes() -> None:
+    from unisim.capabilities import (
+        get_unsupported_interval_terms,
+        get_unsupported_reset_terms,
+    )
+    from unisim.dr.types import DomainRandomizationCapabilities
+
+    caps = DomainRandomizationCapabilities(
+        supported_reset_terms=frozenset({"kp", "kd"}),
+        supported_device_reset_terms=frozenset({"kp"}),
+        supported_interval_terms=frozenset({"push"}),
+    )
+    assert caps.supported_device_interval_terms == frozenset()
+    assert caps.supports_reset_term("kd")
+    assert caps.supports_reset_term("kp", plane="device")
+    assert not caps.supports_reset_term("kd", plane="device")
+    assert caps.get_unsupported_reset_terms({"kp", "kd"}, plane="device") == frozenset({"kd"})
+    assert caps.get_unsupported_interval_terms(["push"], plane="device") == frozenset({"push"})
+    assert get_unsupported_reset_terms(caps, ["kp", "kd"]) == frozenset()
+    assert get_unsupported_interval_terms(caps, ["push"]) == frozenset()
+    with pytest.raises(ValueError, match="plane"):
+        caps.get_unsupported_reset_terms({"kp"}, plane="mps")  # pyright: ignore[reportArgumentType]
 
 
 def test_tracked_body_state_views_validate_body_names() -> None:

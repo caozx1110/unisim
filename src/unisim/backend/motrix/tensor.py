@@ -19,10 +19,7 @@ from unisim.backend.base import (
     TensorProcessTopology,
     tensor_device_matches,
 )
-from unisim.dr.types import (
-    ResetRandomizationPayload,
-    TensorResetRandomizationPayload,
-)
+from unisim.dr.types import TensorResetRandomizationPayload
 
 if TYPE_CHECKING:
     import torch
@@ -521,7 +518,12 @@ def motrix_set_state_tensor(
     if qpos.device != source_device or qvel.device != source_device:
         raise ValueError("MotrixSim tensor reset tensors must share one device")
     target = _normalize_device(source_device, label="direct tensor I/O")
-    if isinstance(randomization, TensorResetRandomizationPayload):
+    if randomization is not None:
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "MotrixSim tensor reset randomization must be a "
+                "TensorResetRandomizationPayload or None"
+            )
         for field in randomization.requested_terms():
             value = getattr(randomization, field)
             if not isinstance(value, torch.Tensor):
@@ -529,13 +531,6 @@ def motrix_set_state_tensor(
             if value.device != source_device:
                 raise ValueError("MotrixSim tensor reset values must share one device")
         _synchronize_device(env_indices)
-        host_randomization = ResetRandomizationPayload(
-            **{
-                field: value.detach().cpu().numpy()
-                for field in randomization.requested_terms()
-                if (value := getattr(randomization, field)) is not None
-            }
-        )
         rows = env_indices.detach().cpu().numpy()
         positions = qpos.detach().cpu().numpy()
         velocities = qvel.detach().cpu().numpy()
@@ -553,21 +548,18 @@ def motrix_set_state_tensor(
             rows = rows[order]
             positions = np.ascontiguousarray(positions[order])
             velocities = np.ascontiguousarray(velocities[order])
-            host_randomization = ResetRandomizationPayload(
+            # Reorder payload rows on their device to match the sorted host
+            # rows; ``_host_set_state`` converts to host NumPy once at the
+            # boundary.
+            order_device = torch.as_tensor(order, dtype=torch.int64, device=source_device)
+            randomization = TensorResetRandomizationPayload(
                 **{
-                    field: np.ascontiguousarray(np.asarray(value)[order])
-                    for field, value in (
-                        (name, getattr(host_randomization, name))
-                        for name in host_randomization.requested_terms()
-                    )
+                    field: value.index_select(0, order_device)
+                    for field in randomization.requested_terms()
+                    if (value := getattr(randomization, field)) is not None
                 }
             )
-        return backend._host_set_state(rows, positions, velocities, host_randomization)
-    if randomization is not None and not isinstance(randomization, ResetRandomizationPayload):
-        raise TypeError(
-            "MotrixSim tensor reset randomization must be "
-            "ResetRandomizationPayload, TensorResetRandomizationPayload, or None"
-        )
+        return backend._host_set_state(rows, positions, velocities, randomization)
     plan = backend._direct_host_bridge_plan
     if plan is None or plan.device != target:
         if plan is not None:
@@ -576,27 +568,7 @@ def motrix_set_state_tensor(
             TensorIOSpec(state_fields=("qpos", "qvel"), device=target)
         )
         backend._direct_host_bridge_plan = plan
-    if randomization is None:
-        result = plan.apply_reset(env_indices, qpos, qvel)
-    else:
-        rows = env_indices.detach().cpu().numpy()
-        positions = qpos.detach().cpu().numpy()
-        velocities = qvel.detach().cpu().numpy()
-        order = np.argsort(rows, kind="stable")
-        host_randomization = ResetRandomizationPayload(
-            **{
-                field: np.ascontiguousarray(np.asarray(value)[order])
-                for field, value in (
-                    (name, getattr(randomization, name)) for name in randomization.requested_terms()
-                )
-            }
-        )
-        result = backend._host_set_state(
-            rows[order],
-            np.ascontiguousarray(positions[order]),
-            np.ascontiguousarray(velocities[order]),
-            host_randomization,
-        )
+    result = plan.apply_reset(env_indices, qpos, qvel)
     if result is None:
         result = {}
     return result
@@ -646,29 +618,27 @@ def motrix_set_state_tensor_mask(
     target = _normalize_device(source_device, label="direct tensor I/O")
     del target
     selected_rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
-    host_randomization: ResetRandomizationPayload | None = None
-    if isinstance(randomization, TensorResetRandomizationPayload):
+    selected_randomization: TensorResetRandomizationPayload | None = None
+    if randomization is not None:
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "MotrixSim tensor mask reset randomization must be a "
+                "TensorResetRandomizationPayload or None"
+            )
         for field in randomization.requested_terms():
             value = getattr(randomization, field)
             if not isinstance(value, torch.Tensor):
                 raise TypeError(f"MotrixSim tensor mask reset {field} must be a torch.Tensor")
             if value.device != source_device:
                 raise ValueError("MotrixSim tensor mask reset values must share one device")
-        host_randomization = ResetRandomizationPayload(
+        # Rows are selected on the payload's device; the host NumPy conversion
+        # happens once at the _host_set_state boundary.
+        selected_randomization = TensorResetRandomizationPayload(
             **{
-                field: value.index_select(0, selected_rows).detach().cpu().numpy()
+                field: value.index_select(0, selected_rows)
                 for field in randomization.requested_terms()
                 if (value := getattr(randomization, field)) is not None
             }
-        )
-    elif randomization is not None:
-        if not isinstance(randomization, ResetRandomizationPayload):
-            raise TypeError(
-                "MotrixSim tensor mask reset randomization must be "
-                "TensorResetRandomizationPayload or None"
-            )
-        raise NotImplementedError(
-            "MotrixSim mask reset requires a device-resident TensorResetRandomizationPayload"
         )
     if full_refresh:
         raise NotImplementedError("MotrixSim tensor mask reset does not support full refresh")
@@ -676,7 +646,7 @@ def motrix_set_state_tensor_mask(
     rows = selected_rows.detach().cpu().numpy()
     host_qpos = qpos.index_select(0, selected_rows).detach().cpu().numpy()
     host_qvel = qvel.index_select(0, selected_rows).detach().cpu().numpy()
-    result = backend._host_set_state(rows, host_qpos, host_qvel, host_randomization)
+    result = backend._host_set_state(rows, host_qpos, host_qvel, selected_randomization)
     for plan in backend._host_bridge_plans:
         if isinstance(plan, MotrixHostBridgeTransferPlan):
             plan._publish_mask_reset_rows(selected_rows, host_qpos, host_qvel)

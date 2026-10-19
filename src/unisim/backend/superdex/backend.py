@@ -29,7 +29,6 @@ from unisim.backend.base import (
 from unisim.dr.types import (
     DomainRandomizationCapabilities,
     FixedVariantLayout,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
 )
 from unisim.entities import SceneResetRequest
@@ -829,7 +828,7 @@ class SuperDexBackend(SimBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
         *,
         _producer_owns_finite: bool = False,
     ) -> None:
@@ -844,7 +843,10 @@ class SuperDexBackend(SimBackend):
         if not _producer_owns_finite and (not np.isfinite(q).all() or not np.isfinite(v).all()):
             raise ValueError("set_state requires finite qpos/qvel")
         if randomization is not None and randomization.requested_terms():
-            raise NotImplementedError("superdex does not support reset model randomization")
+            requested = ", ".join(sorted(randomization.requested_terms()))
+            raise NotImplementedError(
+                f"superdex does not support reset randomization terms: {requested}."
+            )
         if self.model.actor_plans:
             self._validate_portable_quaternions(q)
             full_q = self._qpos.copy()
@@ -1817,7 +1819,7 @@ class SuperDexBackend(SimBackend):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         """Bridge selected reset state through the persistent direct API plan."""
         import torch
@@ -1826,7 +1828,16 @@ class SuperDexBackend(SimBackend):
 
         require_superdex_tensor_runtime(self)
         if randomization is not None:
-            raise NotImplementedError("SuperDex tensor reset does not support randomization")
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "SuperDex tensor reset randomization must be a "
+                    "TensorResetRandomizationPayload"
+                )
+            if not randomization.is_empty():
+                requested = ", ".join(sorted(randomization.requested_terms()))
+                raise NotImplementedError(
+                    f"SuperDex tensor reset does not support randomization terms: {requested}."
+                )
         if not isinstance(env_indices, torch.Tensor):
             raise TypeError("SuperDex tensor reset env_indices must be a torch.Tensor")
         source_device = env_indices.device

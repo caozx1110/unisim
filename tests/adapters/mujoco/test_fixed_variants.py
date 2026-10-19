@@ -25,7 +25,7 @@ from unisim.dr.types import (  # noqa: E402
     FixedVariantLayout,
     FixedVariantPlan,
     ModelSourceDescriptor,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )  # noqa: E402
 from unisim.entities import (  # noqa: E402
     EntityVariantBinding,
@@ -136,13 +136,14 @@ def test_fixed_variants_use_compiler_defaults_and_persist_per_world(
 
     qpos = backend._qpos_view.copy()
     qvel = backend._qvel_view.copy()
+    torch = pytest.importorskip("torch")
     backend._host_set_state(
         np.array([1, 3]),
         qpos[[1, 3]],
         qvel[[1, 3]],
-        randomization=ResetRandomizationPayload(
-            base_mass_delta=np.array([0.25, -0.5]),
-            gravity=np.tile(np.array([0.0, 0.0, -9.5]), (2, 1)),
+        randomization=TensorResetRandomizationPayload(
+            base_mass_delta=torch.as_tensor(np.array([0.25, -0.5])),
+            gravity=torch.as_tensor(np.tile(np.array([0.0, 0.0, -9.5]), (2, 1))),
         ),
     )
     np.testing.assert_allclose(backend._pool.expand("body_mass")[[1, 3], 1], [2.25, 1.5])

@@ -22,6 +22,8 @@
 
 Issue #2387 将该 packed-reset 集合扩展到 Genesis、Newton、IsaacGym 与 IsaacSim。Genesis 覆盖 `body_mass`/`kp`/`kd`，其余新增覆盖 `kp`/`kd`。Isaac PD 表先进入 CUDA IPC arena，再通过一个显式命名的 reset-only worker property bridge 调用 CPU-native engine setter。
 
+自 UniLab issue #2410 起，公开 DR payload 为 torch-first：`TensorResetRandomizationPayload` 与 `TensorIntervalPayload` 是唯一公开的 payload，payload tensor 的设备选择 host 或 device 平面，`DomainRandomizationCapabilities` 按平面声明 term 集合——host 平面的 `supported_reset_terms`/`supported_interval_terms` 与 device 平面的 `supported_device_reset_terms`/`supported_device_interval_terms`——空集合 fail-closed，逐 term 的平面不匹配点名 term 快速失败。NumPy 仅保留在 adapter 私有的 `unisim.dr._host` 转换 helper、冷 `get_reset_term_default()` 元数据与 serialization/playback leaf 之后。见 [torch-first DR payload ADR](adr-dr-torch-first-payloads.md)。
+
 `unisim.support.get_tensor_platform_profiles()` 为全部声明适配器提供这些已审查默认 tensor 边界的 SDK-free 视图。它不发现已安装 engine，也不提升 task owner；平台专属 lifecycle 字段保留 `SupportLevel` 值，包括 MuJoCo 需要运行时协商的 `unknown` reset randomization 与 fixed-variant 声明。
 
 execution、process topology、data plane 与 Torch device 边界直接使用枚举值声明。适配器 capability 测试会将真实 backend `get_tensor_capabilities()` 载荷与这些静态声明直接比较。

@@ -7,12 +7,13 @@ features, versions and configuration conditions remain explicitly unknown.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, fields, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 from .dr.interval import INTERVAL_TERM_SPECS
+from .dr.types import DomainRandomizationCapabilities
 
 if TYPE_CHECKING:
     from .backend.base import SimBackend
@@ -254,6 +255,32 @@ class CapabilityReport:
             CapabilityDeclaration.from_dict(item) for item in payload["declarations"]
         )
         return cls(**payload)
+
+
+def get_unsupported_reset_terms(
+    capabilities: DomainRandomizationCapabilities,
+    terms: Iterable[str],
+    *,
+    plane: Literal["host", "device"] = "host",
+) -> frozenset[str]:
+    """Return requested reset terms unsupported on the declared data plane.
+
+    ``plane="host"`` checks the ``torch.cpu`` host plane
+    (``supported_reset_terms``); ``plane="device"`` checks the device plane
+    (``supported_device_reset_terms``), which defaults to empty and therefore
+    fails closed naming every requested term.
+    """
+    return capabilities.get_unsupported_reset_terms(terms, plane=plane)
+
+
+def get_unsupported_interval_terms(
+    capabilities: DomainRandomizationCapabilities,
+    terms: Iterable[str],
+    *,
+    plane: Literal["host", "device"] = "host",
+) -> frozenset[str]:
+    """Return requested interval terms unsupported on the declared data plane."""
+    return capabilities.get_unsupported_interval_terms(terms, plane=plane)
 
 
 def get_adapter_capabilities(name: str, *, profile: str = "default") -> CapabilityReport:

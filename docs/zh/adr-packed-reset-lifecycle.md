@@ -29,9 +29,9 @@ UniSim 拥有 backend-neutral 的 staged packed reset 事务：
 
 ### 适配器行为
 
-- MuJoCo（`HOST_BRIDGE`）在同一显式 tensor-to-host reset 边界内接受 selected-row 与 full-width mask 形态的 `TensorResetRandomizationPayload`，先同步一次再物化 host payload。持久的 `HostBridgeTransferPlan.apply_reset()` 仍是 selected-row ID 的单包快速路径。
-- MotrixSim（`HOST_BRIDGE`）在其运行时协商的字段子集内接受同样的 selected-row 与 full-width mask 形态，在 host reset 边界内物化 payload，并权威发布选中行且没有单独 full-refresh 阶段。
-- MJWarp（`DEVICE_RESIDENT`）在 device 上组合，并通过既有 device-side scatter 提交，发布语义为 `AUTHORITATIVE_VIEWS`。`geom_size` 因派生 bounds 目前在 host 计算而继续排除。
+- MuJoCo（`HOST_BRIDGE`）在同一显式 tensor-to-host reset 边界内接受 selected-row 与 full-width mask 形态的 `TensorResetRandomizationPayload`，先同步一次再转换为 adapter 私有的 host 数组。持久的 `HostBridgeTransferPlan.apply_reset()` 仍是 selected-row ID 的单包快速路径。
+- MotrixSim（`HOST_BRIDGE`）在其运行时协商的字段子集内接受同样的 selected-row 与 full-width mask 形态，在 host reset 边界内转换 payload，并权威发布选中行且没有单独 full-refresh 阶段。
+- MJWarp（`DEVICE_RESIDENT`）在 device 上组合，并通过既有 device-side scatter 提交，发布语义为 `AUTHORITATIVE_VIEWS`。`geom_size` 因派生 bounds 目前在 host 计算而在 device 平面继续排除。
 - Genesis 与 Newton（`DEVICE_RESIDENT`）用窄的最终值字段子集提交 selected-row 状态：Genesis 暴露 `body_mass`、`kp`、`kd`；Newton 通过 MuJoCo-family actuator array 暴露 `kp`、`kd`。
 - IsaacGym 与 IsaacSim（`EXTERNAL_WORKER` / `CUDA_IPC`）把 selected-row `kp`/`kd` stage 到 device arena。worker 拥有一个显式命名的 reset-only property bridge，用于 CPU-native engine setter；step/state/control/sensor 热路径绝不进入该 bridge。backend-owned mask boundary 可以在公开 `set_state_tensor_mask()` 契约之后自行压缩 true rows。
 - MuJoCo 为 kinematic entity root 声明 packed reset mocap 支持；选中 Torch 行与 pose 只在提交时通过显式 host 边界。本阶段 MJWarp 的 mocap 写入保持快速失败。
@@ -39,8 +39,11 @@ UniSim 拥有 backend-neutral 的 staged packed reset 事务：
 
 ### 显式排除
 
-- `base_mass_delta` 与 `base_com_offset` 仍是 host-only payload 字段，但其 reset 语义不需要 device delta 表示：owner 先把权威 baseline 与采样 delta 合成为最终绝对的 `body_mass` / `body_ipos` device 表，再 stage 进事务。把 delta 字段本身传入 device payload 会快速失败；不引入隐藏 host fallback 或 adapter 私有派生。
 - owner-subset 动态行 API（例如 motion-wrap mutation）保持独立 owner API，不重载 reset 行集合。
+
+### Delta 项
+
+- 自 UniLab issue #2410 起，`base_mass_delta` 与 `base_com_offset` 是单一 torch payload 家族的一等字段；原先的 host-only 限制与 `PACKED_RESET_HOST_ONLY_FIELDS` 已移除。composer stage 采样得到的 delta，并在 commit 时与权威 baseline（由冷 NumPy metadata leaf `get_reset_term_default()` 提供）在 torch 中合成为最终绝对的 `body_mass` / `body_ipos` 表：`final = baseline + delta`。adapter 内部的 delta merge 可作为 adapter 私有实现保留，但公开 payload 不再限制 delta 字段。
 
 ## 影响
 
@@ -51,5 +54,4 @@ UniSim 拥有 backend-neutral 的 staged packed reset 事务：
 
 ## 后续工作
 
-- 扩展 base mass/COM 的最终值 device 表示。
 - 与 multi-step/CUDA-graph 执行组合，同时保证 graph-unsafe 字段变更在 graph 失效下快速失败。

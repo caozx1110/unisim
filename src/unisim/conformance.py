@@ -11,6 +11,10 @@ from os import PathLike
 import numpy as np
 
 from .contract import BackendCapability, SimBackend
+from .dr.types import RESET_TERM_SPECS, TensorResetRandomizationPayload
+
+_RESET_DELTA_TERMS = frozenset(spec.name for spec in RESET_TERM_SPECS if spec.is_delta)
+_RESET_TERM_TAIL_NDIMS = {spec.name: spec.tail_ndim for spec in RESET_TERM_SPECS}
 
 
 def assert_backend_conformance(backend: SimBackend) -> None:
@@ -29,6 +33,70 @@ def assert_backend_conformance(backend: SimBackend) -> None:
         assert_physics_state_playback_conformance(backend)
     if backend.get_tensor_capabilities().packed_reset:
         assert_packed_reset_conformance(backend)
+    assert_reset_randomization_conformance(backend)
+
+
+def assert_reset_randomization_conformance(backend: SimBackend) -> None:
+    """Assert one declared reset term round-trips through the torch-first payload.
+
+    For backends declaring host-plane reset randomization, write non-baseline
+    values for one declared non-delta term through ``set_state_tensor`` (a
+    ``torch.cpu`` :class:`TensorResetRandomizationPayload`), then re-read the
+    term baseline in a fresh transaction — a new packed reset transaction when
+    declared, otherwise a fresh ``get_reset_term_default`` read — and assert
+    the written values come back. Torch is optional here; without it the check
+    skips, matching the packed reset conformance pattern.
+    """
+    capabilities = backend.get_dr_capabilities()
+    if not capabilities.supported_reset_terms:
+        return
+    try:
+        import torch
+    except ImportError:
+        return
+
+    tensor_capabilities = backend.get_tensor_capabilities()
+    if "cpu" in tensor_capabilities.torch_devices:
+        device = torch.device("cpu")
+    elif any(
+        label.split(":", maxsplit=1)[0] == "cuda" for label in tensor_capabilities.torch_devices
+    ):
+        if not torch.cuda.is_available():
+            return
+        device = torch.device("cuda", index=torch.cuda.current_device())
+    else:
+        return
+
+    terms = sorted(capabilities.supported_reset_terms - _RESET_DELTA_TERMS)
+    if not terms:
+        return
+    # Prefer kp: actuator gains accept arbitrary finite values on every adapter.
+    term = "kp" if "kp" in terms else terms[0]
+    tail_ndim = _RESET_TERM_TAIL_NDIMS[term]
+    default = np.asarray(backend.get_reset_term_default(term), dtype=np.float32)
+    if default.size == 0 or default.ndim not in (tail_ndim, tail_ndim + 1):
+        return
+    row = default if default.ndim == tail_ndim else default[0]
+    written = np.asarray(row, dtype=np.float32) + np.float32(0.05)
+    values = torch.as_tensor(written[None], dtype=torch.float32, device=device).contiguous()
+
+    default_qpos = np.asarray(backend.get_default_qpos(), dtype=np.float32)
+    default_qvel = np.asarray(backend.get_init_qvel(), dtype=np.float32)
+    qpos = torch.as_tensor(default_qpos[None], dtype=torch.float32, device=device).contiguous()
+    qvel = torch.as_tensor(default_qvel[None], dtype=torch.float32, device=device).contiguous()
+    rows = torch.tensor([0], dtype=torch.int64, device=device)
+    backend.set_state_tensor(rows, qpos, qvel, TensorResetRandomizationPayload(**{term: values}))
+
+    expected = torch.as_tensor(written, dtype=torch.float32)
+    if tensor_capabilities.packed_reset:
+        transaction = backend.begin_packed_reset(device=device)
+        baseline = transaction.baseline(term)
+        assert baseline.shape[0] == backend.num_envs
+        torch.testing.assert_close(baseline[0].detach().cpu(), expected, rtol=1e-4, atol=1e-5)
+        return
+    refreshed = np.asarray(backend.get_reset_term_default(term), dtype=np.float32)
+    read_row = refreshed if refreshed.ndim == tail_ndim else refreshed[0]
+    np.testing.assert_allclose(read_row, written, rtol=1e-4, atol=1e-5)
 
 
 def assert_packed_reset_conformance(backend: SimBackend) -> None:
@@ -68,7 +136,11 @@ def assert_packed_reset_conformance(backend: SimBackend) -> None:
         qvel_values=written_qvel,
     )
 
-    field = next(iter(sorted(capabilities.packed_reset_fields)))
+    # Delta terms (base_mass_delta/base_com_offset) merge against a baseline
+    # and require a base body, so exercise a plain absolute field here.
+    fields = sorted(capabilities.packed_reset_fields - _RESET_DELTA_TERMS)
+    assert fields, "packed_reset requires at least one non-delta field"
+    field = fields[0]
     baseline = transaction.baseline(field)
     assert baseline.shape[0] == backend.num_envs
     field_rows = baseline.index_select(0, rows)

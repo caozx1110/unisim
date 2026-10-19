@@ -20,7 +20,7 @@ from unisim.dr.types import (
     IntervalRandomizationPlan,
     IntervalTermOp,
     ModelSourceDescriptor,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 from unisim.entities import (
     EntityInitialState,
@@ -37,6 +37,13 @@ def _write(tmp_path: Path, name: str, xml: str) -> ModelSourceDescriptor:
     path = tmp_path / f"{name}.xml"
     path.write_text(xml, encoding="utf-8")
     return ModelSourceDescriptor(str(path))
+
+
+def _reset_payload(**fields):
+    torch = pytest.importorskip("torch")
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(np.asarray(value)) for name, value in fields.items()}
+    )
 
 
 def _rotate_wxyz(quaternion: np.ndarray, vector: np.ndarray) -> np.ndarray:
@@ -1706,14 +1713,14 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(body_mass=unmapped_mass),
+                randomization=_reset_payload(body_mass=unmapped_mass),
             )
         with pytest.raises(ValueError, match="body_mass must have shape"):
             backend._host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(body_mass=requested_mass[:, :2]),
+                randomization=_reset_payload(body_mass=requested_mass[:, :2]),
             )
         nonfinite_mass = requested_mass.copy()
         nonfinite_mass[0, object_body_id] = np.nan
@@ -1722,13 +1729,13 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(body_mass=nonfinite_mass),
+                randomization=_reset_payload(body_mass=nonfinite_mass),
             )
         backend._host_set_state(
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(body_mass=requested_mass),
+            randomization=_reset_payload(body_mass=requested_mass),
         )
 
         np.testing.assert_allclose(
@@ -1764,7 +1771,7 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
             later_rows,
             qpos[later_rows],
             qvel[later_rows],
-            randomization=ResetRandomizationPayload(
+            randomization=_reset_payload(
                 base_mass_delta=np.asarray((0.25, -0.4), dtype=np.float32)
             ),
         )
@@ -1780,7 +1787,17 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
             rtol=2e-6,
             atol=1e-7,
         )
-        np.testing.assert_array_equal(backend.get_reset_term_default("body_mass"), default_mass)
+        # Reset-term defaults track committed randomization: mapped columns
+        # read back the live overrides, unmapped columns keep defaults, and
+        # delta-term baselines stay zero.
+        live_mass = backend.get_reset_term_default("body_mass")
+        np.testing.assert_allclose(
+            live_mass[:, object_body_id], native_body_mass(object_body_id), rtol=2e-6, atol=1e-7
+        )
+        np.testing.assert_allclose(
+            live_mass[:, passive_body_id], native_body_mass(passive_body_id), rtol=2e-6, atol=1e-7
+        )
+        np.testing.assert_array_equal(live_mass[:, 0], default_mass[:, 0])
         np.testing.assert_array_equal(
             backend.get_reset_term_default("base_mass_delta"), default_base_delta
         )
@@ -1795,7 +1812,7 @@ def test_fixed_variants_selected_reset_randomization_mass(tmp_path: Path):
                 later_rows,
                 qpos[later_rows],
                 qvel[later_rows],
-                randomization=ResetRandomizationPayload(gravity=np.zeros((2, 3))),
+                randomization=_reset_payload(gravity=np.zeros((2, 3))),
             )
     finally:
         backend.close()
@@ -1879,14 +1896,14 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(body_ipos=unmapped_ipos),
+                randomization=_reset_payload(body_ipos=unmapped_ipos),
             )
         with pytest.raises(ValueError, match="body_ipos must have shape"):
             backend._host_set_state(
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(body_ipos=requested_ipos[:, :2, :]),
+                randomization=_reset_payload(body_ipos=requested_ipos[:, :2, :]),
             )
         nonfinite_ipos = requested_ipos.copy()
         nonfinite_ipos[0, object_body_id, 0] = np.nan
@@ -1895,7 +1912,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(body_ipos=nonfinite_ipos),
+                randomization=_reset_payload(body_ipos=nonfinite_ipos),
             )
         np.testing.assert_array_equal(
             native_body_ipos(passive_body_id), default_ipos[:, passive_body_id]
@@ -1908,7 +1925,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(
+            randomization=_reset_payload(
                 body_mass=requested_mass,
                 body_ipos=requested_ipos,
             ),
@@ -1947,7 +1964,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
             later_rows,
             qpos[later_rows],
             qvel[later_rows],
-            randomization=ResetRandomizationPayload(
+            randomization=_reset_payload(
                 base_com_offset=np.asarray(((0.03, 0, 0), (-0.02, 0, 0)), dtype=np.float32)
             ),
         )
@@ -1975,11 +1992,23 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
             rtol=2e-6,
             atol=1e-7,
         )
-        np.testing.assert_array_equal(backend.get_reset_term_default("body_mass"), default_mass)
+        # Reset-term defaults track committed randomization: mapped columns
+        # read back the live overrides, unmapped columns keep defaults, and
+        # delta-term baselines stay zero.
+        live_mass = backend.get_reset_term_default("body_mass")
+        np.testing.assert_allclose(
+            live_mass[:, passive_body_id], native_body_mass(passive_body_id), rtol=2e-6, atol=1e-7
+        )
+        np.testing.assert_array_equal(live_mass[:, 0], default_mass[:, 0])
         np.testing.assert_array_equal(
             backend.get_reset_term_default("base_mass_delta"), default_base_mass_delta
         )
-        np.testing.assert_array_equal(backend.get_reset_term_default("body_ipos"), default_ipos)
+        live_ipos = backend.get_reset_term_default("body_ipos")
+        for body_id in (passive_body_id, passive_child_body_id, object_body_id):
+            np.testing.assert_allclose(
+                live_ipos[:, body_id, :], native_body_ipos(body_id), rtol=2e-6, atol=1e-7
+            )
+        np.testing.assert_array_equal(live_ipos[:, 0, :], default_ipos[:, 0, :])
         np.testing.assert_array_equal(
             backend.get_reset_term_default("base_com_offset"), default_base_com
         )
@@ -1994,7 +2023,7 @@ def test_fixed_variants_selected_reset_randomization_com(tmp_path: Path):
                 later_rows,
                 qpos[later_rows],
                 qvel[later_rows],
-                randomization=ResetRandomizationPayload(gravity=np.zeros((2, 3))),
+                randomization=_reset_payload(gravity=np.zeros((2, 3))),
             )
     finally:
         backend.close()
@@ -2031,7 +2060,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(dof_armature=malformed),
+                randomization=_reset_payload(dof_armature=malformed),
             )
         negative = np.zeros((2, layout.nv), dtype=np.float32)
         negative[:, 0] = -0.1
@@ -2040,7 +2069,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(dof_frictionloss=negative),
+                randomization=_reset_payload(dof_frictionloss=negative),
             )
         nonfinite = np.zeros((2, layout.nv), dtype=np.float32)
         nonfinite[:, -1] = np.nan
@@ -2049,7 +2078,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(dof_armature=nonfinite),
+                randomization=_reset_payload(dof_armature=nonfinite),
             )
         unmapped = np.zeros((2, layout.nv), dtype=np.float32)
         passive_root_dof = layout.get_entity("passive").root_qvel_indices[0]
@@ -2059,7 +2088,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(dof_armature=unmapped),
+                randomization=_reset_payload(dof_armature=unmapped),
             )
 
         requested = {term: np.zeros((2, layout.nv), dtype=np.float32) for term in defaults}
@@ -2073,7 +2102,7 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(**requested),
+            randomization=_reset_payload(**requested),
         )
 
         expected = {term: np.zeros((5, layout.nv), dtype=np.float32) for term in defaults}
@@ -2104,15 +2133,16 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(
-                base_mass_delta=np.zeros((2,), dtype=np.float32)
-            ),
+            randomization=_reset_payload(base_mass_delta=np.zeros((2,), dtype=np.float32)),
         )
         for term in defaults:
             np.testing.assert_allclose(
                 native_dof_values(term), expected[term], rtol=2e-6, atol=1e-7
             )
-            np.testing.assert_array_equal(backend.get_reset_term_default(term), defaults[term])
+            # Reset-term defaults track committed randomization via live reads.
+            np.testing.assert_allclose(
+                backend.get_reset_term_default(term), expected[term], rtol=2e-6, atol=1e-7
+            )
 
         passive_child_body = layout.get_entity("passive").body_ids[1]
         force = np.zeros((5, 1, 3), dtype=np.float32)
@@ -2125,6 +2155,54 @@ def test_fixed_variants_selected_reset_randomization_dof_properties(tmp_path: Pa
             backend._host_step(np.zeros((5, 1), dtype=np.float32))
         passive_velocities = backend.get_entity_state("passive")["joint_velocities"][:, 0]
         assert abs(passive_velocities[1]) > abs(passive_velocities[4]) > 0.0
+    finally:
+        backend.close()
+
+
+def test_portable_packed_baseline_tracks_committed_writes(tmp_path: Path):
+    """Portable packed-reset baselines reflect committed randomization.
+
+    Equivalent coverage to ``assert_reset_randomization_conformance``: the
+    generic helper writes every public column, which the portable unmapped-
+    column guards deliberately reject, so this test writes a fully mapped DoF
+    term instead and re-reads the baseline through a fresh transaction.
+    """
+    torch = pytest.importorskip("torch")
+    backend = MotrixBackend(_scene(tmp_path), 5, 0.002, base_name="passive/base")
+    try:
+        layout = backend.get_scene_layout()
+        term = "dof_armature"
+        default = backend.get_reset_term_default(term)
+        assert default.shape == (5, layout.nv)
+        mapped_dofs = sorted(
+            {
+                public_dof
+                for runtime in backend._portable_runtimes
+                for public_dof in runtime.binding.joints_by_public_dof
+            }
+        )
+        written = default[0].astype(np.float32).copy()
+        written[mapped_dofs] += np.float32(0.05)
+
+        qpos = torch.as_tensor(backend.get_default_qpos()[None], dtype=torch.float32)
+        qvel = torch.as_tensor(backend.get_init_qvel()[None], dtype=torch.float32)
+        rows = torch.tensor([0], dtype=torch.int64)
+        backend.set_state_tensor(
+            rows,
+            qpos.contiguous(),
+            qvel.contiguous(),
+            TensorResetRandomizationPayload(
+                dof_armature=torch.as_tensor(written[None], dtype=torch.float32)
+            ),
+        )
+
+        transaction = backend.begin_packed_reset(device=torch.device("cpu"))
+        baseline = transaction.baseline(term)
+        assert baseline.shape[0] == backend.num_envs
+        torch.testing.assert_close(baseline[0], torch.as_tensor(written), rtol=1e-4, atol=1e-5)
+        torch.testing.assert_close(
+            baseline[1], torch.as_tensor(default[1], dtype=torch.float32), rtol=1e-4, atol=1e-5
+        )
     finally:
         backend.close()
 
@@ -2396,7 +2474,7 @@ def test_selected_default_controls_restore_only_impacted_native_rows(tmp_path: P
             )
         np.testing.assert_allclose(backend._portable_default_controls(), [[0.4]] * 5)
         np.testing.assert_allclose(backend.get_keyframe_qpos("home")[:, qpos_indices], 0.45)
-        np.testing.assert_allclose(backend.get_default_qpos()[:, qpos_indices], 0.45)
+        np.testing.assert_allclose(backend.get_default_qpos()[qpos_indices], 0.45)
         np.testing.assert_allclose(backend.get_init_qvel()[qvel_indices], 1.2)
         default_robot = backend.get_entity_default_state("robot", env_ids=(0, 4))
         np.testing.assert_allclose(default_robot["joint_positions"], [[0.45], [0.45]])

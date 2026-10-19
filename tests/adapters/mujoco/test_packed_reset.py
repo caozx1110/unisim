@@ -9,7 +9,6 @@ torch = pytest.importorskip("torch")
 from unisim import MuJoCoBackend  # noqa: E402
 from unisim.dr.types import (  # noqa: E402
     RESET_TERM_KP,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
 )
 from unisim.entities import ModelSourceDescriptor, SceneEntitySpec  # noqa: E402
@@ -213,19 +212,32 @@ def test_mujoco_mask_tensor_reset_applies_selected_full_width_randomization(
     assert result["timing"]["set_state_tensor_mask_ms"] >= 0.0
 
 
-def test_mujoco_mask_tensor_reset_rejects_host_randomization(tmp_path: Path) -> None:
+def test_mujoco_mask_tensor_reset_rejects_non_tensor_randomization(tmp_path: Path) -> None:
     backend = _backend(tmp_path, num_envs=2)
     mask = torch.zeros((2,), dtype=torch.bool)
     qpos = torch.zeros((2, backend.nq), dtype=torch.float32)
     qvel = torch.zeros((2, backend.nv), dtype=torch.float32)
 
-    with pytest.raises(NotImplementedError, match="device-resident"):
+    with pytest.raises(TypeError, match="TensorResetRandomizationPayload"):
         backend.set_state_tensor_mask(
             mask,
             qpos,
             qvel,
-            randomization=ResetRandomizationPayload(kp=np.ones((0, 1))),
+            randomization=object(),
         )
+
+
+def test_mujoco_reset_capabilities_split_host_and_device_planes(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    capabilities = backend.get_dr_capabilities()
+    # The host bridge converts device payloads at its private boundary, so the
+    # device plane declares the same terms as the host plane.
+    assert capabilities.supported_device_reset_terms == capabilities.supported_reset_terms
+    assert capabilities.supported_device_interval_terms == capabilities.supported_interval_terms
+    assert capabilities.supports_reset_term(RESET_TERM_KP, plane="device")
+    assert capabilities.get_unsupported_reset_terms({"not_a_term"}, plane="device") == frozenset(
+        {"not_a_term"}
+    )
 
 
 @pytest.mark.parametrize(
@@ -293,6 +305,28 @@ def test_mujoco_mask_tensor_reset_validates_public_payload(
     backend = _backend(tmp_path, num_envs=2)
     with pytest.raises((TypeError, ValueError), match=message):
         backend.set_state_tensor_mask(mask, qpos, qvel)
+
+
+def test_mujoco_packed_reset_merges_base_mass_delta_in_torch(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    transaction = backend.begin_packed_reset(device="cpu")
+    baseline = transaction.baseline("base_mass_delta")
+    assert baseline.shape == (3,)
+    torch.testing.assert_close(baseline, torch.zeros(3))
+
+    rows = torch.tensor([0, 2], dtype=torch.int64)
+    transaction.write_model_field(
+        "base_mass_delta", rows, torch.tensor([0.25, -0.5], dtype=torch.float32)
+    )
+    qpos = torch.zeros((2, backend.nq), dtype=torch.float32)
+    qvel = torch.zeros((2, backend.nv), dtype=torch.float32)
+    transaction.commit_state(rows, qpos, qvel)
+
+    masses = np.asarray(backend._pool.expand("body_mass"))[:, backend._base_body_id]
+    np.testing.assert_allclose(masses, [1.25, 1.0, 0.5], rtol=0.0)
+    torch.testing.assert_close(
+        transaction.baseline("base_mass_delta"), torch.tensor([0.25, 0.0, -0.5])
+    )
 
 
 def test_mujoco_packed_reset_commits_selected_mocap_poses(tmp_path: Path) -> None:

@@ -32,7 +32,7 @@
 | Body getter 与 body-state copy helper | `get_tracked_body_views(...)` 或公共 tensor sensor projection |
 | 零散 CPU host exchange | `compile_host_bridge_io(...)` 及其 plan boundary |
 
-NumPy 仍保留在显式 scoped public leaf 中：冷 model/default/layout metadata 与索引表、声明式 interval-DR 输入和 pre-step callback 格式、mapped entity transaction、playback/render API、physics-state snapshot 与 serialization。这些 leaf 不恢复 NumPy 训练生命周期，也不得成为 tensor-capable Manager 代码的隐藏 fallback。
+NumPy 仍保留在显式 scoped public leaf 中：冷 model/default/layout metadata 与索引表、pre-step callback 格式、mapped entity transaction、playback/render API、physics-state snapshot 与 serialization。公开 DR payload 为 torch-only；adapter 私有的 host 转换（例如 `unisim.dr._host` helper）是 adapter 内部 leaf 而非公开 leaf，见 [torch-first DR payload ADR](adr-dr-torch-first-payloads.md)。这些 leaf 不恢复 NumPy 训练生命周期，也不得成为 tensor-capable Manager 代码的隐藏 fallback。
 
 仓库同时 gate base 契约与 concrete backend 类，防止被移除的方法名重新出现；也阻止 runtime 与 test source 重新引入 `_legacy_*` 前缀。
 

@@ -43,6 +43,7 @@ from unisim.backend.subprocess_ipc.isaac_common import (
     mapped_default_dof_rows,
     mapped_default_full_geom_friction,
 )
+from unisim.dr._host import interval_payload_to_host, reset_payload_to_host_dict
 from unisim.dr.interval import (
     INTERVAL_TERM_BODY_FORCE,
     INTERVAL_TERM_BODY_TORQUE,
@@ -60,10 +61,9 @@ from unisim.dr.types import (
     DomainRandomizationCapabilities,
     FixedVariantLayout,
     IntervalRandomizationPlan,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
-    require_op_host_payload,
+    validate_tensor_reset_payload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.inspection import ConfigurationField, ConfigurationProvenance
@@ -393,7 +393,9 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         bridge; mapped entity scenes declare the reset terms the worker writes
         and reads back natively.  Per-env ``gravity``/``dof_damping`` have no PhysX channel
         (sim-wide parameter, drive-only joint damping) and the multi-root scene
-        has no single ``base`` target, so those terms stay unsupported.
+        has no single ``base`` target, so those terms stay unsupported.  The
+        host-plane sets cover ``torch.cpu`` payloads; the device plane
+        (``torch.cuda``) carries the CUDA IPC PD-gain lane only.
         """
         entity_plan = None if self._entity_scene is None else self._entity_scene.owner.variant_plan
         has_plan = self._fixed_variant_plan is not None or entity_plan is not None
@@ -406,14 +408,17 @@ class IsaacGymBackend(MjcfSubprocessBackend):
             if has_plan
             else {}
         )
+        device_reset_terms = frozenset({RESET_TERM_KP, RESET_TERM_KD})
         if self._entity_scene is None:
             return DomainRandomizationCapabilities(
                 supported_reset_terms=frozenset({RESET_TERM_KP, RESET_TERM_KD}),
+                supported_device_reset_terms=device_reset_terms,
                 **variant_kwargs,
             )
         return DomainRandomizationCapabilities(
             supported_reset_terms=_MAPPED_RESET_TERMS,
             supported_interval_terms=_MAPPED_INTERVAL_TERMS,
+            supported_device_reset_terms=device_reset_terms,
             **variant_kwargs,
         )
 
@@ -431,16 +436,25 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         return array.copy()
 
     def _validated_mapped_reset_randomization(
-        self, randomization: ResetRandomizationPayload | None, rows: np.ndarray
-    ) -> ResetRandomizationPayload | None:
-        if randomization is None or randomization.is_empty():
+        self, randomization: TensorResetRandomizationPayload | None, rows: np.ndarray
+    ) -> TensorResetRandomizationPayload | None:
+        if randomization is None:
+            return None
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "isaacgym reset randomization must be a TensorResetRandomizationPayload"
+            )
+        if randomization.is_empty():
             return None
         if self._entity_scene is None:
             raise NotImplementedError(
                 "isaacgym reset domain randomization requires a mapped entity scene"
             )
+        # Host plane: the mapped subprocess worker is a NumPy boundary, so the
+        # torch-first payload must carry torch.cpu tensors.
+        validate_tensor_reset_payload(randomization, device="cpu")
         unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
-            randomization.requested_terms()
+            randomization.requested_terms(), plane="host"
         )
         if unsupported:
             requested = ", ".join(sorted(unsupported))
@@ -450,9 +464,10 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         layout = self._entity_scene.layout
         count = int(rows.size)
         coerce = self._coerce_mapped_reset_field
+        host_values = reset_payload_to_host_dict(randomization)
 
         def field(name: str, shape: tuple[int, ...]) -> np.ndarray | None:
-            values = getattr(randomization, name)
+            values = host_values.get(name)
             return None if values is None else coerce(values, name, shape)
 
         kp = field(RESET_TERM_KP, (count, layout.nu))
@@ -495,15 +510,23 @@ class IsaacGymBackend(MjcfSubprocessBackend):
                 raise ValueError(
                     "isaacgym geom_friction requires static == dynamic and a zero third column"
                 )
-        return ResetRandomizationPayload(
-            kp=kp,
-            kd=kd,
-            body_mass=body_mass,
-            body_ipos=body_ipos,
-            body_inertia=body_inertia,
-            dof_armature=dof_armature,
-            dof_frictionloss=dof_frictionloss,
-            geom_friction=geom_friction,
+        import torch
+
+        return TensorResetRandomizationPayload(
+            **{
+                term: torch.from_numpy(values)
+                for term, values in (
+                    (RESET_TERM_KP, kp),
+                    (RESET_TERM_KD, kd),
+                    (RESET_TERM_BODY_MASS, body_mass),
+                    (RESET_TERM_BODY_IPOS, body_ipos),
+                    (RESET_TERM_BODY_INERTIA, body_inertia),
+                    (RESET_TERM_DOF_ARMATURE, dof_armature),
+                    (RESET_TERM_DOF_FRICTIONLOSS, dof_frictionloss),
+                    (RESET_TERM_GEOM_FRICTION, geom_friction),
+                )
+                if values is not None
+            }
         )
 
     def _consume_entity_reset_randomization(self, response: Any) -> None:
@@ -657,13 +680,15 @@ class IsaacGymBackend(MjcfSubprocessBackend):
     def _apply_interval_body_force(self, op: IntervalTermOp) -> None:
         if op.body_ids is None:
             raise ValueError("interval body force requires body_ids")
-        self.apply_body_force(op.body_ids, require_op_host_payload(op))
+        self.apply_body_force(op.body_ids, interval_payload_to_host(op.payload))
 
     def _apply_interval_body_torque(self, op: IntervalTermOp) -> None:
         if op.body_ids is None:
             raise ValueError("interval body torque requires body_ids")
         zero_force = np.zeros((self._num_envs, len(op.body_ids), 3), dtype=np.float32)
-        self.apply_body_force(op.body_ids, zero_force, torque=require_op_host_payload(op))
+        self.apply_body_force(
+            op.body_ids, zero_force, torque=interval_payload_to_host(op.payload)
+        )
 
     def apply_body_force(
         self,
@@ -910,10 +935,12 @@ class IsaacGymBackend(MjcfSubprocessBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, dict[str, float]]:
         if getattr(self, "_cuda_ipc_plan", None) is not None:
-            raise RuntimeError("NumPy state writes are unavailable while a CUDA IPC plan is open")
+            raise RuntimeError(
+                "host-plane state writes are unavailable while a CUDA IPC plan is open"
+            )
         result = super()._host_set_state(env_indices, qpos, qvel, randomization)
         rows = np.asarray(env_indices, dtype=np.intp)
         if rows.ndim == 1 and rows.size:
@@ -922,7 +949,9 @@ class IsaacGymBackend(MjcfSubprocessBackend):
 
     def reset_entities(self, request: SceneResetRequest) -> None:
         if getattr(self, "_cuda_ipc_plan", None) is not None:
-            raise RuntimeError("NumPy entity reset is unavailable while a CUDA IPC plan is open")
+            raise RuntimeError(
+                "host-plane entity reset is unavailable while a CUDA IPC plan is open"
+            )
         super().reset_entities(request)
         self._time_view[np.asarray(request.env_ids, dtype=np.intp)] = 0.0
 

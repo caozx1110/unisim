@@ -45,10 +45,18 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     FixedVariantLayout,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.scene_layout import CompiledSceneLayout, EntityLayout, GeomLayout, JointLayout
+
+
+def _dr_payload(**fields) -> TensorResetRandomizationPayload:
+    """Build a host-plane torch reset payload from array-like field values."""
+    torch = pytest.importorskip("torch")
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(np.asarray(value)) for name, value in fields.items()}
+    )
 
 
 def _payload():
@@ -1549,6 +1557,9 @@ def test_mapped_capability_declares_exact_bounded_reset_terms():
     assert capabilities.supports_reset_term(RESET_TERM_BODY_MASS)
     assert capabilities.supports_reset_term(RESET_TERM_GEOM_FRICTION)
     assert not capabilities.supports_reset_term("gravity")
+    # The device plane (CUDA IPC lane) carries PD gains only.
+    assert capabilities.supported_device_reset_terms == frozenset({RESET_TERM_KP, RESET_TERM_KD})
+    assert not capabilities.supported_device_interval_terms
     assert not capabilities.supports_fixed_variants
     assert not capabilities.supported_fixed_variant_layouts
 
@@ -1564,7 +1575,7 @@ def test_shared_friction_materials_make_reset_friction_immutable_at_negotiation(
 def test_shared_friction_material_reset_fails_before_worker_mutation():
     backend, commits = _set_state_backend()
     backend._share_friction_materials = True
-    payload = ResetRandomizationPayload(
+    payload = _dr_payload(
         geom_friction=np.zeros((1, backend.get_scene_layout().ngeom, 3), dtype=np.float32)
     )
 
@@ -1629,9 +1640,27 @@ def _full_state_rows(count):
 )
 def test_mapped_reset_payloads_validate_before_worker_request(field, value, message):
     backend, commits = _set_state_backend()
-    payload = ResetRandomizationPayload(**{field: np.asarray(value, dtype=np.float32)})
+    payload = _dr_payload(**{field: np.asarray(value, dtype=np.float32)})
     with pytest.raises((TypeError, ValueError), match=message):
         backend._set_mapped_state(np.array([1]), *_full_state_rows(1), payload)
+    assert commits == []
+
+
+def test_mapped_reset_rejects_non_torch_and_device_plane_payloads():
+    torch = pytest.importorskip("torch")
+    backend, commits = _set_state_backend()
+    # The unified payload is torch-first: NumPy fields fail closed by type.
+    numpy_payload = TensorResetRandomizationPayload(
+        body_mass=np.asarray([[30, 10, 11, 103]], dtype=np.float32)
+    )
+    with pytest.raises(TypeError, match="body_mass"):
+        backend._set_mapped_state(np.array([1]), *_full_state_rows(1), numpy_payload)
+    # A non-host-plane tensor fails closed naming the term.
+    meta_payload = TensorResetRandomizationPayload(
+        body_mass=torch.full((1, 4), 10.0, dtype=torch.float32, device=torch.device("meta"))
+    )
+    with pytest.raises(ValueError, match="body_mass"):
+        backend._set_mapped_state(np.array([1]), *_full_state_rows(1), meta_payload)
     assert commits == []
 
 
@@ -1641,7 +1670,7 @@ def test_mapped_reset_rejects_non_positive_body_mass_before_worker_request():
         backend._set_mapped_state(
             np.array([1]),
             *_full_state_rows(1),
-            ResetRandomizationPayload(body_mass=np.asarray([[30, 10, 0, 103]], dtype=np.float32)),
+            _dr_payload(body_mass=np.asarray([[30, 10, 0, 103]], dtype=np.float32)),
         )
     assert commits == []
 
@@ -1652,7 +1681,7 @@ def test_mapped_reset_allows_zero_mass_on_unowned_world_row():
     backend._set_mapped_state(
         np.array([1]),
         *_full_state_rows(1),
-        ResetRandomizationPayload(body_mass=np.asarray([[30, 10, 11, 0]], dtype=np.float32)),
+        _dr_payload(body_mass=np.asarray([[30, 10, 11, 0]], dtype=np.float32)),
     )
     assert len(commits) == 1
     np.testing.assert_array_equal(commits[0][2].body_mass, [[30, 10, 11, 0]])
@@ -1663,7 +1692,7 @@ def test_mapped_reset_accepts_body_mass_and_folds_base_mass_delta():
     backend._set_mapped_state(
         np.array([1]),
         *_full_state_rows(1),
-        ResetRandomizationPayload(
+        _dr_payload(
             body_mass=np.asarray([[35, 10, 11, 103]], dtype=np.float32),
             base_mass_delta=np.asarray([2.5], dtype=np.float32),
         ),
@@ -1681,7 +1710,7 @@ def test_mapped_reset_folds_base_com_offset_into_variant_default_ipos():
     backend._set_mapped_state(
         np.array([0]),
         *_full_state_rows(1),
-        ResetRandomizationPayload(base_com_offset=np.asarray([[0.1, -0.2, 0.3]], dtype=np.float32)),
+        _dr_payload(base_com_offset=np.asarray([[0.1, -0.2, 0.3]], dtype=np.float32)),
     )
     _request, _controls, randomization = commits[0]
     assert randomization.base_com_offset is None
@@ -1728,7 +1757,7 @@ def test_mapped_reset_kp_kd_validate_and_pass_through():
     backend._set_mapped_state(
         np.array([1]),
         *_full_state_rows(1),
-        ResetRandomizationPayload(
+        _dr_payload(
             kp=np.asarray([[20.0]], dtype=np.float32),
             kd=np.asarray([[3.0]], dtype=np.float32),
         ),
@@ -1740,13 +1769,13 @@ def test_mapped_reset_kp_kd_validate_and_pass_through():
         backend._set_mapped_state(
             np.array([1]),
             *_full_state_rows(1),
-            ResetRandomizationPayload(kp=np.asarray([[-1.0]], dtype=np.float32)),
+            _dr_payload(kp=np.asarray([[-1.0]], dtype=np.float32)),
         )
     with pytest.raises(ValueError, match="kd values must be nonnegative"):
         backend._set_mapped_state(
             np.array([1]),
             *_full_state_rows(1),
-            ResetRandomizationPayload(kd=np.asarray([[-0.5]], dtype=np.float32)),
+            _dr_payload(kd=np.asarray([[-0.5]], dtype=np.float32)),
         )
     assert len(commits) == 1
 
@@ -1773,7 +1802,7 @@ def test_mapped_reset_dof_and_inertia_terms_validate_before_worker_request(field
     array = np.asarray(value, dtype=np.float32)
     if field == "body_inertia":
         array[0, 2, 1] = 0.0
-    payload = ResetRandomizationPayload(**{field: array})
+    payload = _dr_payload(**{field: array})
     with pytest.raises(ValueError, match=message):
         backend._set_mapped_state(np.array([1]), *_full_state_rows(1), payload)
     assert commits == []
@@ -1786,11 +1815,11 @@ def test_mapped_reset_rejects_unowned_body_columns():
         backend._set_mapped_state(
             np.array([1]),
             *_full_state_rows(1),
-            ResetRandomizationPayload(body_mass=body_mass),
+            _dr_payload(body_mass=body_mass),
         )
     body_mass[0, 3] = 103.0
     backend._set_mapped_state(
-        np.array([1]), *_full_state_rows(1), ResetRandomizationPayload(body_mass=body_mass)
+        np.array([1]), *_full_state_rows(1), _dr_payload(body_mass=body_mass)
     )
     assert len(commits) == 1
 
@@ -1854,13 +1883,13 @@ def test_mapped_reset_rejects_kinematic_mirror_mutation():
     )
     body_mass = np.asarray([[30, 10, 11, 5.0]], dtype=np.float32)
     backend._set_mapped_state(
-        np.array([1]), *_full_state_rows(1), ResetRandomizationPayload(body_mass=body_mass)
+        np.array([1]), *_full_state_rows(1), _dr_payload(body_mass=body_mass)
     )
     assert len(commits) == 1
     body_mass[0, 3] = 9.0
     with pytest.raises(ValueError, match="kinematic entity mirror"):
         backend._set_mapped_state(
-            np.array([1]), *_full_state_rows(1), ResetRandomizationPayload(body_mass=body_mass)
+            np.array([1]), *_full_state_rows(1), _dr_payload(body_mass=body_mass)
         )
     assert len(commits) == 1
 
@@ -1871,13 +1900,13 @@ def test_mapped_reset_unsupported_terms_fail_closed_with_reasons():
         backend._set_mapped_state(
             np.array([1]),
             *_full_state_rows(1),
-            ResetRandomizationPayload(gravity=np.zeros((1, 3), dtype=np.float32)),
+            _dr_payload(gravity=np.zeros((1, 3), dtype=np.float32)),
         )
     with pytest.raises(NotImplementedError, match="geom_size"):
         backend._set_mapped_state(
             np.array([1]),
             *_full_state_rows(1),
-            ResetRandomizationPayload(geom_size=np.ones((1, 3, 3), dtype=np.float32)),
+            _dr_payload(geom_size=np.ones((1, 3, 3), dtype=np.float32)),
         )
     assert commits == []
 
@@ -1953,19 +1982,19 @@ def test_mapped_reset_rejects_unsupported_and_duplicate_rows_before_worker_reque
     backend, commits = _set_state_backend()
     with pytest.raises(NotImplementedError, match="gravity"):
         backend._set_mapped_state(
-            np.array([1]), *_full_state_rows(1), ResetRandomizationPayload(gravity=np.zeros((1, 3)))
+            np.array([1]), *_full_state_rows(1), _dr_payload(gravity=np.zeros((1, 3)))
         )
     with pytest.raises(ValueError, match="at least one environment"):
         backend._set_mapped_state(
             np.array([], dtype=np.intp),
             *_full_state_rows(0),
-            ResetRandomizationPayload(geom_friction=np.ones((0, 3, 3), dtype=np.float32)),
+            _dr_payload(geom_friction=np.ones((0, 3, 3), dtype=np.float32)),
         )
     with pytest.raises(ValueError, match="duplicate"):
         backend._set_mapped_state(
             np.array([1, 1]),
             *_full_state_rows(2),
-            ResetRandomizationPayload(geom_friction=np.ones((2, 3, 3), dtype=np.float32)),
+            _dr_payload(geom_friction=np.ones((2, 3, 3), dtype=np.float32)),
         )
     assert commits == []
 
@@ -1979,7 +2008,7 @@ def test_mapped_reset_rows_remain_reordered_and_randomization_is_detached():
         ],
         dtype=np.float32,
     )
-    payload = ResetRandomizationPayload(geom_friction=geom_friction)
+    payload = _dr_payload(geom_friction=geom_friction)
     backend._set_mapped_state(np.array([1, 0]), *_full_state_rows(2), payload)
     request, _controls, randomization = commits[0]
     assert request.env_ids == (1, 0)
@@ -2061,7 +2090,7 @@ def test_entity_reset_wire_serializes_supported_terms_and_refreshes_records():
     dof_armature = np.asarray([[0.5, 0, 0, 0, 0, 0, 0]], dtype=np.float32)
     backend._commit_entity_reset(
         SceneResetRequest((1,), patches),
-        randomization=ResetRandomizationPayload(
+        randomization=_dr_payload(
             geom_friction=geom_friction, body_mass=body_mass, dof_armature=dof_armature
         ),
     )

@@ -344,6 +344,12 @@ class MuJoCoHostBridgeTransferPlan(HostBridgeTransferPlan):
         qvel: Any,
         randomization: Any | None = None,
     ) -> dict | None:
+        """Pack selected reset rows once, D2H them, and commit CPU physics.
+
+        ``randomization`` is the torch-first
+        :class:`~unisim.dr.types.TensorResetRandomizationPayload`; its plane
+        check and host NumPy conversion happen once in ``_host_set_state``.
+        """
         self._backend._require_entity_healthy()
         self._last_reset_rows_host = None
         self._last_reset_rows_device = None
