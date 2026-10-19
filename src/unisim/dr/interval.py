@@ -1,7 +1,7 @@
 """Declarative interval domain-randomization term descriptors.
 
 An interval randomization plan is a tuple of :class:`IntervalTermOp` entries:
-a term name, a host NumPy or device payload, and optional target body IDs.
+a term name, a final host NumPy or device payload, and optional target body IDs.
 The builtin specs below pin the payload contract for the terms shared between
 UniLab's domain-randomization manager and the backend adapters. Custom terms are
 free-form strings owned by a backend and validated only against that
@@ -57,7 +57,7 @@ INTERVAL_TERM_SPECS: tuple[IntervalTermSpec, ...] = (
     IntervalTermSpec(
         name=INTERVAL_TERM_PUSH,
         requires_body_ids=False,
-        payload_ndim=1,
+        payload_ndim=2,
     ),
     IntervalTermSpec(
         name=INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,

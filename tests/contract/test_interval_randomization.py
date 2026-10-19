@@ -21,9 +21,9 @@ from unisim.dr import (
     IntervalTermSpec,
     TensorIntervalPayload,
     interval_term_spec,
-    require_op_host_payload,
     validate_interval_op,
 )
+from unisim.dr.interval import require_op_host_payload
 from unisim.fake import FakeBackend
 
 BUILTIN_TERMS = (
@@ -53,10 +53,11 @@ def test_interval_term_op_validation_builtin_contract() -> None:
         IntervalTermOp(INTERVAL_TERM_BODY_FORCE, payload).validate()
     with pytest.raises(ValueError, match="push"):
         IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros(3), body_ids=BODY_IDS).validate()
+    with pytest.raises(ValueError, match="push"):
+        IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros(3)).validate()
     with pytest.raises(ValueError, match="body_force"):
         IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.zeros(3), body_ids=BODY_IDS).validate()
-    with pytest.raises(ValueError, match="push"):
-        IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))).validate()
+    IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))).validate()
 
 
 def test_tensor_interval_payload_validation_defers_engine_rules() -> None:
@@ -105,7 +106,7 @@ def test_host_adapter_payloads_reject_device_payload() -> None:
 def test_plan_iter_ops_preserves_explicit_order() -> None:
     lin = np.zeros((2, 1, 3))
     force = np.ones((2, 1, 3))
-    push = IntervalTermOp(INTERVAL_TERM_PUSH, np.asarray([1.0, 2.0, 3.0]))
+    push = IntervalTermOp(INTERVAL_TERM_PUSH, np.full((2, 3), [1.0, 2.0, 3.0]))
     linear = IntervalTermOp(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, lin, body_ids=BODY_IDS)
     wrench = IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force, body_ids=BODY_IDS)
     plan = IntervalRandomizationPlan(ops=(push, linear, wrench))
@@ -166,7 +167,7 @@ def test_backend_custom_term_handler_dispatch() -> None:
     # A builtin term without a handler still fails closed.
     with pytest.raises(NotImplementedError, match="push"):
         backend.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros(3)),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((1, 3))),))
         )
 
 
@@ -212,3 +213,29 @@ def test_mujoco_unknown_term_fails_closed(tmp_path: Path) -> None:
     message = str(excinfo.value)
     assert "MuJoCoBackend" in message
     assert "custom_spin" in message
+
+
+def test_mujoco_interval_push_uses_final_host_payload_without_global_rng(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = _mujoco_backend(tmp_path, MUJOCO_FREE_MODEL, num_envs=2)
+    force = np.asarray([[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]], dtype=np.float64)
+    monkeypatch.setattr(np.random, "uniform", pytest.fail, raising=True)
+    backend.push_robots(force)
+    backend.apply_interval_randomization(
+        IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, force.copy()),))
+    )
+
+    expected = np.zeros_like(backend._pending_xfrc_applied)
+    expected[:, backend._push_body_force_slice] = force
+    np.testing.assert_array_equal(backend._pending_xfrc_applied, expected)
+
+    legacy = np.asarray([1.0, 1.0, 1.0])
+    with pytest.raises(ValueError, match=r"push force must have shape \(2, 3\)"):
+        backend.push_robots(legacy)
+    with pytest.raises(ValueError, match="push.*ndim 2"):
+        backend.apply_interval_randomization(
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, legacy),))
+        )
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        backend.push_robots(np.full((2, 3), np.nan))

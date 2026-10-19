@@ -3627,7 +3627,7 @@ class MotrixBackend(SimBackend):
         # gated inside ``apply_body_force`` on the runtime native API probes.
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
-                INTERVAL_TERM_PUSH: lambda op: self.push_robots(op.payload),
+                INTERVAL_TERM_PUSH: lambda op: self.push_robots(require_op_host_payload(op)),
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
                     require_op_body_ids(op), require_op_host_payload(op)
                 ),
@@ -4449,14 +4449,23 @@ class MotrixBackend(SimBackend):
             self._portable_faulted = True
             raise
 
-    def push_robots(self, force_range):
+    def push_robots(self, force: np.ndarray) -> None:
+        """Apply caller-owned final local-frame push forces.
+
+        The caller owns random generation with its seeded RNG.  This boundary
+        only validates and forwards the resulting ``(num_envs, 3)`` force
+        table; it never reads the process-global NumPy random stream.
+        """
         if self._portable_mode:
             raise NotImplementedError("portable Motrix scenes do not support interval pushes")
-        ex_force = np.random.rand(self.num_envs, 3) * 2 - 1  # [x_force, y_force, z_force]
-        ex_force[:, 0] *= force_range[0]
-        ex_force[:, 1] *= force_range[1]
-        ex_force[:, 2] *= force_range[2]
-        self._push_body_link.add_external_force(self._data, ex_force, local=True)
+        force_np = np.asarray(force, dtype=np.float32)
+        if force_np.shape != (self.num_envs, 3):
+            raise ValueError(
+                f"push force must have shape ({self.num_envs}, 3), got {force_np.shape}"
+            )
+        if not np.isfinite(force_np).all():
+            raise ValueError("push force contains NaN or Inf")
+        self._push_body_link.add_external_force(self._data, force_np, local=True)
 
     def apply_body_force(
         self,

@@ -2,6 +2,8 @@
 
 ## 1.8.2 - 2026-10-19
 
+- Made the legacy interval push term caller-owned (#401). `INTERVAL_TERM_PUSH` now carries the final `(num_envs, 3)` force payload sampled by the manager-owned seeded RNG. MuJoCo validates and stages those world-frame forces, Motrix validates and forwards them through its local-frame link API, and neither backend reads NumPy's process-global RNG. Legacy per-axis range vectors fail closed for both direct and plan dispatch, so there is no silent unseeded sampling fallback.
+
 - Removed the dead `unisim.dr.types.ResetPlan` dataclass (#395). The legacy NumPy reset lifecycle was removed in 1.7.16; repository-wide references had already fallen to zero, so the leftover dataclass falsely implied a reset-plan call boundary. The packed reset transaction and tensor selected/mask reset remain the public reset lifecycle.
 
 - Migrated MJWarp interval pushes to a device-resident DR payload (#395). The new Torch-free `unisim.dr.TensorIntervalPayload` initially carries a full-width engine-native `push_force` table through `IntervalTermOp`; MJWarp validates that tensor and scatters final forces directly into `xfrc_applied`, leaving the host mirror and host cache untouched, then consumes the force on the next tensor step. Host NumPy push payloads and mixed host/device wrench staging fail closed, preventing a residual host sampling/H2D detour. Pending device pushes are covered by selected tensor reset rejection and one-step consumption semantics.

@@ -1998,19 +1998,6 @@ class MuJoCoBackend(SimBackend):
         start = 6 * body_id
         return slice(start + 3, start + 6)
 
-    def _sample_push_force(self, force_range: Sequence[float] | np.ndarray) -> np.ndarray:
-        """Sample one world-frame push force vector per environment.
-
-        Args:
-            force_range: Per-axis push-force magnitude range.
-
-        Returns:
-            Array with shape ``(num_envs, 3)`` containing sampled forces.
-        """
-        ex_force = np.random.uniform(-1.0, 1.0, size=(self._num_envs, 3))
-        ex_force *= np.asarray(force_range, dtype=np.float64)
-        return ex_force.astype(np.float64, copy=False)
-
     @staticmethod
     def _validate_cpu_ids(cpu_ids: Optional[Sequence[int]]) -> tuple[int, ...] | None:
         """Cold-path structural validation for the optional worker CPU affinity.
@@ -3337,12 +3324,28 @@ class MuJoCoBackend(SimBackend):
                 self._sensor_data[env, sensor_slice] = scratch.sensordata[sensor_slice]
             self._tracked_body_state_dirty[env] = False
 
-    def push_robots(self, force_range: Sequence[float] | np.ndarray) -> None:
+    def push_robots(self, force: np.ndarray) -> None:
+        """Stage caller-owned final world-frame push forces.
+
+        The caller owns random generation with its seeded RNG.  This boundary
+        only validates and stages the resulting ``(num_envs, 3)`` force table;
+        it never reads the process-global NumPy random stream.
+        """
         self._reject_wrench_write_inside_pre_step_control("push_robots")
+        if self._push_body_id < 0:
+            raise NotImplementedError(
+                "MuJoCo interval push requires base_name or push_body_name to identify "
+                "a push target body"
+            )
+        force_np = np.asarray(force, dtype=np.float64)
+        if force_np.shape != (self._num_envs, 3):
+            raise ValueError(
+                f"push force must have shape ({self._num_envs}, 3), got {force_np.shape}"
+            )
+        if not np.isfinite(force_np).all():
+            raise ValueError("push force contains NaN or Inf")
         self._pending_xfrc_applied.fill(0.0)
-        self._pending_xfrc_applied[:, self._push_body_force_slice] = self._sample_push_force(
-            force_range
-        )
+        self._pending_xfrc_applied[:, self._push_body_force_slice] = force_np
 
     def apply_body_force(
         self,
