@@ -14,9 +14,13 @@ from .interval import (  # noqa: F401
     INTERVAL_TERM_BODY_TORQUE,
     INTERVAL_TERM_PUSH,
     IntervalTermOp,
+    TensorIntervalPayload,
 )
 from .interval import (
     require_op_body_ids as require_op_body_ids,
+)
+from .interval import (
+    require_op_host_payload as require_op_host_payload,
 )
 
 RESET_TERM_BASE_COM = "base_com_offset"
@@ -402,12 +406,3 @@ class IntervalRandomizationPlan:
 
     def is_empty(self) -> bool:
         return not self.ops
-
-
-@dataclass
-class ResetPlan:
-    env_ids: np.ndarray
-    qpos: np.ndarray
-    qvel: np.ndarray
-    info_updates: dict[str, Any]
-    randomization: ResetRandomizationPayload | None = None

@@ -36,6 +36,7 @@ from unisim.dr.types import (
     ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     require_op_body_ids,
+    require_op_host_payload,
 )
 from unisim.entity_state import (
     entity_state_snapshot,
@@ -3628,7 +3629,7 @@ class MotrixBackend(SimBackend):
             self._interval_term_handler_cache = {
                 INTERVAL_TERM_PUSH: lambda op: self.push_robots(op.payload),
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), op.payload
+                    require_op_body_ids(op), require_op_host_payload(op)
                 ),
             }
             if (
@@ -3642,7 +3643,7 @@ class MotrixBackend(SimBackend):
                     self.apply_body_force(
                         ids,
                         np.zeros((self._num_envs, len(ids), 3), dtype=np.float32),
-                        torque=op.payload,
+                        torque=require_op_host_payload(op),
                     )
 
                 self._interval_term_handler_cache[INTERVAL_TERM_BODY_TORQUE] = apply_body_torque

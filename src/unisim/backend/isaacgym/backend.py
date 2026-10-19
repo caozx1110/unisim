@@ -57,6 +57,7 @@ from unisim.dr.types import (
     ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
+    require_op_host_payload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.inspection import ConfigurationField, ConfigurationProvenance
@@ -722,13 +723,13 @@ class IsaacGymBackend(MjcfSubprocessBackend):
     def _apply_interval_body_force(self, op: IntervalTermOp) -> None:
         if op.body_ids is None:
             raise ValueError("interval body force requires body_ids")
-        self.apply_body_force(op.body_ids, op.payload)
+        self.apply_body_force(op.body_ids, require_op_host_payload(op))
 
     def _apply_interval_body_torque(self, op: IntervalTermOp) -> None:
         if op.body_ids is None:
             raise ValueError("interval body torque requires body_ids")
         zero_force = np.zeros((self._num_envs, len(op.body_ids), 3), dtype=np.float32)
-        self.apply_body_force(op.body_ids, zero_force, torque=op.payload)
+        self.apply_body_force(op.body_ids, zero_force, torque=require_op_host_payload(op))
 
     def apply_body_force(
         self,

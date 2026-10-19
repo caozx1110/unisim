@@ -48,6 +48,7 @@ from unisim.dr.types import (
     ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     require_op_body_ids,
+    require_op_host_payload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.entity_state import (
@@ -766,7 +767,7 @@ class DrakeBackend(SimBackend):
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), op.payload
+                    require_op_body_ids(op), require_op_host_payload(op)
                 ),
             }
         return self._interval_term_handler_cache

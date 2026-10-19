@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import unisim.dr
 from unisim.backend.base import (
     PublicStateWidths,
     SelectedResetPublication,
@@ -247,6 +248,13 @@ def test_sim_backend_training_numpy_surface_is_removed() -> None:
         "get_sensor_data_batch",
     )
     assert not any(hasattr(SimBackend, name) for name in legacy_names)
+
+
+def test_reset_plan_dead_code_is_removed() -> None:
+    import unisim.dr.types as dr_types
+
+    assert not hasattr(dr_types, "ResetPlan")
+    assert not hasattr(unisim.dr, "ResetPlan")
 
 
 def test_contract_source_does_not_import_optional_engines() -> None:

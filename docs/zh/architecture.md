@@ -22,7 +22,7 @@ UniLab 拥有 task/env/manager 生命周期、Hydra owner YAML、机器人资产
 
 所有资产和模型元数据解析都是冷路径职责。Tensor step/reset 实现只能在 concrete adapter 或显式 host bridge 内 stage 已校验 host 数组；适配器不得让 task 代码动态探测引擎私有属性。
 
-区间域随机化是声明式的：UniSim 的 manager 从 `unisim.dr.interval` 定义的 `IntervalTermOp` 描述符构建 `IntervalRandomizationPlan.ops`（项名称、NumPy 载荷和可选 body ID；只使用标准库与 NumPy，因此计划在基于 spawn 的 collector 进程间保持可 pickle）。每个后端拥有自己的能力声明（`supported_interval_terms`）和冷路径构建的 `_interval_term_handlers()` 表；通用 `SimBackend.apply_interval_randomization` 分发会用内建项规格校验每个 op，路由到匹配 handler，并对后端未声明的项以 `NotImplementedError` 快速失败。自定义项是由注册后端拥有的自由字符串，只根据该后端的能力集校验。
+区间域随机化是声明式的：UniSim 的 manager 从 `unisim.dr.interval` 定义的 `IntervalTermOp` 描述符构建 `IntervalRandomizationPlan.ops`（项名称、主机 NumPy 载荷或进程本地设备载荷，以及可选 body ID；模块仍只用标准库与 NumPy，因此主机计划在基于 spawn 的 collector 进程间保持可 pickle）。每个后端拥有自己的能力声明（`supported_interval_terms`）和冷路径构建的 `_interval_term_handlers()` 表；通用 `SimBackend.apply_interval_randomization` 分发会用内建项规格校验每个 op，路由到匹配 handler，并对后端未声明的项以 `NotImplementedError` 快速失败。自定义项是由注册后端拥有的自由字符串，只根据该后端的能力集校验。
 
 重置时的模型字段写入使用 `ResetRandomizationPayload` 上的精选字段；调用者绝不独立提交几何包围盒等由编译器派生的字段。适配器通过 `SimBackend.get_reset_term_default(term)` 暴露权威默认值：单模型后端返回规范表，固定变体建立不同基线时返回逐环境表。默认值查询绝不随 reset 随机化改变。
 
