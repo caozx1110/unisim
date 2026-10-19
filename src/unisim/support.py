@@ -461,13 +461,23 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         )
         declare(
             "tensor.reset_randomization",
-            unsupported,
-            "Newton tensor reset has no randomization",
+            exact,
+            "Selected-row kp/kd reset randomization",
         )
         declare(
             "tensor.device_reset_randomization",
+            exact,
+            "Device-resident kp/kd scatter into MuJoCo-family actuator arrays",
+        )
+        declare(
+            "tensor.packed_reset",
+            exact,
+            "Packed reset transaction with qpos/qvel and selected-row kp/kd",
+        )
+        declare(
+            "tensor.packed_reset_mocap",
             unsupported,
-            "Newton tensor reset applies no randomization payloads",
+            "Newton tensor reset has no packed mocap writes",
         )
         declare("tensor.fixed_variants", unsupported, "Newton tensor reset has no fixed variants")
         declare("tensor.host_pre_step_control", unsupported, "Host callbacks remain NumPy-only")
@@ -537,13 +547,23 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         )
         declare(
             "tensor.reset_randomization",
-            unsupported,
-            "Genesis tensor reset has no randomization",
+            exact,
+            "Selected-row body_mass/kp/kd reset randomization",
         )
         declare(
             "tensor.device_reset_randomization",
+            exact,
+            "Device-resident body_mass/kp/kd scatter through public Genesis setters",
+        )
+        declare(
+            "tensor.packed_reset",
+            exact,
+            "Packed reset transaction with qpos/qvel and selected-row body_mass/kp/kd",
+        )
+        declare(
+            "tensor.packed_reset_mocap",
             unsupported,
-            "Genesis tensor reset applies no randomization payloads",
+            "Genesis tensor reset has no packed mocap writes",
         )
         declare("tensor.fixed_variants", unsupported, "Genesis tensor reset has no fixed variants")
         declare("tensor.host_pre_step_control", unsupported, "Host callbacks remain NumPy-only")
@@ -619,13 +639,23 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         )
         declare(
             "tensor.reset_randomization",
-            unsupported,
-            "IsaacSim CUDA IPC tensor reset has no randomization",
+            exact,
+            "Selected-row kp/kd reset randomization",
         )
         declare(
             "tensor.device_reset_randomization",
+            exact,
+            "Device-resident kp/kd arena followed by an explicit reset-only PhysX property bridge",
+        )
+        declare(
+            "tensor.packed_reset",
+            exact,
+            "Packed reset transaction with qpos/qvel and selected-row kp/kd",
+        )
+        declare(
+            "tensor.packed_reset_mocap",
             unsupported,
-            "IsaacSim CUDA IPC tensor reset applies no randomization payloads",
+            "Mapped tensor reset has no packed mocap writes",
         )
         declare("tensor.fixed_variants", unsupported, "Mapped tensor reset has no fixed variants")
         declare("tensor.host_pre_step_control", unsupported, "Host callbacks remain NumPy-only")
@@ -705,13 +735,23 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         )
         declare(
             "tensor.reset_randomization",
-            unsupported,
-            "IsaacGym CUDA IPC tensor reset has no randomization",
+            exact,
+            "Selected-row kp/kd reset randomization",
         )
         declare(
             "tensor.device_reset_randomization",
+            exact,
+            "Device-resident kp/kd arena followed by an explicit reset-only actor property bridge",
+        )
+        declare(
+            "tensor.packed_reset",
+            exact,
+            "Packed reset transaction with qpos/qvel and selected-row kp/kd",
+        )
+        declare(
+            "tensor.packed_reset_mocap",
             unsupported,
-            "IsaacGym CUDA IPC tensor reset applies no randomization payloads",
+            "Raw tensor reset has no packed mocap writes",
         )
         declare("tensor.fixed_variants", unsupported, "CUDA IPC tensor reset has no fixed variants")
         declare("tensor.host_pre_step_control", unsupported, "Host callbacks remain NumPy-only")

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.0 - 2026-10-19
+
+- Extended the packed reset transaction to the remaining production tensor backends (UniLab #2387). Genesis commits selected-row `body_mass`, `kp`, and `kd`; Newton commits `kp` and `kd` through MuJoCo-family actuator arrays; and IsaacGym/IsaacSim commit selected-row `kp`/`kd` through CUDA IPC arenas followed by one explicitly named reset-only worker property bridge. All four declare fixed-width mask reset and authoritative post-reset publication. The Isaac bridge is the only host detour, is named `_apply_cuda_reset_properties`, and is never reachable from step, state, control, or sensor hot paths.
+- Added the IsaacSim mapped-scene `isaacsim_env_spacing` factory option (UniLab #2387). The host validates finite positive spacing, sends it in the worker INIT request, configures `GridCloner`, and fail-closed checks both the reported effective value and actual environment-origin grid steps against the request.
+- Restored IsaacGym source-Joint-bound position-target semantics (UniLab #2387). The host sends MJCF lower/upper bounds with fixed-variant actuation tables, and the worker validates them and clamps initial, step, full-reset, partial-reset, and qpos-derived targets to the selected environment's source bounds. This approximates importer-dropped commanded boundaries; it intentionally does not claim native hard joint-stop emulation.
+
 ## 1.7.25 - 2026-10-17
 
 - Fixed Motrix fixed-width mask reset publication to compiled host-bridge plans (#386). `set_state_tensor_mask()` now records its committed selected rows on every open plan, allowing `read_selected_state_sensors()` to publish authoritative selected-row views without a full-batch refresh.

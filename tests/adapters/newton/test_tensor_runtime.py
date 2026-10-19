@@ -90,6 +90,13 @@ def test_newton_declares_partial_device_resident_tensor_lifecycle(
         assert capabilities.stepping
         assert capabilities.selected_reset
         assert capabilities.sensor_views
+        assert capabilities.reset_randomization
+        assert capabilities.device_reset_randomization
+        from unisim.dr.types import RESET_TERM_KD, RESET_TERM_KP
+
+        assert capabilities.packed_reset
+        assert capabilities.packed_reset_fields == frozenset({RESET_TERM_KP, RESET_TERM_KD})
+        assert capabilities.mask_selected_reset
 
         with pytest.raises(NotImplementedError, match="unsupported: 'unused'"):
             backend.get_sensor_view("unused", device=torch.device(backend._device))
@@ -128,6 +135,7 @@ def test_newton_portable_single_entity_declares_narrow_tensor_lifecycle() -> Non
     assert capabilities.state_views
     assert capabilities.stepping
     assert not capabilities.selected_reset
+    assert not capabilities.packed_reset
 
 
 def test_newton_tensor_sensor_routing_is_device_only_without_sdk() -> None:
@@ -383,6 +391,68 @@ def test_newton_tensor_hot_path_has_bounded_scalar_synchronization(
         backend.close()
 
 
+def test_newton_packed_mask_reset_preserves_false_rows_and_gains(
+    tmp_path: Path,
+) -> None:
+    torch = pytest.importorskip("torch")
+    from unisim.dr.types import RESET_TERM_KD, RESET_TERM_KP
+
+    backend = _cuda_backend(tmp_path)
+    try:
+        capabilities = backend.get_tensor_capabilities()
+        assert capabilities.packed_reset
+        transaction = backend.begin_packed_reset()
+        default_qpos = torch.asarray(backend.get_default_qpos(), device=backend._device)
+        default_qvel = torch.asarray(backend.get_init_qvel(), device=backend._device)
+        transaction.set_state_default(default_qpos, default_qvel)
+        mask = torch.asarray((False, True), dtype=torch.bool, device=backend._device)
+        before = backend.get_state_views()
+        transaction.begin_state_mask(mask)
+        staged_qpos, staged_qvel = transaction.state_views()
+        staged_qpos[1, 2] += 0.2
+        kp_default = (
+            torch.asarray(backend.get_reset_term_default(RESET_TERM_KP), device=backend._device)
+            .reshape(1, -1)
+            .repeat(2, 1)
+        )
+        kd_default = (
+            torch.asarray(backend.get_reset_term_default(RESET_TERM_KD), device=backend._device)
+            .reshape(1, -1)
+            .repeat(2, 1)
+        )
+        transaction.write_model_field_mask(
+            RESET_TERM_KP,
+            mask,
+            kp_default * 1.5,
+        )
+        transaction.write_model_field_mask(
+            RESET_TERM_KD,
+            mask,
+            kd_default * 2.0,
+        )
+        result = transaction.commit_mask(mask)
+
+        assert result is not None
+        assert result["timing"]["packed_reset_total_ms"] >= 0.0
+        after = backend.get_state_views()
+        torch.testing.assert_close(after["qpos"][0], before["qpos"][0])
+        torch.testing.assert_close(after["qvel"][0], before["qvel"][0])
+        torch.testing.assert_close(after["qpos"][1], staged_qpos[1])
+        torch.testing.assert_close(after["qvel"][1], staged_qvel[1])
+
+        warp = backend._deps.warp
+        gainprm = warp.to_torch(backend._solver.mjw_model.actuator_gainprm)
+        biasprm = warp.to_torch(backend._solver.mjw_model.actuator_biasprm)
+        torch.testing.assert_close(gainprm[0, :, 0], kp_default[0])
+        torch.testing.assert_close(gainprm[1, :, 0], kp_default[1] * 1.5)
+        torch.testing.assert_close(biasprm[0, :, 1], torch.zeros_like(kp_default[0]))
+        torch.testing.assert_close(biasprm[1, :, 1], -kp_default[1] * 1.5)
+        torch.testing.assert_close(biasprm[0, :, 2], torch.zeros_like(kd_default[0]))
+        torch.testing.assert_close(biasprm[1, :, 2], -kd_default[1] * 2.0)
+    finally:
+        backend.close()
+
+
 def test_newton_selected_reset_avoids_scalar_index_uploads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -422,19 +492,19 @@ def test_newton_tensor_sensor_views_match_host_and_selected_reset(
             device=device,
         )
         backend.step_tensor(ctrl, nsteps=2)
-        host.step(ctrl.detach().cpu().numpy(), nsteps=2)
+        host._host_step(ctrl.detach().cpu().numpy(), nsteps=2)
 
         def assert_sensor_parity() -> None:
             for name in ("pelvis_local_linvel", "torso_gyro", "torso_upvector"):
                 actual = backend.get_sensor_view(name, device=device)
-                expected = host.get_sensor_data(name)
+                expected = host._host_read_sensor(name)
                 np.testing.assert_allclose(actual.detach().cpu().numpy(), expected, atol=2e-5)
             body_ids = host.get_body_ids(("base", "arm"))
             expected = (
-                host.get_body_pos_w(body_ids),
-                host.get_body_quat_w(body_ids),
-                host.get_body_lin_vel_w(body_ids),
-                host.get_body_ang_vel_w(body_ids),
+                host._host_get_body_pos_w(body_ids),
+                host._host_get_body_quat_w(body_ids),
+                host._host_get_body_lin_vel_w(body_ids),
+                host._host_get_body_ang_vel_w(body_ids),
             )
             for body_name, body_id in zip(("base", "arm"), body_ids.tolist(), strict=True):
                 actual = (
@@ -462,7 +532,7 @@ def test_newton_tensor_sensor_views_match_host_and_selected_reset(
         reset_qpos[1, 7] = 0.4
         reset_qvel[1, 3] = -0.2
         backend.set_state_tensor(rows, reset_qpos[1:2], reset_qvel[1:2])
-        host.set_state(
+        host._host_set_state(
             rows.detach().cpu().numpy(),
             reset_qpos[1:2].detach().cpu().numpy(),
             reset_qvel[1:2].detach().cpu().numpy(),
@@ -496,7 +566,7 @@ def test_newton_tensor_step_and_reset_avoid_host_cache_refresh(
         assert result is not None
         assert result["timing"]["tensor_host_cache_refresh_ms"] == 0.0
 
-        host.step(np.full((2, host.num_actuators), 0.2, dtype=np.float32), nsteps=2)
+        host._host_step(np.full((2, host.num_actuators), 0.2, dtype=np.float32), nsteps=2)
         host_state = host.get_physics_state()
         host_qpos = host_state[:, 1 : 1 + host._metadata.nq]
         host_qvel = host_state[:, 1 + host._metadata.nq :]
@@ -511,7 +581,7 @@ def test_newton_tensor_step_and_reset_avoid_host_cache_refresh(
         backend.set_state_tensor(rows, reset_qpos[:1], reset_qvel[:1])
         assert views["qpos"][1, 2].item() == pytest.approx(reset_qpos[0, 2].item(), abs=1e-6)
         assert views["qvel"][1, 0].item() == pytest.approx(0.25, abs=1e-6)
-        host.set_state(
+        host._host_set_state(
             rows.cpu().numpy(), reset_qpos[:1].cpu().numpy(), reset_qvel[:1].cpu().numpy()
         )
         host_state = host.get_physics_state()

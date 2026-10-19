@@ -1851,6 +1851,7 @@ class SceneWorkerContext:
         self._cuda_reset_sequence = 0
         self._tensor_cuda_ipc = False
         self._share_friction_materials = False
+        self._env_spacing = 2.0
         self.faulted = False
         self.model_file_projection: Any = None
         self._model_file_metadata: dict[str, Any] | None = None
@@ -2001,6 +2002,15 @@ class SceneWorkerContext:
         self.num_envs = payload["num_envs"]
         self.entries = payload["scene_entities"]
         self.sim_dt = float(payload["sim_dt"])
+        env_spacing = payload.get("env_spacing", 2.0)
+        if (
+            isinstance(env_spacing, bool)
+            or not isinstance(env_spacing, (int, float))
+            or not np.isfinite(env_spacing)
+            or float(env_spacing) <= 0.0
+        ):
+            raise ValueError(f"env_spacing must be finite and positive, got {env_spacing!r}")
+        self._env_spacing = float(env_spacing)
         device_id = int(payload.get("device_id", 0))
         if device_id < 0:
             raise NotImplementedError("IsaacSim mapped scene requires CUDA")
@@ -2060,7 +2070,7 @@ class SceneWorkerContext:
             import carb
 
             carb.settings.get_settings().set_bool("/physics/disableContactProcessing", False)
-        cloner = GridCloner(spacing=2.0)
+        cloner = GridCloner(spacing=self._env_spacing)
         prototype_cloner = Cloner()
         cloner.define_base_env("/World/envs")
         self.env_paths = cloner.generate_paths("/World/envs/env", self.num_envs)
@@ -3209,6 +3219,31 @@ class SceneWorkerContext:
         self._publish_cuda_scalar_sensors(rows)
         arena.record_state()
 
+    def _apply_cuda_reset_properties(self, rows: Any, count: int, terms: tuple[str, ...]) -> None:
+        """Cross the explicit reset-only PhysX property bridge."""
+
+        arena = self._cuda_ipc
+        if arena is None:
+            raise RuntimeError("IsaacSim CUDA IPC arena is not attached")
+        raw: dict[str, Any] = {}
+        if "kp" in terms:
+            raw["kp"] = arena.reset_kp[:count].detach().cpu().numpy()
+        if "kd" in terms:
+            raw["kd"] = arena.reset_kd[:count].detach().cpu().numpy()
+        randomization = self._validated_reset_randomization({"randomization": raw}, count)
+        if randomization is None:
+            return
+        host_rows = rows.detach().cpu().numpy()
+        before_properties = self._readback_reset_properties()
+        self._apply_reset_randomization(host_rows, randomization)
+        property_records = self._readback_reset_properties()
+        self._verify_reset_property_readback(
+            host_rows,
+            randomization,
+            before_properties,
+            property_records,
+        )
+
     def reset_cuda_ipc(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Apply a selected canonical CUDA reset and republish device state."""
         if self.faulted:
@@ -3216,8 +3251,10 @@ class SceneWorkerContext:
         arena = self._cuda_ipc
         if arena is None:
             raise RuntimeError("IsaacSim CUDA IPC arena is not attached")
-        if not isinstance(payload, dict) or set(payload) != {"count", "sequence"}:
-            raise ValueError("IsaacSim CUDA IPC reset payload must be count/sequence metadata")
+        if not isinstance(payload, dict) or not {"count", "sequence"} <= set(payload):
+            raise ValueError("IsaacSim CUDA IPC reset payload must contain count/sequence")
+        if set(payload) - {"count", "sequence", "has_randomization", "randomization_terms"}:
+            raise ValueError("IsaacSim CUDA IPC reset payload contains unsupported fields")
         count = payload["count"]
         sequence = payload["sequence"]
         if (
@@ -3233,7 +3270,6 @@ class SceneWorkerContext:
             or sequence != self._cuda_reset_sequence + 1
         ):
             raise ValueError("invalid IsaacSim CUDA IPC reset sequence")
-
         started = time.perf_counter()
         arena.wait_reset()
         rows = arena.reset_env_indices[:count].long()
@@ -3268,6 +3304,10 @@ class SceneWorkerContext:
             for asset in self.assets:
                 asset.update(self.sim_dt)
             self._cuda_reset_sequence = sequence
+            property_started = time.perf_counter()
+            if payload.get("has_randomization"):
+                self._apply_cuda_reset_properties(rows, count, payload["randomization_terms"])
+            property_ms = (time.perf_counter() - property_started) * 1000.0
             self._publish_cuda_reset_state(rows, qpos, qvel)
         except Exception:
             self.faulted = True
@@ -3275,6 +3315,7 @@ class SceneWorkerContext:
         return {
             "timing": {
                 "reset_upload_ms": (time.perf_counter() - started) * 1000.0,
+                "reset_property_ms": property_ms,
                 "state_publish_ms": 0.0,
                 "cuda_ipc": True,
             }
@@ -4198,6 +4239,7 @@ class SceneWorkerContext:
         effective: dict[str, Any] = {
             "dt": float(self.sim.get_physics_dt()),
             "share_friction_materials": getattr(self, "_share_friction_materials", False),
+            "env_spacing": getattr(self, "_env_spacing", 2.0),
             "gravity": self.gravity.tolist(),
             "collision_filter": {
                 "self_collision": {

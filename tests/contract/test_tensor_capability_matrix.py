@@ -438,7 +438,8 @@ def test_mjwarp_and_mujoco_tensor_classifications_are_explicit() -> None:
     assert isaacsim.get("tensor.process_topology").reason == "external_worker"
     assert isaacsim.get("tensor.state_fields").reason == "qpos and qvel"
     assert isaacsim.get("tensor.selected_reset").support.value == "exact"
-    assert isaacsim.get("tensor.reset_randomization").support.value == "unsupported"
+    assert isaacsim.get("tensor.reset_randomization").support.value == "exact"
+    assert isaacsim.get("tensor.packed_reset").support.value == "exact"
     assert isaacsim.get("tensor.packed_host_bridge").support.value == "unsupported"
 
 
@@ -455,7 +456,8 @@ def test_isaacgym_tensor_profile_declares_reviewed_cuda_ipc_boundary() -> None:
     assert report.get("tensor.selected_reset").support.value == "exact"
     assert report.get("tensor.selected_reset_publication").reason == "authoritative_views"
     assert report.get("tensor.selected_reset_publication").support.value == "exact"
-    assert report.get("tensor.reset_randomization").support.value == "unsupported"
+    assert report.get("tensor.reset_randomization").support.value == "exact"
+    assert report.get("tensor.packed_reset").support.value == "exact"
     assert report.get("tensor.fixed_variants").support.value == "unsupported"
     assert report.get("tensor.host_pre_step_control").support.value == "unsupported"
     assert report.get("tensor.packed_host_bridge").support.value == "unsupported"
@@ -554,11 +556,12 @@ def test_tensor_platform_matrix_projects_capability_semantics_without_promotion(
         for attribute, feature in projected_features.items():
             assert getattr(profile, attribute) is report.get(feature).support
 
-        expected_runtime_negotiated = (
-            SupportLevel.UNKNOWN
-            if profile.adapter in {"mujoco", "motrix"}
-            else SupportLevel.UNSUPPORTED
-        )
+        if profile.adapter in {"mujoco", "motrix"}:
+            expected_runtime_negotiated = SupportLevel.UNKNOWN
+        elif profile.adapter in {"genesis", "newton", "isaacgym", "isaacsim"}:
+            expected_runtime_negotiated = SupportLevel.EXACT
+        else:
+            expected_runtime_negotiated = SupportLevel.UNSUPPORTED
         expected_fixed_variants = (
             SupportLevel.UNKNOWN if profile.adapter == "mujoco" else SupportLevel.UNSUPPORTED
         )

@@ -160,7 +160,7 @@ backend = create_backend(
     cpu_ids=ids,
 )
 try:
-    backend.step(np.zeros((4, 1), dtype=np.float32))
+    backend._host_step(np.zeros((4, 1), dtype=np.float32))
     pinned = []
     for task in Path("/proc/self/task").iterdir():
         try:

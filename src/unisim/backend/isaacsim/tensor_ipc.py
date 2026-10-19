@@ -30,7 +30,7 @@ from unisim.backend.subprocess_ipc.cuda_ipc import (
     CudaIpcTransport,
 )
 
-ISAACSIM_TENSOR_SCHEMA_VERSION = 3
+ISAACSIM_TENSOR_SCHEMA_VERSION = 4
 ISAACSIM_CUDA_ATTACH = "TENSOR_CUDA_ATTACH"
 ISAACSIM_CUDA_STEP = "TENSOR_CUDA_STEP"
 ISAACSIM_CUDA_RESET = "TENSOR_CUDA_RESET"
@@ -135,6 +135,8 @@ class IsaacSimCudaArenaLayout:
     reset_env_indices_offset: int
     reset_qpos_offset: int
     reset_qvel_offset: int
+    reset_kp_offset: int
+    reset_kd_offset: int
     body_state_offset: int
     sensor_state_offset: int
     size_bytes: int
@@ -163,9 +165,9 @@ class IsaacSimCudaArenaLayout:
         reset_qvel_offset = reset_qpos_offset + _align(
             num_envs * nq * np.dtype(np.float32).itemsize
         )
-        body_state_offset = reset_qvel_offset + _align(
-            num_envs * nv * np.dtype(np.float32).itemsize
-        )
+        reset_kp_offset = reset_qvel_offset + _align(num_envs * nv * np.dtype(np.float32).itemsize)
+        reset_kd_offset = reset_kp_offset + _align(num_envs * nu * np.dtype(np.float32).itemsize)
+        body_state_offset = reset_kd_offset + _align(num_envs * nv * np.dtype(np.float32).itemsize)
         sensor_state_offset = body_state_offset + _align(
             num_envs * nbody * 13 * np.dtype(np.float32).itemsize
         )
@@ -182,6 +184,8 @@ class IsaacSimCudaArenaLayout:
             reset_env_indices_offset,
             reset_qpos_offset,
             reset_qvel_offset,
+            reset_kp_offset,
+            reset_kd_offset,
             body_state_offset,
             sensor_state_offset,
             size,
@@ -196,6 +200,8 @@ class IsaacSimCudaArenaLayout:
             "reset_env_indices": (self.num_envs,),
             "reset_qpos": (self.num_envs, self.nq),
             "reset_qvel": (self.num_envs, self.nv),
+            "reset_kp": (self.num_envs, self.nu),
+            "reset_kd": (self.num_envs, self.nu),
             "body_state": (self.num_envs, self.nbody, 13),
             "sensor_state": (self.num_envs, 2, 3),
         }
@@ -209,6 +215,8 @@ class IsaacSimCudaArenaLayout:
             "reset_env_indices": "int64",
             "reset_qpos": "float32",
             "reset_qvel": "float32",
+            "reset_kp": "float32",
+            "reset_kd": "float32",
             "body_state": "float32",
             "sensor_state": "float32",
         }
@@ -226,6 +234,8 @@ class IsaacSimCudaArenaLayout:
             "reset_env_indices_offset": self.reset_env_indices_offset,
             "reset_qpos_offset": self.reset_qpos_offset,
             "reset_qvel_offset": self.reset_qvel_offset,
+            "reset_kp_offset": self.reset_kp_offset,
+            "reset_kd_offset": self.reset_kd_offset,
             "body_state_offset": self.body_state_offset,
             "sensor_state_offset": self.sensor_state_offset,
             "size_bytes": self.size_bytes,
@@ -245,6 +255,8 @@ class IsaacSimCudaArenaLayout:
             "reset_env_indices_offset",
             "reset_qpos_offset",
             "reset_qvel_offset",
+            "reset_kp_offset",
+            "reset_kd_offset",
             "body_state_offset",
             "sensor_state_offset",
             "size_bytes",
@@ -454,6 +466,14 @@ class HostCudaIpcArena:
         return self._view("reset_qvel")
 
     @property
+    def reset_kp(self) -> Any:
+        return self._view("reset_kp")
+
+    @property
+    def reset_kd(self) -> Any:
+        return self._view("reset_kd")
+
+    @property
     def body_state(self) -> Any:
         return self._view("body_state")
 
@@ -524,7 +544,13 @@ class HostCudaIpcArena:
         stream = self._torch.cuda.current_stream(self._device_index).cuda_stream
         self._control_event.record(int(stream))
 
-    def write_reset(self, env_indices: Any, qpos: Any, qvel: Any) -> None:
+    def write_reset(
+        self,
+        env_indices: Any,
+        qpos: Any,
+        qvel: Any,
+        randomization: dict[str, Any] | None = None,
+    ) -> None:
         require_cuda_tensor_of_dtype(env_indices, rank=1, name="reset env_indices", dtype="int64")
         require_cuda_tensor(qpos, rank=2, name="reset qpos")
         require_cuda_tensor(qvel, rank=2, name="reset qvel")
@@ -543,6 +569,11 @@ class HostCudaIpcArena:
         self.reset_env_indices[:count].copy_(env_indices, non_blocking=True)
         self.reset_qpos[:count].copy_(qpos, non_blocking=True)
         self.reset_qvel[:count].copy_(qvel, non_blocking=True)
+        if randomization is not None:
+            if "kp" in randomization:
+                self.reset_kp[:count].copy_(randomization["kp"], non_blocking=True)
+            if "kd" in randomization:
+                self.reset_kd[:count].copy_(randomization["kd"], non_blocking=True)
 
     def record_reset(self) -> None:
         if self.closed or self._reset_event is None:
@@ -706,6 +737,14 @@ class WorkerCudaIpcArena:
     @property
     def reset_qvel(self) -> Any:
         return self._view("reset_qvel")
+
+    @property
+    def reset_kp(self) -> Any:
+        return self._view("reset_kp")
+
+    @property
+    def reset_kd(self) -> Any:
+        return self._view("reset_kd")
 
     @property
     def body_state(self) -> Any:

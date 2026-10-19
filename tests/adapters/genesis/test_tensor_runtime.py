@@ -19,6 +19,7 @@ else:
 
 from unisim.backend.base import TensorExecution
 from unisim.backend.genesis.backend import GenesisBackend
+from unisim.dr.types import TensorResetRandomizationPayload
 from unisim.scene import SceneCfg
 from unisim.support import _assert_tensor_platform_capabilities
 
@@ -78,6 +79,15 @@ class _FakeEntity:
             .as_subclass(_NoHostTensor)
         )
         self.device = device
+        self.links_inertial_mass = torch.ones(
+            (2, 3), dtype=torch.float32, device=device
+        ).as_subclass(_NoHostTensor)
+        self.dofs_kp = torch.ones((2, 1), dtype=torch.float32, device=device).as_subclass(
+            _NoHostTensor
+        )
+        self.dofs_kv = torch.full((2, 1), 2.0, dtype=torch.float32, device=device).as_subclass(
+            _NoHostTensor
+        )
         self.links_net_contact_force = (
             torch.asarray(
                 ((2.0, 0.0, 0.0), (4.0, 0.0, 0.0), (0.1, 0.0, 0.0)),
@@ -119,6 +129,50 @@ class _FakeEntity:
     ) -> None:
         assert position.is_cuda and position.dtype == torch.float32
         self.controls.append(position)
+
+    @staticmethod
+    def _selected_rows(envs_idx: torch.Tensor) -> torch.Tensor:
+        if envs_idx.dtype == torch.bool:
+            return envs_idx.nonzero(as_tuple=False).flatten()
+        assert envs_idx.dtype == torch.int64
+        return envs_idx
+
+    def set_links_inertial_mass(
+        self,
+        mass: torch.Tensor,
+        envs_idx: torch.Tensor | None = None,
+    ) -> None:
+        assert envs_idx is not None and mass.is_cuda
+        rows = self._selected_rows(envs_idx)
+        selected = self.links_inertial_mass.index_select(0, rows)
+        selected.copy_(mass)
+        self.links_inertial_mass.index_copy_(0, rows, selected)
+
+    def set_dofs_kp(
+        self,
+        kp: torch.Tensor,
+        dofs_idx_local: list[int] | None = None,
+        envs_idx: torch.Tensor | None = None,
+    ) -> None:
+        del dofs_idx_local
+        assert envs_idx is not None and kp.is_cuda
+        rows = self._selected_rows(envs_idx)
+        selected = self.dofs_kp.index_select(0, rows)
+        selected.copy_(kp)
+        self.dofs_kp.index_copy_(0, rows, selected)
+
+    def set_dofs_kv(
+        self,
+        kv: torch.Tensor,
+        dofs_idx_local: list[int] | None = None,
+        envs_idx: torch.Tensor | None = None,
+    ) -> None:
+        del dofs_idx_local
+        assert envs_idx is not None and kv.is_cuda
+        rows = self._selected_rows(envs_idx)
+        selected = self.dofs_kv.index_select(0, rows)
+        selected.copy_(kv)
+        self.dofs_kv.index_copy_(0, rows, selected)
 
     def set_qpos(
         self,
@@ -287,7 +341,15 @@ def test_genesis_partial_cuda_capability_profile() -> None:
     assert capabilities.stepping
     assert capabilities.selected_reset
     assert capabilities.sensor_views
-    assert not capabilities.reset_randomization
+    assert capabilities.reset_randomization
+    assert capabilities.device_reset_randomization
+    assert capabilities.packed_reset
+    from unisim.dr.types import RESET_TERM_BODY_MASS, RESET_TERM_KD, RESET_TERM_KP
+
+    assert capabilities.packed_reset_fields == frozenset(
+        {RESET_TERM_BODY_MASS, RESET_TERM_KP, RESET_TERM_KD}
+    )
+    assert capabilities.mask_selected_reset
     assert capabilities.torch_devices == ("cuda",)
 
     cpu_backend, _, _ = _backend(torch.device("cpu"))
@@ -445,6 +507,66 @@ def test_genesis_tensor_step_and_selected_reset_stay_on_cuda() -> None:
     assert torch.equal(entity.qpos, qpos.as_subclass(_NoHostTensor))
     assert torch.equal(entity.qvel, qvel.as_subclass(_NoHostTensor))
     assert torch.all(backend._tensor_time == 0)
+
+
+def test_genesis_packed_mask_reset_preserves_false_rows_and_model_fields() -> None:
+    from unisim.dr.types import (
+        RESET_TERM_BODY_IPOS,
+        RESET_TERM_BODY_MASS,
+        RESET_TERM_KD,
+        RESET_TERM_KP,
+    )
+
+    backend, entity, _ = _cuda_backend()
+    backend.backend_type = "genesis"
+    backend.get_reset_term_default = lambda term: {
+        RESET_TERM_BODY_MASS: np.ones((2, 3), dtype=np.float32),
+        RESET_TERM_KP: np.ones((2, 1), dtype=np.float32),
+        RESET_TERM_KD: np.full((2, 1), 2.0, dtype=np.float32),
+    }[term]
+    transaction = backend.begin_packed_reset()
+    default_qpos = torch.full((4,), 3.0, dtype=torch.float32, device=backend._device)
+    default_qvel = torch.zeros((3,), dtype=torch.float32, device=backend._device)
+    transaction.set_state_default(default_qpos, default_qvel)
+    mask = torch.asarray((False, True), dtype=torch.bool, device=backend._device)
+    transaction.begin_state_mask(mask)
+    staged_qpos, staged_qvel = transaction.state_views()
+    staged_qpos[1, 0] = 11.0
+    transaction.write_model_field_mask(
+        RESET_TERM_BODY_MASS,
+        mask,
+        torch.full((2, 3), 2.0, device=backend._device),
+    )
+    transaction.write_model_field_mask(
+        RESET_TERM_KP,
+        mask,
+        torch.full((2, 1), 3.0, device=backend._device),
+    )
+    transaction.write_model_field_mask(
+        RESET_TERM_KD,
+        mask,
+        torch.full((2, 1), 4.0, device=backend._device),
+    )
+    result = transaction.commit_mask(mask)
+
+    assert result["timing"]["packed_reset_total_ms"] >= 0.0
+    assert entity.reset_masks[-1].tolist() == [False, True]
+    assert entity.qpos[0].tolist() != staged_qpos[0].tolist()
+    assert entity.qpos[1, 0].item() == 11.0
+    assert entity.qvel[1].tolist() == [0.0, 0.0, 0.0]
+    assert entity.links_inertial_mass[0].tolist() == [1.0, 1.0, 1.0]
+    assert entity.links_inertial_mass[1].tolist() == [2.0, 2.0, 2.0]
+    assert entity.dofs_kp[0].item() == 1.0
+    assert entity.dofs_kp[1].item() == 3.0
+    assert entity.dofs_kv[0].item() == 2.0
+    assert entity.dofs_kv[1].item() == 4.0
+
+    with pytest.raises(NotImplementedError, match="does not support packed reset field"):
+        transaction.write_model_field(
+            RESET_TERM_BODY_IPOS,
+            torch.asarray((1,), device=backend._device),
+            torch.ones((1, 3), device=backend._device),
+        )
 
 
 def test_genesis_selected_reset_avoids_scalar_index_uploads(
@@ -741,3 +863,29 @@ def test_real_genesis_cuda_public_state_and_partial_lifecycle(tmp_path: Path) ->
     )
     refreshed = backend.get_state_views()
     assert torch.equal(refreshed["qvel"][1], qvel[1])
+
+    mass_default = torch.asarray(
+        backend.get_reset_term_default("body_mass"), device=backend._device
+    ).reshape(1, -1)
+    kp_default = torch.asarray(
+        backend.get_reset_term_default("kp"), device=backend._device
+    ).reshape(1, -1)
+    kd_default = torch.asarray(
+        backend.get_reset_term_default("kd"), device=backend._device
+    ).reshape(1, -1)
+    backend.set_state_tensor(
+        torch.asarray((1,), dtype=torch.int64, device=backend._device),
+        qpos[1:2].contiguous(),
+        qvel[1:2].contiguous(),
+        TensorResetRandomizationPayload(
+            body_mass=(mass_default * 1.1).contiguous(),
+            kp=(kp_default * 1.2).contiguous(),
+            kd=(kd_default * 1.3).contiguous(),
+        ),
+    )
+    native_mass = entity.get_links_inertial_mass().detach()
+    native_kp = entity.get_dofs_kp().detach()
+    native_kd = entity.get_dofs_kv().detach()
+    torch.testing.assert_close(native_mass[1], mass_default[0] * 1.1)
+    torch.testing.assert_close(native_kp[1, backend._actuated_dofs], kp_default[0] * 1.2)
+    torch.testing.assert_close(native_kd[1, backend._actuated_dofs], kd_default[0] * 1.3)

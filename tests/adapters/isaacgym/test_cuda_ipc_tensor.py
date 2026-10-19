@@ -48,15 +48,19 @@ def test_cuda_ipc_arena_layout_is_fixed_and_fails_closed() -> None:
     assert layout.reset_indices_offset == 0
     assert layout.reset_qpos_offset == 256
     assert layout.reset_qvel_offset == 512
-    assert layout.qpos_offset == 768
-    assert layout.qvel_offset == 1024
-    assert layout.ctrl_offset == 1280
-    assert layout.body_state_offset == 1536
-    assert layout.sensor_state_offset == 1536
-    assert layout.size_bytes == 1792
+    assert layout.reset_kp_offset == 768
+    assert layout.reset_kd_offset == 1024
+    assert layout.qpos_offset == 1280
+    assert layout.qvel_offset == 1536
+    assert layout.ctrl_offset == 1792
+    assert layout.body_state_offset == 2048
+    assert layout.sensor_state_offset == 2048
+    assert layout.size_bytes == 2304
     assert layout.reset_indices_shape == (2,)
     assert layout.reset_qpos_shape == (2, 9)
     assert layout.reset_qvel_shape == (2, 8)
+    assert layout.reset_kp_shape == (2, 3)
+    assert layout.reset_kd_shape == (2, 3)
     assert layout.body_state_shape == (2, 0, 13)
     assert layout.sensor_state_shape == (2, 2, 3)
     assert IsaacGymCudaIpcArenaLayout.from_wire(layout.wire()) == layout
@@ -83,7 +87,10 @@ def test_gpu_backend_declares_external_cuda_ipc_capability_matrix() -> None:
     assert capabilities.selected_reset
     assert capabilities.selected_reset_publication is SelectedResetPublication.AUTHORITATIVE_VIEWS
     assert capabilities.sensor_views
-    assert not capabilities.reset_randomization
+    assert capabilities.reset_randomization
+    assert capabilities.device_reset_randomization
+    assert capabilities.packed_reset
+    assert capabilities.mask_selected_reset
     assert not capabilities.fixed_variants
     assert not capabilities.host_pre_step_control
 
@@ -99,18 +106,22 @@ def test_partial_lifecycle_fails_closed() -> None:
     backend = _fake_gpu_backend()
     with pytest.raises(KeyError, match="unknown IsaacGym CUDA IPC tensor sensor"):
         backend.get_sensor_view("base_gyro")
-    with pytest.raises(NotImplementedError, match="reset randomization"):
+    with pytest.raises(TypeError, match="reset randomization"):
         backend.set_state_tensor(None, None, None, randomization=object())
 
     result = {"timing": {}}
     backend._cuda_ipc_plan = SimpleNamespace(
-        set_state_tensor=lambda rows, qpos, qvel: dict(result, rows=rows, qpos=qpos, qvel=qvel)
+        device="cuda:0",
+        set_state_tensor=lambda rows, qpos, qvel, randomization=None: dict(
+            result, rows=rows, qpos=qpos, qvel=qvel, randomization=randomization
+        ),
     )
     assert backend.set_state_tensor(1, 2, 3) == {
         "timing": {},
         "rows": 1,
         "qpos": 2,
         "qvel": 3,
+        "randomization": None,
     }
 
     plan = SimpleNamespace(get_state_views=lambda: {"qpos": object(), "qvel": object()})

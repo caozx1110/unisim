@@ -3120,7 +3120,23 @@ class MotrixBackend(SimBackend):
 
     def _host_reset(self, env_ids: np.ndarray | None = None) -> None:
         if not self._portable_mode:
-            super()._host_reset(env_ids)
+            rows = (
+                np.arange(self._num_envs, dtype=np.intp)
+                if env_ids is None
+                else np.asarray(env_ids, dtype=np.intp)
+            )
+            if rows.size:
+                nq = int(np.asarray(self.get_default_qpos()).size)
+                nv = int(np.asarray(self.get_init_qvel()).size)
+                qpos = np.broadcast_to(
+                    np.asarray(self.get_default_qpos(), dtype=np.float32),
+                    (rows.size, nq),
+                )
+                qvel = np.broadcast_to(
+                    np.asarray(self.get_init_qvel(), dtype=np.float32),
+                    (rows.size, nv),
+                )
+                self._host_set_state(rows, qpos.copy(), qvel.copy())
             return
         self._require_portable_healthy("reset")
         rows = (

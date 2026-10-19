@@ -55,8 +55,8 @@ def assert_packed_reset_conformance(backend: SimBackend) -> None:
 
     transaction = backend.begin_packed_reset(device=device)
     state = backend.get_state_views(("qpos", "qvel"), device=device)
-    qpos = torch.as_tensor(np.asarray(state["qpos"][0], dtype=np.float32), device=device)
-    qvel = torch.as_tensor(np.asarray(state["qvel"][0], dtype=np.float32), device=device)
+    qpos = state["qpos"][0].detach().to(device=device, dtype=torch.float32).clone()
+    qvel = state["qvel"][0].detach().to(device=device, dtype=torch.float32).clone()
     transaction.set_state_default(qpos, qvel)
     rows = torch.tensor([0], dtype=torch.int64, device=device)
     transaction.begin_state(rows)
@@ -101,13 +101,7 @@ def assert_packed_reset_conformance(backend: SimBackend) -> None:
     if backend.num_envs > 1:
         false_rows = torch.ones(backend.num_envs, dtype=torch.bool, device=device)
         false_rows[rows] = False
-        torch.testing.assert_close(
-            views["qpos"][false_rows],
-            torch.as_tensor(
-                np.asarray(state["qpos"])[false_rows.detach().cpu().numpy()],
-                device=device,
-            ),
-        )
+        torch.testing.assert_close(views["qpos"][false_rows], state["qpos"][false_rows])
 
 
 def assert_physics_state_playback_conformance(backend: SimBackend) -> None:

@@ -315,6 +315,11 @@ class TensorLifecycleCapabilities:
                     and self.data_plane is TensorDataPlane.DIRECT
                 )
                 or (
+                    self.execution is TensorExecution.DEVICE_RESIDENT
+                    and self.process_topology is TensorProcessTopology.EXTERNAL_WORKER
+                    and self.data_plane is TensorDataPlane.CUDA_IPC
+                )
+                or (
                     self.execution is TensorExecution.HOST_BRIDGE
                     and self.process_topology is TensorProcessTopology.IN_PROCESS
                     and self.data_plane is TensorDataPlane.HOST_BRIDGE
@@ -329,6 +334,12 @@ class TensorLifecycleCapabilities:
             raise ValueError("mask-selected full refresh requires mask-selected reset")
         if self.packed_reset_mocap and not self.packed_reset:
             raise ValueError("packed reset mocap requires packed reset")
+        if self.packed_reset and not self.device_reset_randomization:
+            raise ValueError("packed reset requires device reset randomization")
+        if self.packed_reset and not self.packed_reset_fields:
+            raise ValueError("packed reset requires at least one model field")
+        if self.packed_reset_fields and not self.packed_reset:
+            raise ValueError("packed reset fields require packed reset")
         if self.selected_reset and not {"qpos", "qvel"}.issubset(self.state_fields):
             raise ValueError("tensor selected reset requires qpos and qvel state fields")
         if self.reset_randomization and not self.selected_reset:
@@ -339,6 +350,11 @@ class TensorLifecycleCapabilities:
                 (
                     self.execution is TensorExecution.DEVICE_RESIDENT
                     and self.data_plane is TensorDataPlane.DIRECT
+                )
+                or (
+                    self.execution is TensorExecution.DEVICE_RESIDENT
+                    and self.process_topology is TensorProcessTopology.EXTERNAL_WORKER
+                    and self.data_plane is TensorDataPlane.CUDA_IPC
                 )
                 or (
                     self.execution is TensorExecution.HOST_BRIDGE

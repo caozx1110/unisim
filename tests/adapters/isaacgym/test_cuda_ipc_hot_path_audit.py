@@ -99,6 +99,14 @@ def test_isaacgym_hot_paths_have_no_hidden_host_detours() -> None:
     assert _attribute_count(methods["worker.reset"], "sort") == 2
 
 
+def test_isaacgym_reset_property_bridge_is_explicit_and_reset_only() -> None:
+    bridge = _method("IsaacGymCudaIpcWorkerRuntime", "_apply_cuda_reset_properties")
+    assert "cpu" in _attribute_names(bridge)
+
+    reset = _method("IsaacGymCudaIpcWorkerRuntime", "set_state")
+    assert "cpu" not in _attribute_names(reset)
+
+
 def test_isaacgym_tensor_commands_are_metadata_only_and_bounded() -> None:
     step = _method("IsaacGymCudaIpcPlan", "step")
     reset = _method("IsaacGymCudaIpcPlan", "set_state_tensor")
@@ -110,4 +118,4 @@ def test_isaacgym_tensor_commands_are_metadata_only_and_bounded() -> None:
     step_payload = _request_payload_keys(step)
     reset_payload = _request_payload_keys(reset)
     assert step_payload == {"nsteps"}
-    assert reset_payload == {"count", "sequence"}
+    assert reset_payload == {"count", "sequence", "has_randomization", "randomization_terms"}

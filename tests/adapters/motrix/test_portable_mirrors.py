@@ -169,8 +169,8 @@ def test_mirror_pose_writes_are_row_local_and_collision_suppression_is_physical(
             overlap_backend.reset_entities(
                 SceneResetRequest((1, 2), (EntityStatePatch("mirror", root_pose=overlap_target),))
             )
-            far_backend.step(controls)
-            overlap_backend.step(controls)
+            far_backend._host_step(controls)
+            overlap_backend._host_step(controls)
 
             overlap_object = overlap_backend.get_entity_state("object")
             overlap_object_history.append(overlap_object)
@@ -182,10 +182,10 @@ def test_mirror_pose_writes_are_row_local_and_collision_suppression_is_physical(
                 }
             )
             found_history.append(
-                np.asarray(overlap_backend.get_sensor_data("object_mirror_found")).copy()
+                np.asarray(overlap_backend._host_read_sensor("object_mirror_found")).copy()
             )
             force_history.append(
-                np.asarray(overlap_backend.get_sensor_data("object_mirror_force")).copy()
+                np.asarray(overlap_backend._host_read_sensor("object_mirror_force")).copy()
             )
 
             mirror_state = overlap_backend.get_entity_state("mirror")

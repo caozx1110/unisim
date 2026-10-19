@@ -493,9 +493,7 @@ def test_real_portable_contact_is_attributed_only_to_its_world(tmp_path: Path):
             )
         )
         backend._host_step(np.zeros((2, 1), dtype=np.float32))
-        np.testing.assert_array_equal(
-            backend._host_read_sensor("object_table"), [[1.0], [0.0]]
-        )
+        np.testing.assert_array_equal(backend._host_read_sensor("object_table"), [[1.0], [0.0]])
 
         # Every native solver contact belongs to exactly one env world.  This
         # complements the public flag check above and catches a malformed
@@ -529,9 +527,7 @@ def test_real_portable_contact_is_attributed_only_to_its_world(tmp_path: Path):
             )
         )
         backend._host_step(np.zeros((2, 1), dtype=np.float32))
-        np.testing.assert_array_equal(
-            backend._host_read_sensor("object_table"), [[0.0], [0.0]]
-        )
+        np.testing.assert_array_equal(backend._host_read_sensor("object_table"), [[0.0], [0.0]])
     finally:
         backend.close()
 
@@ -722,8 +718,8 @@ def test_selected_world_matches_independent_single_world_solver(tmp_path: Path):
             )
         )
         control = np.full((5, 1), 0.3, dtype=np.float32)
-        batched.step(control, nsteps=5)
-        single.step(control[[0]], nsteps=5)
+        batched._host_step(control, nsteps=5)
+        single._host_step(control[[0]], nsteps=5)
         for entity in ("robot", "object", "table"):
             batched_state = batched.get_entity_state(entity)
             single_state = single.get_entity_state(entity)

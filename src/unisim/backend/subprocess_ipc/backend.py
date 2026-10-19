@@ -1634,6 +1634,8 @@ class MjcfSubprocessBackend(SimBackend):
             "dof_effort": fields["effort"],
             "dof_armature": fields["armature"],
             "dof_friction": fields["friction"],
+            "dof_lower": fields["lower"],
+            "dof_upper": fields["upper"],
         }
 
     def _position_actuation_payload_for(
@@ -1664,6 +1666,8 @@ class MjcfSubprocessBackend(SimBackend):
             "effort": effort,
             "armature": [float(value) for value in metadata.joint_armature],
             "friction": [float(value) for value in metadata.joint_frictionloss],
+            "lower": [float(value[0]) for value in metadata.joint_ranges],
+            "upper": [float(value[1]) for value in metadata.joint_ranges],
         }
 
     def _validate_xml_metadata_against_worker(self) -> None:
