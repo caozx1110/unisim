@@ -1,3 +1,5 @@
+# Changelog
+
 ## Unreleased
 
 - Fixed the IsaacGym worker bootstrap regression introduced in 1.9.0 (#405). The Python 3.8 worker again inlines its file-path protocol/profiler loading and does not import the host-only `unisim` package; `build_worker_env()` still removes host `PYTHONPATH`/`PYTHONHOME`. The stdlib-only loader remains available for external worker owners, but isolated IsaacGym runtimes are no longer required to install or synthesize the host distribution.
@@ -14,8 +16,6 @@
 
 - **Breaking (DR contract):** made the public domain-randomization payloads torch-first/torch-only (UniLab #2410). The NumPy `ResetRandomizationPayload` and `require_op_host_payload` are removed; `TensorResetRandomizationPayload` is the sole public reset payload and gains the `base_mass_delta`/`base_com_offset` delta fields (16 reset terms total), and interval op payloads are torch tensors or `TensorIntervalPayload`. Payload fields stay `Any`-typed with lazy torch validation, so the base package keeps its NumPy-only dependency footprint. The payload tensors' device selects the execution plane (`torch.cpu` = host, CUDA = device), and `DomainRandomizationCapabilities` splits per plane: `supported_reset_terms`/`supported_interval_terms` declare the host plane while the new `supported_device_reset_terms`/`supported_device_interval_terms` declare the device plane; empty sets fail closed and per-term plane mismatches fail closed naming the term. The packed reset composer merges baseline plus delta terms in torch at commit (`PACKED_RESET_HOST_ONLY_FIELDS` is gone), backend-internal global-RNG push sampling is removed in favor of producer-sampled push payloads everywhere, NumPy survives only behind the adapter-private `unisim.dr._host` conversion helpers, cold `get_reset_term_default()` metadata, and serialization/playback leaves, and backend conformance now requires at least one declared reset term to demonstrably round-trip a model-field write per adapter. Bilingual ADR documentation is added under `docs/{en,zh}/adr-dr-torch-first-payloads.md`.
 - Moved duplicated Isaac subprocess support code into the shared IPC layer. `subprocess_ipc.protocol` now owns the worker-side throttled `InitProgress` frame emitter and the repeated file-path module loader, while `subprocess_ipc.protocol_loader` centralizes protocol/profiler bootstrap and `subprocess_ipc.isaac_common` centralizes IsaacGym/IsaacSim body-wrench staging, mapped variant default tables, and CUDA frame-sensor projection. No public adapter contract, worker wire format, or optional-runtime import boundary changed.
-
-# Changelog
 
 ## 1.8.2 - 2026-10-19
 
