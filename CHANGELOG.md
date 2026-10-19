@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.1 - 2026-10-19
+
+- Fixed MotrixSim FrameQuat sensor semantics. Motrix native frame sensors return quaternion components in `xyzw` order, while UniSim sensor consumers follow MuJoCo's public `wxyz` convention. Source body/site FrameQuat sensors and generated body-tracking quaternion sensors are now inventoried as FrameQuat at materialization, and individual, batched, selected-row, and packed host-bridge reads reorder only those four-column sensors. This removes a large artificial G1 foot roll/pitch penalty and restores SAC `g1_walk_flat` training quality on Motrix without changing the underlying physics (UniLab #2387).
+
 ## 1.8.0 - 2026-10-19
 
 - Extended the packed reset transaction to the remaining production tensor backends (UniLab #2387). Genesis commits selected-row `body_mass`, `kp`, and `kd`; Newton commits `kp` and `kd` through MuJoCo-family actuator arrays; and IsaacGym/IsaacSim commit selected-row `kp`/`kd` through CUDA IPC arenas followed by one explicitly named reset-only worker property bridge. All four declare fixed-width mask reset and authoritative post-reset publication. The Isaac bridge is the only host detour, is named `_apply_cuda_reset_properties`, and is never reachable from step, state, control, or sensor hot paths.
