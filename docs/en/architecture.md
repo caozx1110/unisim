@@ -16,7 +16,7 @@ MuJoCo and MJWarp tensor state views and tensor resets use each model's complete
 
 UniLab owns task/env/manager lifecycle, Hydra owner YAML, robot assets, training, checkpoints, and sim2sim policy I/O. UniLab translates task-owned scene and randomization inputs into the UniSim contract.
 
-Engine adapters are constructed with a package-neutral `SceneCfg` and an optional vectorized environment count. Model metadata is parsed only during construction; state and control arrays cross the public contract, and engine objects never escape an adapter. IsaacGym and IsaacSim share the subprocess IPC framing and keep their Python 3.8 and Kit workers outside the core wheel.
+Engine adapters are constructed with a package-neutral `SceneCfg` and an optional vectorized environment count. Model metadata is parsed only during construction; state and control arrays cross the public contract, and engine objects never escape an adapter. IsaacGym and IsaacSim share the subprocess IPC framing, worker bootstrap helpers, mapped body-wrench staging, mapped variant defaults, and CUDA frame-sensor projection, while keeping their Python 3.8 and Kit workers outside the core wheel.
 
 `unisim.ADAPTER_SPECS` is the single migration manifest for every declared UniLab backend identity. `available` means that a public adapter and diagnostics exist; it does not claim that a proprietary SDK or GPU runtime is installed on every host. Runtime support is established by the adapter's optional-extra and worker smoke tests.
 

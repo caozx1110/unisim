@@ -60,32 +60,18 @@ from unisim.backend.isaacsim.tensor_ipc import (  # noqa: E402
     ISAACSIM_CUDA_RESET,
     ISAACSIM_CUDA_STEP,
 )
+from unisim.backend.subprocess_ipc.protocol_loader import (  # noqa: E402
+    protocol_module_from_path,
+    worker_profiler_from_path,
+)
 
 
 def _load_protocol(path: str) -> Any:
-    spec = importlib.util.spec_from_file_location("unisim_subprocess_protocol", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load protocol module from {path!r}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return protocol_module_from_path(path)
 
 
 def _load_worker_profiler(protocol_path: str) -> Any:
-    profile_environment = (
-        "UNISIM_ISAAC_WORKER_PROFILE_TRACE",
-        "UNISIM_ISAAC_WORKER_PROFILE_START_COMMAND",
-        "UNISIM_ISAAC_WORKER_PROFILE_STOP_COMMAND",
-    )
-    if not any(name in os.environ for name in profile_environment):
-        return None
-    path = os.path.join(os.path.dirname(protocol_path), "worker_profile.py")
-    spec = importlib.util.spec_from_file_location("unisim_worker_profile", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load worker profiler module")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.profiler_from_environment()
+    return worker_profiler_from_path(protocol_path)
 
 
 def _tensor_numpy(value: Any) -> np.ndarray:

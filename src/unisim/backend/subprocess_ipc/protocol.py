@@ -13,6 +13,7 @@ import struct
 import sys
 import traceback
 from pathlib import Path
+from time import monotonic
 from typing import Any, BinaryIO, Dict, Tuple
 
 import numpy as np
@@ -98,6 +99,40 @@ _SLOT_DTYPES: Dict[str, str] = {
     "reset_qvel": "float32",
 }
 
+
+class InitProgress:
+    """Time-throttled PROGRESS frames on the worker protocol stream.
+
+    Frames interleave with the pending INIT reply; the host consumes them and
+    re-arms its receive deadline.  Emission never masks a real init failure.
+    """
+
+    def __init__(self, context: Any, min_interval: float = 0.25, enabled: bool = True) -> None:
+        self._context = context
+        self._min_interval = min_interval
+        self._enabled = enabled
+        self._last = 0.0
+
+    def report(self, label: str, done: int, total: int, force: bool = False) -> None:
+        if not self._enabled:
+            return
+        stream = getattr(self._context, "progress_out", None)
+        if stream is None:
+            return
+        now = monotonic()
+        if not force and now - self._last < self._min_interval:
+            return
+        self._last = now
+        try:
+            self._context.protocol.send_message(
+                stream,
+                self._context.protocol.CMD_PROGRESS,
+                {"label": label, "done": int(done), "total": int(total)},
+            )
+        except Exception:
+            pass
+
+
 SLOT_NAMES = tuple(_SLOT_DTYPES)
 
 # Shared scene schema is separate from the M1 configuration-report schema.
@@ -114,65 +149,46 @@ _SCENE_SLOT_DTYPES: Dict[str, str] = {
 }
 
 
-def load_scene_layout(payload: Dict[str, Any]) -> Any:
-    """Use the same strict layout validator in isolated Python 3.8 workers.
+def _load_path_module(name: str, path: Path, error: str) -> Any:
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(error)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    return module
 
-    Loading by path avoids importing the host package or an optional engine.
-    The dataclass module must be registered before execution for Python 3.8.
-    """
+
+def load_scene_layout(payload: Dict[str, Any]) -> Any:
+    """Use the same strict layout validator in isolated Python 3.8 workers."""
     module_name = "unisim_worker_scene_layout"
     module = sys.modules.get(module_name)
     if module is None:
         path = Path(__file__).resolve().parents[2] / "scene_layout.py"
-        spec = importlib.util.spec_from_file_location(module_name, path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError("cannot load shared scene layout validator")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        try:
-            spec.loader.exec_module(module)
-        except BaseException:
-            del sys.modules[module_name]
-            raise
+        module = _load_path_module(module_name, path, "cannot load shared scene layout validator")
     return module.CompiledSceneLayout.from_dict(payload)
 
 
 def load_model_file_projection() -> Any:
     """Load the model-file wire projection without importing the host package."""
     name = "unisim_worker_model_file_projection"
-    if name in sys.modules:
-        return sys.modules[name]
-    path = Path(__file__).resolve().with_name("model_file_projection.py")
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load model-file worker projection")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        del sys.modules[name]
-        raise
-    return module
+    if name not in sys.modules:
+        path = Path(__file__).resolve().with_name("model_file_projection.py")
+        _load_path_module(name, path, "cannot load model-file worker projection")
+    return sys.modules[name]
 
 
 def load_kinematics() -> Any:
     """Load the worker forward-kinematics kernel without a package import."""
     name = "unisim_worker_mjcf_kinematics"
-    if name in sys.modules:
-        return sys.modules[name]
-    path = Path(__file__).resolve().with_name("kinematics.py")
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load worker kinematics kernel")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        del sys.modules[name]
-        raise
-    return module
+    if name not in sys.modules:
+        path = Path(__file__).resolve().with_name("kinematics.py")
+        _load_path_module(name, path, "cannot load worker kinematics kernel")
+    return sys.modules[name]
 
 
 def scene_slot_shapes(
@@ -323,6 +339,7 @@ __all__ = [
     "CMD_SHUTDOWN",
     "CMD_STEP",
     "HEADER_SIZE",
+    "InitProgress",
     "SLOT_NAMES",
     "WorkerDisconnectedError",
     "decode_message",

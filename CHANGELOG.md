@@ -1,3 +1,7 @@
+## Unreleased
+
+- Moved duplicated Isaac subprocess support code into the shared IPC layer. `subprocess_ipc.protocol` now owns the worker-side throttled `InitProgress` frame emitter and the repeated file-path module loader, while `subprocess_ipc.protocol_loader` centralizes protocol/profiler bootstrap and `subprocess_ipc.isaac_common` centralizes IsaacGym/IsaacSim body-wrench staging, mapped variant default tables, and CUDA frame-sensor projection. No public adapter contract, worker wire format, or optional-runtime import boundary changed.
+
 # Changelog
 
 ## 1.8.2 - 2026-10-19
