@@ -13,15 +13,17 @@ def test_new_reset_terms_are_never_silently_advertised_or_filtered() -> None:
     payload = ResetRandomizationPayload(**{name: np.zeros((1, 1)) for name in fields})
     assert payload.requested_terms() == frozenset(fields)
     assert not payload.is_empty()
-    filtered, unsupported = DomainRandomizationCapabilities().filter_reset_payload(payload)
-    assert filtered is None
+    unsupported = DomainRandomizationCapabilities().get_unsupported_reset_terms(
+        payload.requested_terms()
+    )
     assert unsupported == frozenset(fields)
-    caps = DomainRandomizationCapabilities(supported_reset_terms=frozenset(fields))
-    assert caps.filter_reset_payload(payload) == (payload, frozenset())
     partial_caps = DomainRandomizationCapabilities(supported_reset_terms=frozenset({"geom_size"}))
-    filtered, unsupported = partial_caps.filter_reset_payload(payload)
-    assert filtered.requested_terms() == frozenset({"geom_size"})
-    assert unsupported == frozenset(fields[1:])
+    assert partial_caps.supports_reset_term("geom_size")
+    assert partial_caps.get_unsupported_reset_terms(payload.requested_terms()) == frozenset(
+        fields[1:]
+    )
+    supported_caps = DomainRandomizationCapabilities(supported_reset_terms=frozenset(fields))
+    assert not supported_caps.get_unsupported_reset_terms(payload.requested_terms())
 
 
 @pytest.mark.parametrize(
