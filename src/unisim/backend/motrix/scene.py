@@ -384,15 +384,21 @@ def _materialize_motrix_scene_with_sensor_names(
     fragment_files: Sequence[str] = (),
     add_body_sensors: bool = False,
     base_name: str = "base",
-) -> tuple["SceneModel", tuple[str, ...]]:
-    """Build a Motrix model and return its validated cold-path sensor names."""
-    model, sensor_names, _ = _materialize_motrix_scene_with_sensor_inventory(
+) -> tuple["SceneModel", tuple[str, ...]] | tuple["SceneModel", tuple[str, ...], tuple[str, ...]]:
+    """Build a Motrix model and return its validated cold-path sensor inventory.
+
+    The historical private name is retained because SDK-free downstream tests
+    patch this materialization boundary. In addition to the model and sensor
+    names, production callers receive the FrameQuat inventory needed for public
+    ``wxyz`` conversion; a two-tuple remains accepted at the backend boundary
+    for fake models without physical sensors.
+    """
+    return _materialize_motrix_scene_with_sensor_inventory(
         model_file=model_file,
         fragment_files=fragment_files,
         add_body_sensors=add_body_sensors,
         base_name=base_name,
     )
-    return model, sensor_names
 
 
 def materialize_motrix_scene(

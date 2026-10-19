@@ -313,9 +313,10 @@ def _build_motrix_scene_context(
     add_body_sensors: bool,
     base_name: str,
 ) -> _MotrixSceneContext:
+    frame_quat_sensor_names: tuple[str, ...] = ()
     from unisim.backend.motrix.scene import (
         _materialize_motrix_hfield_attached_scene_with_sensor_names,
-        _materialize_motrix_scene_with_sensor_inventory,
+        _materialize_motrix_scene_with_sensor_names,
     )
 
     if scene is None:
@@ -324,14 +325,17 @@ def _build_motrix_scene_context(
         raise ValueError("SceneCfg.model_file must be provided")
 
     if scene.terrain is None:
-        model, sensor_names, frame_quat_sensor_names = (
-            _materialize_motrix_scene_with_sensor_inventory(
-                model_file=scene.model_file,
-                fragment_files=scene.fragment_files,
-                add_body_sensors=add_body_sensors,
-                base_name=base_name,
-            )
+        materialized = _materialize_motrix_scene_with_sensor_names(
+            model_file=scene.model_file,
+            fragment_files=scene.fragment_files,
+            add_body_sensors=add_body_sensors,
+            base_name=base_name,
         )
+        if len(materialized) == 2:
+            model, sensor_names = materialized
+            frame_quat_sensor_names = ()
+        else:
+            model, sensor_names, frame_quat_sensor_names = materialized
         return _MotrixSceneContext(
             model=model,
             sensor_names=sensor_names,
