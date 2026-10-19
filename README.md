@@ -40,7 +40,7 @@ Each adapter fails closed with an actionable, backend-specific diagnostic when i
 
 A deterministic `FakeBackend` and the `assert_backend_conformance` helper let consumers test task code without an engine installed. `BenchmarkCase` and `BenchmarkResult` are reserved schema extension points for a future benchmark package; this repository does not implement a workload runner.
 
-External worker roots can be configured with `UNISIM_ISAACGYM_HOME`, `UNISIM_ISAACGYM_PYTHON`, `UNISIM_ISAACSIM_HOME`, and `UNISIM_ISAACSIM_PYTHON`. The former `UNILAB_*` spellings remain available as a migration fallback.
+External worker roots can be configured with `UNISIM_ISAACGYM_HOME`, `UNISIM_ISAACGYM_PYTHON`, `UNISIM_ISAACSIM_HOME`, and `UNISIM_ISAACSIM_PYTHON`. Only the `UNISIM_*` spellings are read; the retired `UNILAB_*` names have no effect.
 
 ## Documentation
 
