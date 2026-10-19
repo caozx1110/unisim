@@ -672,7 +672,7 @@ def test_portable_tracking_sensors_read_and_selected_reset(tmp_path: Path):
         )
         np.testing.assert_allclose(
             robot_quat,
-            np.broadcast_to((0.0, 0.0, 0.0, 1.0), robot_quat.shape),
+            np.broadcast_to((1.0, 0.0, 0.0, 0.0), robot_quat.shape),
             atol=1e-6,
         )
         np.testing.assert_array_equal(
@@ -731,7 +731,7 @@ def test_portable_source_and_generated_sensors_read_and_selected_reset(tmp_path:
         )
         np.testing.assert_allclose(
             robot_source_quat,
-            np.broadcast_to((0.0, 0.0, 0.0, 1.0), (3, 4)),
+            np.broadcast_to((1.0, 0.0, 0.0, 0.0), (3, 4)),
             atol=1e-6,
         )
         np.testing.assert_allclose(
@@ -801,7 +801,7 @@ def test_portable_site_sensors_read_and_selected_reset(tmp_path: Path):
         assert positions.shape == (3, 3)
         assert quaternions.shape == (3, 4)
         np.testing.assert_allclose(positions, np.tile((1.2, 0.0, 2.0), (3, 1)), atol=1e-6)
-        np.testing.assert_allclose(quaternions, np.tile((0.0, 0.0, 0.0, 1.0), (3, 1)), atol=1e-6)
+        np.testing.assert_allclose(quaternions, np.tile((1.0, 0.0, 0.0, 0.0), (3, 1)), atol=1e-6)
 
         angle = 0.6
         backend.reset_entities(
@@ -822,7 +822,7 @@ def test_portable_site_sensors_read_and_selected_reset(tmp_path: Path):
             (1.15 + 0.05 * np.cos(angle), 0.0, 2.0 - 0.05 * np.sin(angle))
         )
         expected_quaternion = np.asarray(
-            (0.0, np.sin(angle / 2), 0.0, np.cos(angle / 2)), dtype=np.float32
+            (np.cos(angle / 2), 0.0, np.sin(angle / 2), 0.0), dtype=np.float32
         )
         np.testing.assert_allclose(positions_after[1], expected_position, atol=2e-6)
         np.testing.assert_allclose(quaternions_after[1], expected_quaternion, atol=2e-6)
@@ -904,7 +904,7 @@ def test_cross_entity_frame_sensor_fragment_reads_and_selected_reset(tmp_path: P
         )
         np.testing.assert_allclose(
             cross_quat,
-            np.tile((0.0, 0.0, 0.0, 1.0), (3, 1)),
+            np.tile((1.0, 0.0, 0.0, 0.0), (3, 1)),
             atol=1e-6,
         )
         batch = backend._host_read_sensor_batch(("cross_quat", "cross_pos"))
@@ -1002,7 +1002,7 @@ def test_cross_entity_site_sensor_fragment_reads_and_selected_reset(tmp_path: Pa
         )
         np.testing.assert_allclose(
             quaternions,
-            np.tile((0.0, 0.0, 0.0, 1.0), (3, 1)),
+            np.tile((1.0, 0.0, 0.0, 0.0), (3, 1)),
             atol=1e-6,
         )
 
@@ -1025,7 +1025,7 @@ def test_cross_entity_site_sensor_fragment_reads_and_selected_reset(tmp_path: Pa
             (1.15 + 0.05 * np.cos(angle), 0.0, 2.0 - 0.05 * np.sin(angle))
         )
         expected_quaternion = np.asarray(
-            (0.0, np.sin(angle / 2), 0.0, np.cos(angle / 2)), dtype=np.float32
+            (np.cos(angle / 2), 0.0, np.sin(angle / 2), 0.0), dtype=np.float32
         )
         np.testing.assert_allclose(positions_after[1], expected_position, atol=2e-6)
         np.testing.assert_allclose(quaternions_after[1], expected_quaternion, atol=2e-6)
@@ -1186,7 +1186,7 @@ def test_fixed_variant_cross_entity_frame_sensors_gather_by_assignment(tmp_path:
         np.testing.assert_allclose(positions[:, 0], [1.2, 1.2, 1.15, 1.2, 1.15], atol=1e-6)
         np.testing.assert_allclose(
             quaternions,
-            np.tile((0.0, 0.0, 0.0, 1.0), (5, 1)),
+            np.tile((1.0, 0.0, 0.0, 0.0), (5, 1)),
             atol=1e-6,
         )
         rows = np.asarray((4, 0, 2), dtype=np.intp)
@@ -1220,7 +1220,7 @@ def test_fixed_variant_cross_entity_site_sensors_gather_by_assignment(tmp_path: 
         np.testing.assert_allclose(positions[:, 0], [1.25, 1.25, 1.2, 1.25, 1.2], atol=1e-6)
         np.testing.assert_allclose(
             quaternions,
-            np.tile((0.0, 0.0, 0.0, 1.0), (5, 1)),
+            np.tile((1.0, 0.0, 0.0, 0.0), (5, 1)),
             atol=1e-6,
         )
         rows = np.asarray((4, 0, 2), dtype=np.intp)
@@ -1353,9 +1353,7 @@ def test_fixed_variant_contact_sensors_preserve_identity_and_rows(tmp_path: Path
             )
         )
         backend._host_step(np.zeros((5, 1), dtype=np.float32), nsteps=2)
-        np.testing.assert_allclose(
-            backend._host_read_sensor("object_table_found"), 1.0, atol=0
-        )
+        np.testing.assert_allclose(backend._host_read_sensor("object_table_found"), 1.0, atol=0)
         rows = np.asarray((4, 0, 2), dtype=np.intp)
         np.testing.assert_array_equal(
             backend._host_read_sensor_rows("object_table_force", rows),

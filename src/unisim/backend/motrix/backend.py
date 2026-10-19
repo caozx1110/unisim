@@ -213,6 +213,7 @@ class _MotrixSceneContext:
     model: Any
     sensor_names: tuple[str, ...]
     model_file: str = ""
+    frame_quat_sensor_names: tuple[str, ...] = ()
     terrain_origins: np.ndarray | None = None
     terrain_surface_sampler: object | None = None
     cleanup_handle: object | None = None
@@ -314,7 +315,7 @@ def _build_motrix_scene_context(
 ) -> _MotrixSceneContext:
     from unisim.backend.motrix.scene import (
         _materialize_motrix_hfield_attached_scene_with_sensor_names,
-        _materialize_motrix_scene_with_sensor_names,
+        _materialize_motrix_scene_with_sensor_inventory,
     )
 
     if scene is None:
@@ -323,20 +324,25 @@ def _build_motrix_scene_context(
         raise ValueError("SceneCfg.model_file must be provided")
 
     if scene.terrain is None:
-        model, sensor_names = _materialize_motrix_scene_with_sensor_names(
-            model_file=scene.model_file,
-            fragment_files=scene.fragment_files,
-            add_body_sensors=add_body_sensors,
-            base_name=base_name,
+        model, sensor_names, frame_quat_sensor_names = (
+            _materialize_motrix_scene_with_sensor_inventory(
+                model_file=scene.model_file,
+                fragment_files=scene.fragment_files,
+                add_body_sensors=add_body_sensors,
+                base_name=base_name,
+            )
         )
         return _MotrixSceneContext(
-            model=model, sensor_names=sensor_names, model_file=str(scene.model_file)
+            model=model,
+            sensor_names=sensor_names,
+            model_file=str(scene.model_file),
+            frame_quat_sensor_names=frame_quat_sensor_names,
         )
 
     if scene.terrain.generator is None:
         raise ValueError("SceneCfg.terrain.generator must be configured for terrain scenes")
 
-    model, terrain_origins, terrain_surface_sampler, sensor_names = (
+    model, terrain_origins, terrain_surface_sampler, sensor_names, frame_quat_sensor_names = (
         _materialize_motrix_hfield_attached_scene_with_sensor_names(
             model_file=scene.model_file,
             terrain_cfg=scene.terrain.generator,
@@ -352,6 +358,7 @@ def _build_motrix_scene_context(
         model=model,
         sensor_names=sensor_names,
         model_file=str(scene.model_file),
+        frame_quat_sensor_names=frame_quat_sensor_names,
         terrain_origins=terrain_origins,
         terrain_surface_sampler=terrain_surface_sampler,
     )
@@ -363,6 +370,7 @@ class MotrixBackend(SimBackend):
     _composed_scene: Any
     _data: Any
     _entity_layout: CompiledSceneLayout | None
+    _frame_quat_sensor_names: frozenset[str]
     _model: Any
     _portable_default_body_ipos: np.ndarray
     _portable_default_body_mass: np.ndarray
@@ -384,6 +392,7 @@ class MotrixBackend(SimBackend):
     _portable_variant_model_files: tuple[str, ...]
     _portable_uniform_mesh_variants: bool
     _scene_model_file: str
+    _sensor_widths: dict[str, int]
     _sim_dt: float
     _supports_link_mass_override: bool
     _supports_link_com_override: bool
@@ -597,6 +606,8 @@ class MotrixBackend(SimBackend):
         self._cpu_ids = _configure_motrix_worker_affinity(cpu_ids)
 
         self._portable_mode = portable_mode
+        self._frame_quat_sensor_names = frozenset()
+        self._sensor_widths = {}
         self._composed_scene: Any = None
         self._entity_layout: CompiledSceneLayout | None = None
         self._portable_runtimes: tuple[_MotrixPortableRuntime, ...] = ()
@@ -614,6 +625,7 @@ class MotrixBackend(SimBackend):
         self._closed = False
         self._host_bridge_plans: weakref.WeakSet[Any] = weakref.WeakSet()
         self._direct_host_bridge_plan: Any | None = None
+        frame_quat_sensor_names: frozenset[str] = frozenset()
         self._num_envs = int(num_envs)
         self._np_dtype = np_dtype
         self._sim_dt = float(sim_dt)
@@ -697,6 +709,13 @@ class MotrixBackend(SimBackend):
                         )
                     )
                     sensor_names = sensor_inventory.names
+                    import motrixsim.msd as msd
+
+                    frame_quat_sensor_names = frozenset(
+                        identity.name
+                        for identity in sensor_inventory.frame_identities
+                        if identity.sensor_type == msd.FrameSensorType.FrameQuat
+                    )
                     if add_body_sensors:
                         generated_sensors = {
                             f"{prefix}_{entity.name}/{body_name}"
@@ -741,9 +760,12 @@ class MotrixBackend(SimBackend):
                         for name, contract in source_sensor_contracts.items()
                         if contract.sensor_kind == "contact"
                     }
-                    if set(native_frame_identities) != set(expected_frame_contracts) or set(
-                        native_contact_identities
-                    ) != set(expected_contact_contracts):
+                    allowed_frame_identities = set(expected_frame_contracts) | generated_sensors
+                    if (
+                        set(expected_frame_contracts) - set(native_frame_identities)
+                        or set(native_frame_identities) - allowed_frame_identities
+                        or set(native_contact_identities) != set(expected_contact_contracts)
+                    ):
                         raise RuntimeError(
                             "Motrix source sensor identities differ from the compiled "
                             "public sensor layout"
@@ -871,6 +893,7 @@ class MotrixBackend(SimBackend):
                     if len(runtimes) > 1:
                         self._audit_portable_variant_identity(runtimes[0], runtimes[-1])
                 self._portable_runtimes = tuple(runtimes)
+                self._frame_quat_sensor_names = frozenset(frame_quat_sensor_names)
                 self._portable_variant_assignment = (
                     None if composed.variant_plan is None else assignment.copy()
                 )
@@ -913,6 +936,8 @@ class MotrixBackend(SimBackend):
         self._model = scene_context.model
         self._scene_model_file = scene_context.model_file
         self._sensor_names = frozenset(scene_context.sensor_names)
+        if not portable_mode:
+            self._frame_quat_sensor_names = frozenset(scene_context.frame_quat_sensor_names)
         self._body_id_to_name = {  # type: ignore[assignment]
             link.index: link.name for link in self._model.links if link.name
         }
@@ -939,6 +964,7 @@ class MotrixBackend(SimBackend):
             self._links_by_id = primary_runtime.binding.links_by_id
             self._geoms_by_id = primary_runtime.binding.geoms_by_id
             base_name = _resolve_portable_native_name(self._model, base_name)
+        self._sensor_widths = self._read_native_sensor_widths()
         self._body: Any = _require_not_none(
             self._model.get_body(base_name), f"Body '{base_name}' not found in Motrix model"
         )
@@ -2023,11 +2049,61 @@ class MotrixBackend(SimBackend):
             raise RuntimeError(f"Motrix sensor {name!r} has no native runtime")
         return values
 
+    def _read_native_sensor_widths(self) -> dict[str, int]:
+        """Cache native sensor widths once for packed quaternion reordering."""
+
+        widths: dict[str, int] = {}
+        for name in sorted(self._sensor_names):
+            native = np.asarray(self._model.get_sensor_value(name, self._data))
+            if native.ndim < 2:
+                raise RuntimeError(
+                    f"Motrix sensor {name!r} returned scalar values with shape {native.shape}"
+                )
+            widths[name] = int(native.shape[-1])
+        return widths
+
+    def _sensor_values_public_quat_order(
+        self, values: np.ndarray, names: Sequence[str]
+    ) -> np.ndarray:
+        """Convert native Motrix FrameQuat rows from ``xyzw`` to public ``wxyz``.
+
+        MotrixSim's general link APIs expose ``quat_order='xyzw'`` and FrameQuat
+        sensor values follow that native convention. MuJoCo framequat sensors and
+        UniSim public pose views use ``wxyz``, so only the declared FrameQuat
+        columns are reordered at this owner boundary.
+        """
+
+        quat_names = self._frame_quat_sensor_names.intersection(names)
+        if not quat_names:
+            return values
+        expected_width = sum(self._sensor_widths[name] for name in names)
+        array = np.asarray(values)
+        if array.ndim < 2 or int(array.shape[-1]) != expected_width:
+            raise RuntimeError(
+                f"Motrix sensor batch has width {array.shape[-1]}; expected {expected_width} "
+                f"for {tuple(names)}"
+            )
+        result = array.copy()
+        cursor = 0
+        for name in names:
+            width = self._sensor_widths[name]
+            if name in quat_names:
+                if width != 4:
+                    raise RuntimeError(
+                        f"Motrix FrameQuat sensor {name!r} has width {width}, expected 4"
+                    )
+                native = array[..., cursor : cursor + 4]
+                result[..., cursor : cursor + 4] = np.concatenate(
+                    (native[..., 3:4], native[..., 0:3]), axis=-1
+                )
+            cursor += width
+        return result
+
     def _portable_sensor_values(self, names: tuple[str, ...]) -> np.ndarray:
         if not names:
             return np.empty((self._num_envs, 0), dtype=self._np_dtype)
         values = [self._portable_sensor_value(name).reshape(self._num_envs, -1) for name in names]
-        return np.concatenate(values, axis=1)
+        return self._sensor_values_public_quat_order(np.concatenate(values, axis=1), names)
 
     def _portable_entity_roots(self) -> np.ndarray:
         layout = self.get_scene_layout()
@@ -3970,8 +4046,11 @@ class MotrixBackend(SimBackend):
         self._validate_sensor_names((name,))
         if self._portable_mode:
             self._require_portable_healthy("get_sensor_data")
-            return self._portable_sensor_value(name)
-        return self._model.get_sensor_value(name, self._data)  # type: ignore[no-any-return]
+            return self._sensor_values_public_quat_order(self._portable_sensor_value(name), (name,))
+        return self._sensor_values_public_quat_order(
+            np.asarray(self._model.get_sensor_value(name, self._data), dtype=self._np_dtype),
+            (name,),
+        )
 
     def _host_read_sensor_rows(self, name: str, env_ids: np.ndarray) -> np.ndarray:
         return self._host_read_sensor_rows_batch((name,), env_ids)
@@ -3991,6 +4070,7 @@ class MotrixBackend(SimBackend):
         mask[rows] = True
         selected_rows = np.flatnonzero(mask)
         selected_values = self._model.get_sensor_values(sensor_names, self._data[mask])
+        selected_values = self._sensor_values_public_quat_order(selected_values, sensor_names)
         return selected_values[np.searchsorted(selected_rows, rows)]
 
     def _host_read_sensor_batch(self, names: Sequence[str]) -> np.ndarray:
@@ -4001,7 +4081,9 @@ class MotrixBackend(SimBackend):
             self._require_portable_healthy("get_sensor_data_batch")
             return self._portable_sensor_values(sensor_names)
         values = self._model.get_sensor_values(sensor_names, self._data)
-        return np.asarray(values, dtype=self._np_dtype)
+        return self._sensor_values_public_quat_order(
+            np.asarray(values, dtype=self._np_dtype), sensor_names
+        )
 
     def tensor_execution(self) -> TensorExecution:
         """Declare MotrixSim's CPU-authoritative tensor execution profile."""

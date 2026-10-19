@@ -71,6 +71,17 @@ def _motrix_sensor_names(world: "World") -> tuple[str, ...]:
     return names
 
 
+def _motrix_frame_quat_sensor_names(world: "World") -> tuple[str, ...]:
+    """Collect Motrix FrameQuat sensors that need public ``wxyz`` conversion."""
+    import motrixsim.msd as msd
+
+    return tuple(
+        str(sensor.name)
+        for sensor in world.sensors.frame
+        if sensor.name and sensor.sensor_type == msd.FrameSensorType.FrameQuat
+    )
+
+
 def _motrix_frame_sensor_identities(world: "World") -> tuple[_MotrixFrameSensorIdentity, ...]:
     return tuple(
         _MotrixFrameSensorIdentity(
@@ -122,7 +133,6 @@ def _materialize_motrix_expanded_scene_with_sensor_inventory(
     import motrixsim.msd as msd
 
     world = msd.from_file(str(Path(model_file).resolve()))  # pyright: ignore[reportAttributeAccessIssue]
-    frame_identities = _motrix_frame_sensor_identities(world)
     contact_identities = _motrix_contact_sensor_identities(world)
     if mesh_variant_sets or geom_variant_sets:
         _register_motrix_mesh_variant_sets(
@@ -132,6 +142,7 @@ def _materialize_motrix_expanded_scene_with_sensor_inventory(
         )
     if add_body_sensors:
         add_motrix_tracking_frame_sensors(world, base_name=base_name)
+    frame_identities = _motrix_frame_sensor_identities(world)
     names = _motrix_sensor_names(world)
     sensor_count = sum(
         1
@@ -336,14 +347,14 @@ def add_motrix_tracking_frame_sensors(world: World, *, base_name: str) -> None:
             world.sensors.frame.append(sensor)
 
 
-def _materialize_motrix_scene_with_sensor_names(
+def _materialize_motrix_scene_with_sensor_inventory(
     *,
     model_file: str,
     fragment_files: Sequence[str] = (),
     add_body_sensors: bool = False,
     base_name: str = "base",
-) -> tuple["SceneModel", tuple[str, ...]]:
-    """Build a Motrix model and return its validated cold-path sensor names."""
+) -> tuple["SceneModel", tuple[str, ...], tuple[str, ...]]:
+    """Build a Motrix model and return its validated cold-path sensor inventory."""
     import motrixsim.msd as msd
 
     model_path = Path(model_file).resolve()
@@ -358,9 +369,30 @@ def _materialize_motrix_scene_with_sensor_names(
         if add_body_sensors:
             add_motrix_tracking_frame_sensors(world, base_name=base_name)
         model = msd.build(world)
-        return model, _motrix_sensor_names(world)
+        return (
+            model,
+            _motrix_sensor_names(world),
+            _motrix_frame_quat_sensor_names(world),
+        )
     finally:
         _cleanup_temp_xml(robot_path, model_path)
+
+
+def _materialize_motrix_scene_with_sensor_names(
+    *,
+    model_file: str,
+    fragment_files: Sequence[str] = (),
+    add_body_sensors: bool = False,
+    base_name: str = "base",
+) -> tuple["SceneModel", tuple[str, ...]]:
+    """Build a Motrix model and return its validated cold-path sensor names."""
+    model, sensor_names, _ = _materialize_motrix_scene_with_sensor_inventory(
+        model_file=model_file,
+        fragment_files=fragment_files,
+        add_body_sensors=add_body_sensors,
+        base_name=base_name,
+    )
+    return model, sensor_names
 
 
 def materialize_motrix_scene(
@@ -410,7 +442,7 @@ def _materialize_motrix_hfield_attached_scene_with_sensor_names(
     add_body_sensors: bool = False,
     base_name: str = "base",
     return_surface_sampler: bool = False,
-) -> tuple[SceneModel, np.ndarray, object | None, tuple[str, ...]]:
+) -> tuple[SceneModel, np.ndarray, object | None, tuple[str, ...], tuple[str, ...]]:
     """Build a Motrix terrain model and return its cold-path sensor names."""
     import motrixsim.msd as msd
 
@@ -464,7 +496,13 @@ def _materialize_motrix_hfield_attached_scene_with_sensor_names(
 
     model = msd.build(world)
     sampler = generated.surface_sampler() if return_surface_sampler else None
-    return model, generated.terrain_origins, sampler, _motrix_sensor_names(world)
+    return (
+        model,
+        generated.terrain_origins,
+        sampler,
+        _motrix_sensor_names(world),
+        _motrix_frame_quat_sensor_names(world),
+    )
 
 
 @overload
@@ -507,7 +545,7 @@ def materialize_motrix_hfield_attached_scene(
     return_surface_sampler: bool = False,
 ) -> tuple[SceneModel, np.ndarray] | tuple[SceneModel, np.ndarray, object]:
     """Build a MotrixSim model with generated hfield terrain and attached robot."""
-    model, origins, sampler, _ = _materialize_motrix_hfield_attached_scene_with_sensor_names(
+    model, origins, sampler, _, _ = _materialize_motrix_hfield_attached_scene_with_sensor_names(
         model_file=model_file,
         terrain_cfg=terrain_cfg,
         fragment_files=fragment_files,
