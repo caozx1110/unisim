@@ -104,6 +104,36 @@ def test_newton_declares_partial_device_resident_tensor_lifecycle(
         backend.close()
 
 
+def test_newton_dr_planes_split_and_host_payload_fails_closed(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    from unisim.dr.types import TensorResetRandomizationPayload
+
+    backend = _cuda_backend(tmp_path)
+    try:
+        capabilities = backend.get_dr_capabilities()
+        assert capabilities.supported_reset_terms == frozenset()
+        assert capabilities.supported_device_reset_terms == frozenset({"kp", "kd"})
+        assert capabilities.get_unsupported_reset_terms(["kp"], plane="host") == frozenset({"kp"})
+        assert capabilities.get_unsupported_reset_terms(["kp"], plane="device") == frozenset()
+
+        views = backend.get_state_views()
+        device = views["qpos"].device
+        # A torch.cpu (host-plane) payload on the device reset path fails
+        # closed naming the offending term.
+        payload = TensorResetRandomizationPayload(
+            kp=torch.ones((1, backend.num_actuators), dtype=torch.float32)
+        )
+        with pytest.raises(ValueError, match="kp"):
+            backend.set_state_tensor(
+                torch.tensor([1], dtype=torch.int64, device=device),
+                views["qpos"][1:2].contiguous(),
+                views["qvel"][1:2].contiguous(),
+                payload,
+            )
+    finally:
+        backend.close()
+
+
 def test_newton_portable_multi_entity_tensor_lifecycle_fails_closed() -> None:
     torch = pytest.importorskip("torch")
     backend = _portable_fake(2)

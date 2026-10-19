@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("mujoco")
 pytest.importorskip("genesis")
-pytest.importorskip("torch")
+torch = pytest.importorskip("torch")
 
 from unisim.backend.genesis.backend import GenesisBackend
 from unisim.dr.interval import INTERVAL_TERM_BODY_FORCE
@@ -20,7 +20,7 @@ from unisim.dr.types import (
     IntervalRandomizationPlan,
     IntervalTermOp,
     ModelSourceDescriptor,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 from unisim.entities import (
     EntityInitialState,
@@ -30,6 +30,13 @@ from unisim.entities import (
     SceneResetRequest,
 )
 from unisim.scene import SceneCfg
+
+
+def _payload(**fields):
+    """Build a host-plane (torch.cpu) reset payload from NumPy-valued fields."""
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(np.asarray(values)) for name, values in fields.items()}
+    )
 
 
 def _write(tmp_path: Path, name: str, xml: str) -> ModelSourceDescriptor:
@@ -663,16 +670,10 @@ def test_portable_site_sensor_fragments_read_assignment_rows(tmp_path: Path) -> 
         backend._host_read_sensor("cross_object_quat"), initial_object_quaternions
     )
 
-    initial_passive_linear_velocities = backend._host_read_sensor(
-        "cross_passive_linvel"
-    ).copy()
-    initial_passive_angular_velocities = backend._host_read_sensor(
-        "cross_passive_angvel"
-    ).copy()
+    initial_passive_linear_velocities = backend._host_read_sensor("cross_passive_linvel").copy()
+    initial_passive_angular_velocities = backend._host_read_sensor("cross_passive_angvel").copy()
     initial_object_linear_velocities = backend._host_read_sensor("cross_object_linvel").copy()
-    initial_object_angular_velocities = backend._host_read_sensor(
-        "cross_object_angvel"
-    ).copy()
+    initial_object_angular_velocities = backend._host_read_sensor("cross_object_angvel").copy()
     np.testing.assert_allclose(initial_passive_linear_velocities, 0.0, atol=2e-6)
     np.testing.assert_allclose(initial_passive_angular_velocities, 0.0, atol=2e-6)
     np.testing.assert_allclose(initial_object_linear_velocities, 0.0, atol=2e-6)
@@ -1008,7 +1009,7 @@ def test_portable_entities_selected_reset_randomization_mass_and_gains(tmp_path:
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(
+            randomization=_payload(
                 body_mass=requested_mass,
                 kp=requested_kp,
                 kd=requested_kd,
@@ -1063,9 +1064,7 @@ def test_portable_entities_selected_reset_randomization_mass_and_gains(tmp_path:
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(
-                base_mass_delta=np.asarray((0.25, -0.4), dtype=np.float32)
-            ),
+            randomization=_payload(base_mass_delta=np.asarray((0.25, -0.4), dtype=np.float32)),
         )
         effective_mass = backend.get_body_mass()
         np.testing.assert_allclose(
@@ -1105,7 +1104,7 @@ def test_portable_entities_selected_reset_randomization_mass_and_gains(tmp_path:
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(gravity=np.zeros((2, 3))),
+                randomization=_payload(gravity=np.zeros((2, 3))),
             )
     finally:
         # Genesis permits one process-wide session; the final test in this
@@ -1145,9 +1144,7 @@ def test_portable_entities_selected_reset_randomization_com(tmp_path: Path):
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(
-                    body_ipos=np.zeros((2, layout.nbody, 4), dtype=np.float32)
-                ),
+                randomization=_payload(body_ipos=np.zeros((2, layout.nbody, 4), dtype=np.float32)),
             )
         malformed_ipos = default_ipos[rows].copy()
         malformed_ipos[:, robot_link_body_id, 0] = np.nan
@@ -1156,7 +1153,7 @@ def test_portable_entities_selected_reset_randomization_com(tmp_path: Path):
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(body_ipos=malformed_ipos),
+                randomization=_payload(body_ipos=malformed_ipos),
             )
 
         requested_mass = default_mass[rows].copy()
@@ -1168,7 +1165,7 @@ def test_portable_entities_selected_reset_randomization_com(tmp_path: Path):
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(
+            randomization=_payload(
                 body_mass=requested_mass,
                 body_ipos=requested_ipos,
             ),
@@ -1250,7 +1247,7 @@ def test_portable_entities_selected_reset_randomization_com(tmp_path: Path):
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(base_com_offset=base_com_offset),
+            randomization=_payload(base_com_offset=base_com_offset),
         )
         effective_mass = backend.get_body_mass()
         effective_ipos = backend.get_body_ipos(np.arange(5))
@@ -1336,7 +1333,7 @@ def test_portable_entities_selected_reset_randomization_dof_properties(tmp_path:
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(dof_damping=malformed),
+                randomization=_payload(dof_damping=malformed),
             )
         negative = np.tile(defaults["dof_frictionloss"], (2, 1))
         negative[:, 0] = -0.1
@@ -1345,7 +1342,7 @@ def test_portable_entities_selected_reset_randomization_dof_properties(tmp_path:
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(dof_frictionloss=negative),
+                randomization=_payload(dof_frictionloss=negative),
             )
         nonfinite = np.tile(defaults["dof_armature"], (2, 1))
         nonfinite[:, -1] = np.nan
@@ -1354,7 +1351,7 @@ def test_portable_entities_selected_reset_randomization_dof_properties(tmp_path:
                 rows,
                 qpos[rows],
                 qvel[rows],
-                randomization=ResetRandomizationPayload(dof_armature=nonfinite),
+                randomization=_payload(dof_armature=nonfinite),
             )
 
         requested = {term: np.tile(default, (2, 1)) for term, default in defaults.items()}
@@ -1370,7 +1367,7 @@ def test_portable_entities_selected_reset_randomization_dof_properties(tmp_path:
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(**requested),
+            randomization=_payload(**requested),
         )
 
         expected = {term: np.tile(default, (5, 1)) for term, default in defaults.items()}
@@ -1404,9 +1401,7 @@ def test_portable_entities_selected_reset_randomization_dof_properties(tmp_path:
             rows,
             qpos[rows],
             qvel[rows],
-            randomization=ResetRandomizationPayload(
-                base_com_offset=np.zeros((2, 3), dtype=np.float32)
-            ),
+            randomization=_payload(base_com_offset=np.zeros((2, 3), dtype=np.float32)),
         )
         for runtime in backend._entity_runtimes.values():
             if not runtime.native_qvel_indices.size:
@@ -1673,8 +1668,16 @@ def test_portable_entities_body_force_mapping_and_reset_cancellation(tmp_path: P
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
             ops=(
-                IntervalTermOp(INTERVAL_TERM_BODY_FORCE, interval_force, body_ids=(object_body,)),
-                IntervalTermOp(INTERVAL_TERM_BODY_FORCE, interval_force, body_ids=(object_body,)),
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_FORCE,
+                    torch.as_tensor(interval_force),
+                    body_ids=torch.as_tensor((object_body,)),
+                ),
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_FORCE,
+                    torch.as_tensor(interval_force),
+                    body_ids=torch.as_tensor((object_body,)),
+                ),
             )
         )
     )

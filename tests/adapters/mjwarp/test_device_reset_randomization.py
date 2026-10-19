@@ -11,7 +11,7 @@ warp = pytest.importorskip("warp")
 torch = pytest.importorskip("torch")
 
 from unisim import MjwarpBackend
-from unisim.dr.types import ResetRandomizationPayload, TensorResetRandomizationPayload
+from unisim.dr.types import TensorResetRandomizationPayload
 from unisim.scene import SceneCfg
 
 MODEL = """<mujoco model='unisim-test-mjwarp-device-dr'>
@@ -185,7 +185,7 @@ def test_device_payload_mirrors_refresh_on_host_read(tmp_path: Path) -> None:
         ),
     )
     assert "geom_friction" in backend._dr_mirror_stale
-    backend._prepare_reset_randomization(np.array([1]), ResetRandomizationPayload())
+    backend._prepare_reset_randomization(np.array([1]), TensorResetRandomizationPayload())
     assert not backend._dr_mirror_stale
     np.testing.assert_allclose(backend._dr_geom_friction[1], 0.4)
     np.testing.assert_allclose(backend._dr_body_ipos[0, 1, 0], 0.03)
@@ -247,11 +247,14 @@ def test_device_payload_validation_fails_closed(tmp_path: Path, problem: str) ->
     backend.close()
 
 
-def test_numpy_payload_path_unchanged(tmp_path: Path) -> None:
+def test_host_plane_payload_path_unchanged(tmp_path: Path) -> None:
     backend = _make_backend(tmp_path)
     rows, qpos, qvel = _rows_qpos_qvel(backend, [1])
     mass = np.array([[5.0, 4.0]], dtype=np.float32)
-    result = backend.set_state_tensor(rows, qpos, qvel, ResetRandomizationPayload(body_mass=mass))
+    # A torch.cpu payload is the host plane: it takes the host mirror
+    # model-update path instead of the device scatter.
+    payload = TensorResetRandomizationPayload(body_mass=torch.as_tensor(mass))
+    result = backend.set_state_tensor(rows, qpos, qvel, payload)
     assert result["timing"]["set_state_tensor_model_update_ms"] == 0.0
     np.testing.assert_array_equal(backend._device_model.body_mass.numpy()[1], mass[0])
     # The host path writes its mirrors directly; nothing is marked stale and
@@ -259,6 +262,58 @@ def test_numpy_payload_path_unchanged(tmp_path: Path) -> None:
     assert not backend._dr_mirror_stale
     assert not backend._model_torch_views
     np.testing.assert_array_equal(backend._dr_body_mass[1], mass[0])
+    backend.close()
+
+
+def test_mixed_plane_payload_fails_closed_naming_field(tmp_path: Path) -> None:
+    backend = _make_backend(tmp_path)
+    rows, qpos, qvel = _rows_qpos_qvel(backend, [0])
+    payload = TensorResetRandomizationPayload(
+        body_mass=torch.ones((1, backend._nbody), dtype=torch.float32, device="cuda"),
+        kp=torch.ones((1, backend._nu), dtype=torch.float32),
+    )
+    before = backend._device_model.body_mass.numpy().copy()
+    with pytest.raises(ValueError, match="kp"):
+        backend.set_state_tensor(rows, qpos, qvel, payload)
+    np.testing.assert_array_equal(backend._device_model.body_mass.numpy(), before)
+    backend.close()
+
+
+def test_host_prepare_rejects_device_plane_payload(tmp_path: Path) -> None:
+    backend = _make_backend(tmp_path)
+    payload = TensorResetRandomizationPayload(
+        body_mass=torch.ones((1, backend._nbody), dtype=torch.float32, device="cuda")
+    )
+    with pytest.raises(ValueError, match="body_mass"):
+        backend._prepare_reset_randomization(np.array([0]), payload)
+    backend.close()
+
+
+def test_device_payload_base_mass_delta_merges_with_default(tmp_path: Path) -> None:
+    warp.init()
+    if not bool(warp.get_device().is_cuda):
+        pytest.skip("mjwarp runtime tests require an active CUDA Warp device")
+    model_path = tmp_path / "model.xml"
+    model_path.write_text(COM_MODEL)
+    backend = MjwarpBackend(
+        SceneCfg(model_file=str(model_path)),
+        num_envs=3,
+        sim_dt=0.01,
+        base_name="base",
+    )
+    rows, qpos, qvel = _rows_qpos_qvel(backend, [2, 0])
+    base_id = backend._base_body_id
+    default_mass = backend._device_model.body_mass.numpy().copy()
+    payload = TensorResetRandomizationPayload(
+        base_mass_delta=torch.tensor([0.5, -0.2], dtype=torch.float32, device="cuda")
+    )
+    backend.set_state_tensor(rows, qpos, qvel, payload)
+    mass = backend._device_model.body_mass.numpy()
+    np.testing.assert_allclose(mass[2, base_id], default_mass[2, base_id] + 0.5, rtol=1e-6)
+    np.testing.assert_allclose(mass[0, base_id], default_mass[0, base_id] - 0.2, rtol=1e-6)
+    # Other bodies keep their current values; the untouched row is intact.
+    np.testing.assert_array_equal(mass[1], default_mass[1])
+    assert "body_mass" in backend._dr_mirror_stale
     backend.close()
 
 
@@ -375,7 +430,7 @@ def test_device_payload_extended_scatter_fields(
     }
 
     # The NumPy preparation path refreshes the stale mirrors from the device.
-    backend._prepare_reset_randomization(np.array([1]), ResetRandomizationPayload())
+    backend._prepare_reset_randomization(np.array([1]), TensorResetRandomizationPayload())
     assert not backend._dr_mirror_stale
     np.testing.assert_allclose(backend._dr_gravity[2], [0.0, 0.0, -4.9])
     np.testing.assert_allclose(backend._dr_dof_damping[0], 0.3)

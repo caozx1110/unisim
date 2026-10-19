@@ -1,4 +1,5 @@
 """Real-CUDA tests for mjwarp per-env gravity and body-wrench control (#71)."""
+# ruff: noqa: E402
 
 from pathlib import Path
 
@@ -7,12 +8,17 @@ import pytest
 
 pytest.importorskip("mujoco_warp")
 pytest.importorskip("warp")
+torch = pytest.importorskip("torch")
 
 import warp
 
 from unisim import MjwarpBackend, PreStepControlOutput
 from unisim.dr.interval import INTERVAL_TERM_BODY_TORQUE
-from unisim.dr.types import IntervalRandomizationPlan, IntervalTermOp, ResetRandomizationPayload
+from unisim.dr.types import (
+    IntervalRandomizationPlan,
+    IntervalTermOp,
+    TensorResetRandomizationPayload,
+)
 from unisim.scene import SceneCfg
 
 MODEL = """<mujoco>
@@ -55,7 +61,11 @@ def _reset(backend: MjwarpBackend, rows=None, gravity=None) -> None:
         rows = np.arange(backend.num_envs, dtype=np.int32)
     qpos = np.tile(backend.get_default_qpos(), (len(rows), 1))
     qvel = np.tile(backend.get_init_qvel(), (len(rows), 1))
-    payload = None if gravity is None else ResetRandomizationPayload(gravity=gravity)
+    payload = (
+        None
+        if gravity is None
+        else TensorResetRandomizationPayload(gravity=torch.as_tensor(gravity))
+    )
     backend._host_set_state(rows, qpos, qvel, randomization=payload)
 
 
@@ -170,7 +180,13 @@ def test_interval_body_torque_term_matches_direct_call(tmp_path: Path) -> None:
     bodies = _object_body_id(backend)
     _, torque = _torque_wrench(backend, 1e-3)
     plan = IntervalRandomizationPlan(
-        ops=(IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, torque, body_ids=bodies),)
+        ops=(
+            IntervalTermOp(
+                INTERVAL_TERM_BODY_TORQUE,
+                torch.as_tensor(torque),
+                body_ids=torch.as_tensor(bodies),
+            ),
+        )
     )
     backend.apply_interval_randomization(plan)
     backend._host_step(_zero_ctrl(backend), nsteps=2)
@@ -187,7 +203,13 @@ def test_interval_plan_replaces_previous_unconsumed_wrench(tmp_path: Path) -> No
     backend.apply_body_force(bodies, zero_force, torque=first)
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
-            ops=(IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, second, body_ids=bodies),)
+            ops=(
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_TORQUE,
+                    torch.as_tensor(second),
+                    body_ids=torch.as_tensor(bodies),
+                ),
+            )
         )
     )
     backend._host_step(_zero_ctrl(backend), nsteps=1)

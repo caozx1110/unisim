@@ -29,9 +29,9 @@ UniSim owns a backend-neutral, staged packed reset transaction:
 
 ### Adapter behavior
 
-- MuJoCo (`HOST_BRIDGE`) accepts selected-row and full-width mask `TensorResetRandomizationPayload` forms inside the same explicit tensor-to-host reset boundary, synchronizing once before materializing the host payload. The persistent `HostBridgeTransferPlan.apply_reset()` remains the single-packet fast path for selected-row IDs.
-- MotrixSim (`HOST_BRIDGE`) accepts the same selected-row and full-width mask forms for its runtime-negotiated field subset, materializing the payload inside the host reset boundary and publishing selected rows authoritatively without a separate full-refresh phase.
-- MJWarp (`DEVICE_RESIDENT`) composes on device and commits through existing device-side scatters with `AUTHORITATIVE_VIEWS` publication. `geom_size` stays excluded because its derived bounds are host-computed today.
+- MuJoCo (`HOST_BRIDGE`) accepts selected-row and full-width mask `TensorResetRandomizationPayload` forms inside the same explicit tensor-to-host reset boundary, synchronizing once before converting them into adapter-private host arrays. The persistent `HostBridgeTransferPlan.apply_reset()` remains the single-packet fast path for selected-row IDs.
+- MotrixSim (`HOST_BRIDGE`) accepts the same selected-row and full-width mask forms for its runtime-negotiated field subset, converting the payload inside the host reset boundary and publishing selected rows authoritatively without a separate full-refresh phase.
+- MJWarp (`DEVICE_RESIDENT`) composes on device and commits through existing device-side scatters with `AUTHORITATIVE_VIEWS` publication. `geom_size` stays excluded on the device plane because its derived bounds are host-computed today.
 - Genesis and Newton (`DEVICE_RESIDENT`) commit selected-row state with narrow final-value field subsets: Genesis exposes `body_mass`, `kp`, and `kd`; Newton exposes `kp` and `kd` through MuJoCo-family actuator arrays.
 - IsaacGym and IsaacSim (`EXTERNAL_WORKER` / `CUDA_IPC`) stage selected-row `kp`/`kd` in device arenas. Their workers own one explicitly named reset-only property bridge for CPU-native engine setters; step/state/control/sensor hot paths never enter that bridge. The backend-owned mask boundary may compact true rows behind the public `set_state_tensor_mask()` contract.
 - MuJoCo declares packed reset mocap support for kinematic entity roots; the selected Torch rows and poses cross its explicit host boundary only at commit. MJWarp keeps mocap writes fail-closed in this slice.
@@ -39,8 +39,11 @@ UniSim owns a backend-neutral, staged packed reset transaction:
 
 ### Explicit exclusions
 
-- `base_mass_delta` and `base_com_offset` remain host-only payload fields, but their reset semantics do **not** require a device delta representation: owners compose the authoritative baseline plus the sampled delta into final absolute `body_mass` / `body_ipos` device tables before staging them in the transaction. Passing the delta fields themselves through a device payload fails closed; no hidden host fallback or adapter-private derivation is introduced.
 - Owner-subset dynamic-row APIs (for example motion-wrap mutation) remain separate owner APIs rather than overloading the reset row set.
+
+### Delta terms
+
+- `base_mass_delta` and `base_com_offset` are first-class fields of the single torch payload family since UniLab issue #2410; the former host-only restriction and `PACKED_RESET_HOST_ONLY_FIELDS` are removed. The composer stages the sampled deltas and merges them with the authoritative baseline — seeded from the cold NumPy metadata leaf `get_reset_term_default()` — into final absolute `body_mass` / `body_ipos` tables in torch at commit: `final = baseline + delta`. Adapter-internal delta merges may remain as adapter-private implementations, but the public payload no longer restricts the delta fields.
 
 ## Consequences
 
@@ -51,5 +54,4 @@ UniSim owns a backend-neutral, staged packed reset transaction:
 
 ## Future Work
 
-- Extend final-value device representations for base mass/COM.
 - Compose the transaction with multi-step/CUDA-graph execution while keeping graph-unsafe field mutation fail-closed under graph invalidation.

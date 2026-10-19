@@ -22,6 +22,8 @@ The optional tensor lifecycle is independently negotiated: MuJoCo/MJBatch, Motri
 
 Issue #2387 extends that packed-reset set to Genesis, Newton, IsaacGym, and IsaacSim. Genesis covers `body_mass`/`kp`/`kd`; the other additions cover `kp`/`kd`. Isaac PD tables arrive in CUDA IPC arenas and cross one explicitly named reset-only worker property bridge for CPU-native engine setters.
 
+Since UniLab issue #2410 the public DR payloads are torch-first: `TensorResetRandomizationPayload` and `TensorIntervalPayload` are the only public payloads, the payload tensors' device selects the host or device plane, and `DomainRandomizationCapabilities` declares per-plane term sets — `supported_reset_terms`/`supported_interval_terms` for the host plane and `supported_device_reset_terms`/`supported_device_interval_terms` for the device plane — with empty sets failing closed and per-term plane mismatches failing closed by name. NumPy survives only behind adapter-private `unisim.dr._host` conversion helpers, cold `get_reset_term_default()` metadata, and serialization/playback leaves. See [the torch-first DR payload ADR](adr-dr-torch-first-payloads.md).
+
 `unisim.support.get_tensor_platform_profiles()` provides an SDK-free rendering of those reviewed default tensor boundaries for all declared adapters. It does not discover an installed engine or promote a task owner; platform-specific lifecycle fields retain their `SupportLevel` values, including MuJoCo's runtime-negotiated `unknown` reset randomization and fixed-variant declarations.
 
 The execution, process-topology, data-plane, and Torch-device boundaries are declared as enum values. Adapter capability tests compare real backend `get_tensor_capabilities()` payloads with those static declarations.

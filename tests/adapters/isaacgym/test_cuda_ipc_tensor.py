@@ -525,9 +525,9 @@ def test_numpy_hot_paths_fail_closed_while_cuda_ipc_plan_is_open() -> None:
         backend._host_step(None)
     with pytest.raises(RuntimeError, match="NumPy reset"):
         backend._host_reset()
-    with pytest.raises(RuntimeError, match="NumPy state writes"):
+    with pytest.raises(RuntimeError, match="host-plane state writes"):
         backend._host_set_state(None, None, None)
-    with pytest.raises(RuntimeError, match="NumPy entity reset"):
+    with pytest.raises(RuntimeError, match="host-plane entity reset"):
         backend.reset_entities(None)
 
 

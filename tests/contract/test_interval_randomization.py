@@ -21,9 +21,9 @@ from unisim.dr import (
     IntervalTermSpec,
     TensorIntervalPayload,
     interval_term_spec,
-    require_op_host_payload,
     validate_interval_op,
 )
+from unisim.dr._host import interval_payload_to_host
 from unisim.fake import FakeBackend
 
 BUILTIN_TERMS = (
@@ -55,8 +55,9 @@ def test_interval_term_op_validation_builtin_contract() -> None:
         IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros(3), body_ids=BODY_IDS).validate()
     with pytest.raises(ValueError, match="body_force"):
         IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.zeros(3), body_ids=BODY_IDS).validate()
+    validate_interval_op(IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))))
     with pytest.raises(ValueError, match="push"):
-        IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))).validate()
+        IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros(3)).validate()
 
 
 def test_tensor_interval_payload_validation_defers_engine_rules() -> None:
@@ -94,18 +95,47 @@ def test_interval_term_op_and_plan_pickle_round_trip() -> None:
     np.testing.assert_array_equal(restored.ops[0].body_ids, BODY_IDS)
 
 
-def test_host_adapter_payloads_reject_device_payload() -> None:
-    device_op = IntervalTermOp(INTERVAL_TERM_PUSH, TensorIntervalPayload(push_force=object()))
-    with pytest.raises(TypeError, match="does not accept a device-resident payload"):
-        require_op_host_payload(device_op)
+def test_host_payload_conversion_is_adapter_private() -> None:
     host_op = IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.ones((2, 1, 3)), body_ids=BODY_IDS)
-    assert require_op_host_payload(host_op) is host_op.payload
+    assert interval_payload_to_host(host_op.payload) is host_op.payload
+    device_op = IntervalTermOp(INTERVAL_TERM_PUSH, TensorIntervalPayload(push_force=object()))
+    with pytest.raises(TypeError, match="torch.Tensor or NumPy array"):
+        interval_payload_to_host(device_op.payload)
+
+
+def test_host_payload_conversion_of_torch_tensors() -> None:
+    torch = pytest.importorskip("torch")
+    tensor = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    converted = interval_payload_to_host(tensor)
+    assert isinstance(converted, np.ndarray)
+    np.testing.assert_array_equal(
+        converted, np.asarray([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]], dtype=np.float32)
+    )
+    # Torch tensors validate by duck-typed ndim without importing Torch here.
+    op = IntervalTermOp(INTERVAL_TERM_PUSH, tensor)
+    validate_interval_op(op)
+    with pytest.raises(ValueError, match="push"):
+        validate_interval_op(IntervalTermOp(INTERVAL_TERM_PUSH, torch.zeros(3)))
+
+
+def test_reset_payload_to_host_dict_converts_populated_fields() -> None:
+    torch = pytest.importorskip("torch")
+    from unisim.dr._host import reset_payload_to_host_dict
+    from unisim.dr.types import TensorResetRandomizationPayload
+
+    payload = TensorResetRandomizationPayload(kp=torch.ones(2, 3), base_mass_delta=torch.zeros(2))
+    host = reset_payload_to_host_dict(payload)
+    assert set(host) == {"kp", "base_mass_delta"}
+    np.testing.assert_array_equal(host["kp"], np.ones((2, 3), dtype=np.float32))
+    np.testing.assert_array_equal(host["base_mass_delta"], np.zeros(2, dtype=np.float32))
+    with pytest.raises(TypeError, match="TensorResetRandomizationPayload"):
+        reset_payload_to_host_dict(object())  # pyright: ignore[reportArgumentType]
 
 
 def test_plan_iter_ops_preserves_explicit_order() -> None:
     lin = np.zeros((2, 1, 3))
     force = np.ones((2, 1, 3))
-    push = IntervalTermOp(INTERVAL_TERM_PUSH, np.asarray([1.0, 2.0, 3.0]))
+    push = IntervalTermOp(INTERVAL_TERM_PUSH, np.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
     linear = IntervalTermOp(INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, lin, body_ids=BODY_IDS)
     wrench = IntervalTermOp(INTERVAL_TERM_BODY_FORCE, force, body_ids=BODY_IDS)
     plan = IntervalRandomizationPlan(ops=(push, linear, wrench))
@@ -166,7 +196,7 @@ def test_backend_custom_term_handler_dispatch() -> None:
     # A builtin term without a handler still fails closed.
     with pytest.raises(NotImplementedError, match="push"):
         backend.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros(3)),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))),))
         )
 
 

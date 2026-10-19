@@ -14,7 +14,6 @@ from unisim.dr.types import (
     DomainRandomizationCapabilities,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
 )
@@ -1363,7 +1362,7 @@ class SimBackend(abc.ABC):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         """Set selected state through the adapter-declared tensor lifecycle.
 
@@ -1377,13 +1376,18 @@ class SimBackend(abc.ABC):
         accelerator-to-host boundary measurable before CPU state is updated.
         Inputs are consumed before return.
 
-        ``randomization`` is a host NumPy :class:`ResetRandomizationPayload`,
-        or — only when the adapter declares
-        ``TensorLifecycleCapabilities.device_reset_randomization`` — a
-        :class:`TensorResetRandomizationPayload` whose arrays are resident on
-        the adapter's declared Torch device and applied as selected-row
-        in-place scatters. Adapters without that declaration fail closed on a
-        device payload (``TypeError`` or ``NotImplementedError``).
+        ``randomization`` is the unified torch-first
+        :class:`TensorResetRandomizationPayload`: every populated field is a
+        dense selected-row Torch tensor table. Tensors on ``torch.cpu`` form
+        the host plane, checked against
+        ``DomainRandomizationCapabilities.supported_reset_terms``; tensors on
+        any other device form the device plane, checked against
+        ``supported_device_reset_terms`` (empty by default, so undeclared
+        device support fails closed naming the term). Non-delta terms hold
+        final absolute values applied as selected-row in-place scatters;
+        ``base_mass_delta`` and ``base_com_offset`` hold deltas merged with
+        the adapter baseline. Host adapters convert tensors at their private
+        NumPy boundary through :mod:`unisim.dr._host`.
         """
         raise NotImplementedError(
             f"{self.backend_type} does not support tensor state writes: {self.tensor_execution()}"
@@ -1394,7 +1398,7 @@ class SimBackend(abc.ABC):
         reset_mask: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
         *,
         full_refresh: bool = False,
     ) -> dict | None:
@@ -1409,12 +1413,13 @@ class SimBackend(abc.ABC):
         returning; any row materialization required by the engine belongs
         behind this backend boundary.
 
+        ``randomization`` is the unified torch-first
+        :class:`TensorResetRandomizationPayload` (full-width tables on the
+        mask's plane); the adapter must preserve every false row.
         ``full_refresh=True`` requests an eager equivalent full-batch
         derived-state/publication refresh. It is valid only where
         ``TensorLifecycleCapabilities.mask_selected_reset_full_refresh`` is
-        declared. A declaring adapter may accept a full-width device-resident
-        ``TensorResetRandomizationPayload`` and must preserve every false row;
-        host NumPy reset payloads fail closed.
+        declared.
         """
         raise NotImplementedError(
             f"{self.backend_type} does not support mask-driven tensor state writes: "
@@ -1436,9 +1441,15 @@ class SimBackend(abc.ABC):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
-        """Adapter-private selected host state write."""
+        """Adapter-private selected host state write.
+
+        ``randomization`` is the unified torch-first
+        :class:`TensorResetRandomizationPayload` carrying host-plane
+        (``torch.cpu``) tensors; adapters convert fields at their private
+        NumPy boundary through :mod:`unisim.dr._host`.
+        """
         raise NotImplementedError(f"{self.__class__.__name__} has no host state write")
 
     def _host_reset_default(self, env_ids: np.ndarray | None = None) -> None:
@@ -1882,7 +1893,11 @@ class SimBackend(abc.ABC):
         Generic dispatch: each op yielded by ``plan.iter_ops()`` is validated
         against the builtin term specs (custom terms pass through) and routed
         to the backend-owned handler table returned by
-        :meth:`_interval_term_handlers`.  A term without a handler fails
+        :meth:`_interval_term_handlers`.  Op payloads are torch-first: Torch
+        tensors or :class:`TensorIntervalPayload` values produced by the
+        caller; host adapters convert tensors at their private boundary
+        through :mod:`unisim.dr._host`, and a missing producer-sampled payload
+        fails closed.  A term without a handler fails
         closed with ``NotImplementedError`` naming the backend class and the
         term.  Backends that need per-plan prologue/epilogue semantics (for
         example clearing staged external forces before the ops accumulate)

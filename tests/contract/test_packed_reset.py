@@ -13,12 +13,13 @@ from unisim.backend.base import (  # noqa: E402
     TensorProcessTopology,
 )
 from unisim.backend.packed_reset import (  # noqa: E402
-    PACKED_RESET_HOST_ONLY_FIELDS,
     PACKED_RESET_MODEL_FIELDS,
     PACKED_RESET_PERSISTENT_CHANNELS,
     TorchPackedResetComposer,
 )
 from unisim.dr.types import (  # noqa: E402
+    RESET_TERM_BASE_COM,
+    RESET_TERM_BASE_MASS,
     RESET_TERM_KD,
     RESET_TERM_KP,
     TensorResetRandomizationPayload,
@@ -58,6 +59,10 @@ class _ComposerBackend:
             return np.full((4, 3), 20.0, dtype=np.float32)
         if term == RESET_TERM_KD:
             return np.full((4, 3), 2.0, dtype=np.float32)
+        if term == RESET_TERM_BASE_MASS:
+            return np.full((4,), 10.0, dtype=np.float32)
+        if term == RESET_TERM_BASE_COM:
+            return np.zeros((4, 3), dtype=np.float32)
         if term == "body_ipos":
             return np.zeros((2, 3), dtype=np.float32)
         raise AssertionError(term)
@@ -131,7 +136,7 @@ def test_composer_merges_columns_and_promotes_baselines() -> None:
     torch.testing.assert_close(transaction.baseline(RESET_TERM_KP), expected)
 
 
-def test_composer_discard_and_host_only_fail_closed() -> None:
+def test_composer_discard_and_persistent_channels() -> None:
     backend = _ComposerBackend()
     transaction = TorchPackedResetComposer(backend)
     transaction.write_model_field(
@@ -142,13 +147,55 @@ def test_composer_discard_and_host_only_fail_closed() -> None:
     transaction.discard(RESET_TERM_KD)
     torch.testing.assert_close(transaction.baseline(RESET_TERM_KD), torch.full((4, 3), 2.0))
 
-    for field in PACKED_RESET_HOST_ONLY_FIELDS:
-        with pytest.raises(NotImplementedError, match="host-only delta-merge"):
-            transaction.write_model_field(field, torch.empty(0, dtype=torch.int64), None)
-
     assert PACKED_RESET_PERSISTENT_CHANNELS == frozenset(
         {"ctrl", "act", "qfrc_applied", "xfrc_applied", "qacc_warmstart"}
     )
+
+
+def test_composer_stages_delta_terms_and_merges_in_torch_at_commit() -> None:
+    backend = _ComposerBackend()
+    transaction = TorchPackedResetComposer(backend)
+    rows = torch.tensor([1, 3], dtype=torch.int64)
+    transaction.write_model_field(
+        RESET_TERM_BASE_MASS,
+        rows,
+        torch.full((2,), 1.5, dtype=torch.float32),
+    )
+    # Staging holds deltas; the baseline is untouched before commit.
+    torch.testing.assert_close(transaction.baseline(RESET_TERM_BASE_MASS), torch.full((4,), 10.0))
+    transaction.commit_state(
+        rows,
+        torch.zeros((2, 2), dtype=torch.float32),
+        torch.zeros((2, 2), dtype=torch.float32),
+    )
+    payload = backend.commits[-1][3]
+    assert isinstance(payload, TensorResetRandomizationPayload)
+    torch.testing.assert_close(payload.base_mass_delta, torch.full((2,), 11.5))
+    torch.testing.assert_close(
+        transaction.baseline(RESET_TERM_BASE_MASS),
+        torch.tensor([10.0, 11.5, 10.0, 11.5]),
+    )
+
+
+def test_composer_mask_commit_merges_delta_terms() -> None:
+    backend = _ComposerBackend()
+    transaction = TorchPackedResetComposer(backend)
+    mask = torch.tensor([False, True, False, True])
+    transaction.write_model_field_mask(
+        RESET_TERM_BASE_COM,
+        mask,
+        torch.full((4, 3), 0.25, dtype=torch.float32),
+    )
+    transaction.commit_state_mask(
+        mask,
+        torch.zeros((4, 2), dtype=torch.float32),
+        torch.zeros((4, 2), dtype=torch.float32),
+    )
+    payload = backend.mask_commits[-1][3]
+    assert isinstance(payload, TensorResetRandomizationPayload)
+    torch.testing.assert_close(payload.base_com_offset[1], torch.full((3,), 0.25))
+    torch.testing.assert_close(payload.base_com_offset[0], torch.zeros(3))
+    torch.testing.assert_close(transaction.baseline(RESET_TERM_BASE_COM)[1], torch.full((3,), 0.25))
 
 
 def test_composer_mask_commit_emits_no_completion_receipt() -> None:

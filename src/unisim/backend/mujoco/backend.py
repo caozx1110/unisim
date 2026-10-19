@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from multiprocessing import cpu_count
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Optional, cast
+from typing import Any, Literal, Optional, cast
 
 import mjbatch
 import mujoco
@@ -17,6 +17,7 @@ from mjbatch.variants import VariantPack
 
 from unisim.backend.model_index import CompiledModelIndex
 from unisim.capabilities import CapabilityReport, SupportLevel
+from unisim.dr._host import interval_payload_to_host, reset_payload_to_host_dict
 from unisim.dr.types import (
     INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
     INTERVAL_TERM_BODY_FORCE,
@@ -45,11 +46,11 @@ from unisim.dr.types import (
     IntervalRandomizationPlan,
     IntervalTermOp,
     ModelSourceDescriptor,
-    ResetRandomizationPayload,
+    TensorIntervalPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
     require_op_body_ids,
-    require_op_host_payload,
+    validate_tensor_reset_payload,
 )
 from unisim.dtype import get_global_dtype
 from unisim.entities import SceneEntitySpec, SceneResetRequest
@@ -119,6 +120,33 @@ _MUJOCO_RESET_TERMS = frozenset(
         RESET_TERM_KD,
     )
 )
+
+
+def _reset_payload_plane_device(payload: TensorResetRandomizationPayload) -> Any:
+    """Return the shared Torch device backing a non-empty reset payload.
+
+    The payload's tensor devices decide its data plane: ``torch.cpu`` is the
+    host plane, any other device is the device plane. Mixed-device payloads
+    fail closed naming the offending field.
+    """
+    validate_tensor_reset_payload(payload)
+    first = getattr(payload, sorted(payload.requested_terms())[0])
+    validate_tensor_reset_payload(payload, device=first.device)
+    return first.device
+
+
+def _interval_push_force_host(payload: Any) -> np.ndarray:
+    """Convert a producer-sampled push payload to a host NumPy force table.
+
+    The producer owns random generation; the op carries a full-width
+    ``(num_envs, 3)`` Torch tensor or a :class:`TensorIntervalPayload` whose
+    ``push_force`` holds that table. A missing payload fails closed.
+    """
+    if isinstance(payload, TensorIntervalPayload):
+        payload = payload.push_force
+    if payload is None:
+        raise ValueError("interval term 'push' requires a producer-sampled payload")
+    return interval_payload_to_host(payload)
 
 
 def _effective_cpu_count() -> int:
@@ -1998,19 +2026,6 @@ class MuJoCoBackend(SimBackend):
         start = 6 * body_id
         return slice(start + 3, start + 6)
 
-    def _sample_push_force(self, force_range: Sequence[float] | np.ndarray) -> np.ndarray:
-        """Sample one world-frame push force vector per environment.
-
-        Args:
-            force_range: Per-axis push-force magnitude range.
-
-        Returns:
-            Array with shape ``(num_envs, 3)`` containing sampled forces.
-        """
-        ex_force = np.random.uniform(-1.0, 1.0, size=(self._num_envs, 3))
-        ex_force *= np.asarray(force_range, dtype=np.float64)
-        return ex_force.astype(np.float64, copy=False)
-
     @staticmethod
     def _validate_cpu_ids(cpu_ids: Optional[Sequence[int]]) -> tuple[int, ...] | None:
         """Cold-path structural validation for the optional worker CPU affinity.
@@ -2780,25 +2795,61 @@ class MuJoCoBackend(SimBackend):
             }
         }
 
+    def _host_reset_randomization_dict(
+        self, randomization: TensorResetRandomizationPayload | None
+    ) -> dict[str, np.ndarray] | None:
+        """Validate a torch-first reset payload and convert it to host NumPy.
+
+        The payload's tensor devices decide the data plane: ``torch.cpu`` is
+        checked against the host-plane terms, any other device against the
+        device-plane terms; undeclared terms fail closed naming the term.
+        """
+        if randomization is None:
+            return None
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "MuJoCo reset randomization must be a TensorResetRandomizationPayload or None"
+            )
+        if randomization.is_empty():
+            return {}
+        plane: Literal["host", "device"] = (
+            "host" if _reset_payload_plane_device(randomization).type == "cpu" else "device"
+        )
+        unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
+            randomization.requested_terms(), plane=plane
+        )
+        if unsupported:
+            raise NotImplementedError(
+                f"MuJoCo reset randomization does not support terms: {sorted(unsupported)}"
+            )
+        return reset_payload_to_host_dict(randomization)
+
     def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         # Capability preflight remains before state/runtime access, including
         # the historical unbound-method diagnostic used by optional adapters.
+        # The host/device term sets coincide on this host bridge, so the
+        # preflight checks the host plane; the helper below re-checks against
+        # the payload's true plane before conversion.
         if randomization is not None:
-            if not isinstance(randomization, ResetRandomizationPayload):
-                raise TypeError("randomization must be ResetRandomizationPayload or None")
-            unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
-                randomization.requested_terms()
-            )
-            if unsupported:
-                raise NotImplementedError(
-                    f"MuJoCo reset randomization does not support terms: {sorted(unsupported)}"
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "MuJoCo reset randomization must be a TensorResetRandomizationPayload or None"
                 )
+            if not randomization.is_empty():
+                unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
+                    randomization.requested_terms(), plane="host"
+                )
+                if unsupported:
+                    raise NotImplementedError(
+                        f"MuJoCo reset randomization does not support terms: {sorted(unsupported)}"
+                    )
+        host_randomization = self._host_reset_randomization_dict(randomization)
         self._require_entity_healthy()
         timing: dict[str, float] = {
             "set_state_mask_ms": 0.0,
@@ -2825,7 +2876,7 @@ class MuJoCoBackend(SimBackend):
         rows = selected_rows(env_indices, self._num_envs)
         positions = state_values(qpos, (rows.size, self.nq), self._np_dtype, "qpos")
         velocities = state_values(qvel, (rows.size, self.nv), self._np_dtype, "qvel")
-        writes = self._prepare_reset_randomization(randomization, rows)
+        writes = self._prepare_reset_randomization(host_randomization, rows)
         if not rows.size:
             return {"timing": timing}
         timing["set_state_qpos_convert_ms"] = (time.perf_counter() - outer_t0) * 1000.0
@@ -2850,13 +2901,17 @@ class MuJoCoBackend(SimBackend):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         """Bridge selected accelerator reset state to CPU physics."""
         import torch
 
-        host_randomization: ResetRandomizationPayload | None = None
-        if isinstance(randomization, TensorResetRandomizationPayload):
+        if randomization is not None:
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "MuJoCo tensor reset randomization must be a "
+                    "TensorResetRandomizationPayload or None"
+                )
             payload_device = env_indices.device if hasattr(env_indices, "device") else None
             for field in randomization.requested_terms():
                 value = getattr(randomization, field)
@@ -2864,19 +2919,6 @@ class MuJoCoBackend(SimBackend):
                     raise TypeError(f"MuJoCo tensor reset {field} must be a torch.Tensor")
                 if payload_device is not None and value.device != payload_device:
                     raise ValueError("MuJoCo tensor reset values must share one device")
-            host_randomization = ResetRandomizationPayload(
-                **{
-                    field: value.detach().cpu().numpy()
-                    for field in randomization.requested_terms()
-                    if (value := getattr(randomization, field)) is not None
-                }
-            )
-        elif randomization is not None:
-            if not isinstance(randomization, ResetRandomizationPayload):
-                raise TypeError(
-                    "MuJoCo tensor reset randomization must be ResetRandomizationPayload"
-                )
-            host_randomization = randomization
         values = {"env_indices": env_indices, "qpos": qpos, "qvel": qvel}
         for name, value in values.items():
             if not isinstance(value, torch.Tensor):
@@ -2900,7 +2942,7 @@ class MuJoCoBackend(SimBackend):
         if env_indices.shape[0] == 0:
             rows = env_indices.detach().cpu().numpy()
             return self._host_set_state(
-                rows, qpos[:0].cpu().numpy(), qvel[:0].cpu().numpy(), host_randomization
+                rows, qpos[:0].cpu().numpy(), qvel[:0].cpu().numpy(), randomization
             )
         if source_device.type == "cuda":
             torch.cuda.current_stream(source_device).synchronize()
@@ -2915,14 +2957,14 @@ class MuJoCoBackend(SimBackend):
         rows = env_indices.detach().cpu().numpy()
         positions = qpos.detach().cpu().numpy()
         velocities = qvel.detach().cpu().numpy()
-        return self._host_set_state(rows, positions, velocities, host_randomization)
+        return self._host_set_state(rows, positions, velocities, randomization)
 
     def set_state_tensor_mask(
         self,
         reset_mask: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
         *,
         full_refresh: bool = False,
     ) -> dict | None:
@@ -2971,29 +3013,27 @@ class MuJoCoBackend(SimBackend):
         # owns this bounded compaction and the explicit accelerator-to-host leg.
         selected_rows_tensor = torch.nonzero(reset_mask, as_tuple=False).flatten()
         rows = selected_rows_tensor.detach().cpu().numpy().astype(np.int64, copy=False)
-        host_randomization: ResetRandomizationPayload | None = None
-        if isinstance(randomization, TensorResetRandomizationPayload):
+        selected_randomization: TensorResetRandomizationPayload | None = None
+        if randomization is not None:
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "MuJoCo tensor mask reset randomization must be a "
+                    "TensorResetRandomizationPayload or None"
+                )
             for field in randomization.requested_terms():
                 value = getattr(randomization, field)
                 if not isinstance(value, torch.Tensor):
                     raise TypeError(f"MuJoCo tensor mask reset {field} must be a torch.Tensor")
                 if value.device != source_device:
                     raise ValueError("MuJoCo tensor mask reset values must share one device")
-            host_randomization = ResetRandomizationPayload(
+            # Rows are selected on the payload's device; the host NumPy
+            # conversion happens once at the _host_set_state boundary.
+            selected_randomization = TensorResetRandomizationPayload(
                 **{
-                    field: value.index_select(0, selected_rows_tensor).detach().cpu().numpy()
+                    field: value.index_select(0, selected_rows_tensor)
                     for field in randomization.requested_terms()
                     if (value := getattr(randomization, field)) is not None
                 }
-            )
-        elif randomization is not None:
-            if not isinstance(randomization, ResetRandomizationPayload):
-                raise TypeError(
-                    "MuJoCo tensor mask reset randomization must be "
-                    "ResetRandomizationPayload or TensorResetRandomizationPayload"
-                )
-            raise NotImplementedError(
-                "MuJoCo mask reset requires a device-resident TensorResetRandomizationPayload"
             )
         timing: dict[str, float] = {
             "set_state_tensor_mask_ms": (time.perf_counter() - started) * 1000.0,
@@ -3004,12 +3044,12 @@ class MuJoCoBackend(SimBackend):
         if rows.size:
             positions = qpos.index_select(0, selected_rows_tensor).detach().cpu().numpy()
             velocities = qvel.index_select(0, selected_rows_tensor).detach().cpu().numpy()
-            result = self._host_set_state(rows, positions, velocities, host_randomization)
+            result = self._host_set_state(rows, positions, velocities, selected_randomization)
             if result is None:
                 result = {}
             timing.update(result.get("timing", {}))
             timing["set_state_tensor_mask_ms"] = (time.perf_counter() - started) * 1000.0
-            if host_randomization is not None:
+            if selected_randomization is not None:
                 timing["set_state_tensor_model_update_ms"] = timing.get(
                     "set_state_reset_rand_ms", 0.0
                 )
@@ -3026,8 +3066,24 @@ class MuJoCoBackend(SimBackend):
         return {"timing": timing}
 
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
+        # MuJoCo is a host-bridge adapter: device-resident payloads cross to
+        # host NumPy at the private boundary, so the device plane declares the
+        # same terms as the host plane.
+        interval_terms = frozenset(
+            {INTERVAL_TERM_BODY_FORCE, INTERVAL_TERM_BODY_TORQUE}
+            | ({INTERVAL_TERM_PUSH} if self._push_body_id >= 0 else set())
+            | (
+                {
+                    INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
+                }
+                if self._interval_root_velocity_qvel_ids is not None
+                else set()
+            )
+        )
         return DomainRandomizationCapabilities(
             supported_reset_terms=_MUJOCO_RESET_TERMS,
+            supported_device_reset_terms=_MUJOCO_RESET_TERMS,
             supports_fixed_variants=self._supports_fixed_variant_executor(),
             supported_fixed_variant_layouts=(
                 frozenset(
@@ -3037,18 +3093,8 @@ class MuJoCoBackend(SimBackend):
                 else frozenset()
             ),
             supports_per_env_playback=self._fixed_variant_build is not None,
-            supported_interval_terms=frozenset(
-                {INTERVAL_TERM_BODY_FORCE, INTERVAL_TERM_BODY_TORQUE}
-                | ({INTERVAL_TERM_PUSH} if self._push_body_id >= 0 else set())
-                | (
-                    {
-                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
-                        INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
-                    }
-                    if self._interval_root_velocity_qvel_ids is not None
-                    else set()
-                )
-            ),
+            supported_interval_terms=interval_terms,
+            supported_device_interval_terms=interval_terms,
         )
 
     @staticmethod
@@ -3065,7 +3111,9 @@ class MuJoCoBackend(SimBackend):
         if term == RESET_TERM_BASE_COM:
             return np.zeros((3,), dtype=np.float64)
         if term == RESET_TERM_BASE_MASS:
-            return np.zeros((0,), dtype=np.float64)
+            # Delta-term baselines are zeros shaped so the packed composer can
+            # broadcast them per environment (canonical tail rank 0).
+            return np.zeros((), dtype=np.float64)
         if term == RESET_TERM_GRAVITY:
             return np.asarray(model.opt.gravity, dtype=np.float64).copy()
         if term == RESET_TERM_BODY_IQUAT:
@@ -3096,12 +3144,41 @@ class MuJoCoBackend(SimBackend):
             return np.asarray(-model.actuator_biasprm[:, 2], dtype=np.float64).copy()
         raise AssertionError(f"missing default mapping for reset term {term!r}")
 
+    def _reset_term_default_from_pool(self, term: str) -> np.ndarray:
+        """Read live committed per-environment values from the materialized pool."""
+        pool = self._pool
+        assert pool is not None
+        if term == RESET_TERM_KP:
+            return np.array(pool.expand("actuator_gainprm")[:, :, 0], dtype=np.float64)
+        if term == RESET_TERM_KD:
+            return np.array(-pool.expand("actuator_biasprm")[:, :, 2], dtype=np.float64)
+        field = {
+            RESET_TERM_GRAVITY: "gravity",
+            RESET_TERM_BODY_IQUAT: "body_iquat",
+            RESET_TERM_BODY_INERTIA: "body_inertia",
+            RESET_TERM_BODY_IPOS: "body_ipos",
+            RESET_TERM_BODY_MASS: "body_mass",
+            RESET_TERM_DOF_ARMATURE: "dof_armature",
+            RESET_TERM_DOF_DAMPING: "dof_damping",
+            RESET_TERM_DOF_FRICTIONLOSS: "dof_frictionloss",
+            RESET_TERM_GEOM_FRICTION: "geom_friction",
+            RESET_TERM_GEOM_SIZE: "geom_size",
+            RESET_TERM_GEOM_SOLIMP: "geom_solimp",
+            RESET_TERM_GEOM_SOLREF: "geom_solref",
+        }[term]
+        return np.array(pool.expand(field), dtype=np.float64)
+
     def get_reset_term_default(self, term: str) -> np.ndarray:
         _validate_reset_term(term)
         if not self.get_dr_capabilities().supports_reset_term(term):
             raise NotImplementedError(f"MuJoCoBackend does not support reset term '{term}'")
         if self._fixed_variant_build is None:
-            value = self._reset_term_default_from_model(term, self._model)
+            if self._pool is not None and term not in (RESET_TERM_BASE_COM, RESET_TERM_BASE_MASS):
+                # Packed-reset baselines must reflect committed randomization,
+                # so a materialized pool serves live per-environment values.
+                value = self._reset_term_default_from_pool(term)
+            else:
+                value = self._reset_term_default_from_model(term, self._model)
         else:
             build = self._fixed_variant_build
             if term in {
@@ -3160,24 +3237,32 @@ class MuJoCoBackend(SimBackend):
 
     def _interval_term_handlers(self) -> dict[str, Callable[[IntervalTermOp], None]]:
         # Built lazily once; the table only binds methods, so it is stable for
-        # the backend lifetime and is never rebuilt per plan.
+        # the backend lifetime and is never rebuilt per plan. Op payloads and
+        # body_ids are torch-first; this host bridge converts them through the
+        # private ``unisim.dr._host`` helpers at the handler boundary.
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
-                INTERVAL_TERM_PUSH: lambda op: self.push_robots(require_op_host_payload(op)),
+                INTERVAL_TERM_PUSH: lambda op: self.push_robots(op.payload),
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), require_op_host_payload(op)
+                    interval_payload_to_host(require_op_body_ids(op)),
+                    interval_payload_to_host(op.payload),
                 ),
                 INTERVAL_TERM_BODY_TORQUE: lambda op: self._apply_body_torque(
-                    require_op_body_ids(op), require_op_host_payload(op)
+                    interval_payload_to_host(require_op_body_ids(op)),
+                    interval_payload_to_host(op.payload),
                 ),
                 INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA: (
                     lambda op: self._apply_body_velocity_delta(
-                        require_op_body_ids(op), require_op_host_payload(op), None
+                        interval_payload_to_host(require_op_body_ids(op)),
+                        interval_payload_to_host(op.payload),
+                        None,
                     )
                 ),
                 INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA: (
                     lambda op: self._apply_body_velocity_delta(
-                        require_op_body_ids(op), None, require_op_host_payload(op)
+                        interval_payload_to_host(require_op_body_ids(op)),
+                        None,
+                        interval_payload_to_host(op.payload),
                     )
                 ),
             }
@@ -3337,12 +3422,23 @@ class MuJoCoBackend(SimBackend):
                 self._sensor_data[env, sensor_slice] = scratch.sensordata[sensor_slice]
             self._tracked_body_state_dirty[env] = False
 
-    def push_robots(self, force_range: Sequence[float] | np.ndarray) -> None:
+    def push_robots(self, push: Any) -> None:
+        """Stage producer-sampled world-frame push forces for the next step.
+
+        The producer owns random generation. ``push`` is a full-width
+        ``(num_envs, 3)`` Torch tensor or a :class:`TensorIntervalPayload`
+        whose ``push_force`` carries that table; this host bridge converts it
+        to NumPy at the boundary and a missing payload fails closed.
+        """
         self._reject_wrench_write_inside_pre_step_control("push_robots")
+        force = np.asarray(_interval_push_force_host(push), dtype=np.float64)
+        expected_shape = (self._num_envs, 3)
+        if force.shape != expected_shape:
+            raise ValueError(f"push force must have shape {expected_shape}, got {force.shape}")
+        if not np.isfinite(force).all():
+            raise ValueError("push force must contain finite values")
         self._pending_xfrc_applied.fill(0.0)
-        self._pending_xfrc_applied[:, self._push_body_force_slice] = self._sample_push_force(
-            force_range
-        )
+        self._pending_xfrc_applied[:, self._push_body_force_slice] = force
 
     def apply_body_force(
         self,
@@ -3815,25 +3911,20 @@ class MuJoCoBackend(SimBackend):
 
     def _prepare_reset_randomization(
         self,
-        randomization: ResetRandomizationPayload | None,
+        randomization: Mapping[str, np.ndarray] | None,
         env_indices: np.ndarray,
     ) -> tuple[ModelWrite, ...]:
         """Validate and prepare every model update before native state mutation."""
-        if randomization is None:
+        if not randomization:
             return ()
-        if not isinstance(randomization, ResetRandomizationPayload):
-            raise TypeError("randomization must be ResetRandomizationPayload or None")
-        if randomization.is_empty():
-            return ()
-        unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
-            randomization.requested_terms()
-        )
+        unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(randomization)
         if unsupported:
             raise NotImplementedError(
                 f"MuJoCo reset randomization does not support terms: {sorted(unsupported)}"
             )
         if (
-            randomization.base_mass_delta is not None or randomization.base_com_offset is not None
+            randomization.get("base_mass_delta") is not None
+            or randomization.get("base_com_offset") is not None
         ) and self._base_body_id < 0:
             raise ValueError(f"Body '{self._base_name}' not found in MuJoCo model")
 
@@ -3842,18 +3933,20 @@ class MuJoCoBackend(SimBackend):
         nbody = self._model.nbody
 
         body_mass = None
-        if randomization.body_mass is not None:
+        body_mass_field = randomization.get("body_mass")
+        if body_mass_field is not None:
             body_mass = self._coerce_reset_field(
-                randomization.body_mass,
+                body_mass_field,
                 name="body_mass",
                 num_reset=num_reset,
                 shaped_tail=(nbody,),
             )
-        if randomization.base_mass_delta is not None:
+        base_mass_delta_field = randomization.get("base_mass_delta")
+        if base_mass_delta_field is not None:
             if body_mass is None:
                 body_mass = np.array(self._base_body_mass[env_indices], copy=True)
             delta = self._coerce_reset_field(
-                randomization.base_mass_delta,
+                base_mass_delta_field,
                 name="base_mass_delta",
                 num_reset=num_reset,
                 shaped_tail=(),
@@ -3863,20 +3956,22 @@ class MuJoCoBackend(SimBackend):
             writes.append(ModelWrite("body_mass", body_mass))
 
         body_ipos = None
-        if randomization.body_ipos is not None:
+        body_ipos_field = randomization.get("body_ipos")
+        if body_ipos_field is not None:
             body_ipos = self._coerce_reset_field(
-                randomization.body_ipos,
+                body_ipos_field,
                 name="body_ipos",
                 num_reset=num_reset,
                 shaped_tail=(nbody, 3),
             )
-        if randomization.base_com_offset is not None:
+        base_com_offset_field = randomization.get("base_com_offset")
+        if base_com_offset_field is not None:
             if body_ipos is None:
                 body_ipos = np.array(self._base_body_ipos[env_indices], copy=True)
             else:
                 body_ipos = body_ipos.reshape(num_reset, nbody, 3)
             offset = self._coerce_reset_field(
-                randomization.base_com_offset,
+                base_com_offset_field,
                 name="base_com_offset",
                 num_reset=num_reset,
                 shaped_tail=(3,),
@@ -3885,99 +3980,110 @@ class MuJoCoBackend(SimBackend):
         if body_ipos is not None:
             writes.append(ModelWrite("body_ipos", body_ipos.reshape(num_reset, nbody, 3)))
 
-        if randomization.gravity is not None:
+        gravity_field = randomization.get("gravity")
+        if gravity_field is not None:
             gravity = self._coerce_reset_field(
-                randomization.gravity,
+                gravity_field,
                 name="gravity",
                 num_reset=num_reset,
                 shaped_tail=(3,),
             )
             writes.append(ModelWrite("gravity", gravity))
 
-        if randomization.body_iquat is not None:
+        body_iquat_field = randomization.get("body_iquat")
+        if body_iquat_field is not None:
             body_iquat = self._coerce_reset_field(
-                randomization.body_iquat,
+                body_iquat_field,
                 name="body_iquat",
                 num_reset=num_reset,
                 shaped_tail=(nbody, 4),
             ).reshape(num_reset, nbody, 4)
             writes.append(ModelWrite("body_iquat", body_iquat))
 
-        if randomization.body_inertia is not None:
+        body_inertia_field = randomization.get("body_inertia")
+        if body_inertia_field is not None:
             body_inertia = self._coerce_reset_field(
-                randomization.body_inertia,
+                body_inertia_field,
                 name="body_inertia",
                 num_reset=num_reset,
                 shaped_tail=(nbody, 3),
             ).reshape(num_reset, nbody, 3)
             writes.append(ModelWrite("body_inertia", body_inertia))
 
-        if randomization.geom_friction is not None:
+        geom_friction_field = randomization.get("geom_friction")
+        if geom_friction_field is not None:
             geom_friction = self._coerce_reset_field(
-                randomization.geom_friction,
+                geom_friction_field,
                 name="geom_friction",
                 num_reset=num_reset,
                 shaped_tail=(self._model.ngeom, 3),
             ).reshape(num_reset, self._model.ngeom, 3)
             writes.append(ModelWrite("geom_friction", geom_friction))
 
-        if randomization.geom_size is not None:
+        geom_size_field = randomization.get("geom_size")
+        if geom_size_field is not None:
             geom_size = self._coerce_reset_field(
-                randomization.geom_size,
+                geom_size_field,
                 name="geom_size",
                 num_reset=num_reset,
                 shaped_tail=(self._model.ngeom, 3),
             ).reshape(num_reset, self._model.ngeom, 3)
             writes.append(ModelWrite("geom_size", geom_size))
 
-        if randomization.geom_solref is not None:
+        geom_solref_field = randomization.get("geom_solref")
+        if geom_solref_field is not None:
             geom_solref = self._coerce_reset_field(
-                randomization.geom_solref,
+                geom_solref_field,
                 name="geom_solref",
                 num_reset=num_reset,
                 shaped_tail=(self._model.ngeom, mujoco.mjNREF),
             ).reshape(num_reset, self._model.ngeom, mujoco.mjNREF)
             writes.append(ModelWrite("geom_solref", geom_solref))
 
-        if randomization.geom_solimp is not None:
+        geom_solimp_field = randomization.get("geom_solimp")
+        if geom_solimp_field is not None:
             geom_solimp = self._coerce_reset_field(
-                randomization.geom_solimp,
+                geom_solimp_field,
                 name="geom_solimp",
                 num_reset=num_reset,
                 shaped_tail=(self._model.ngeom, mujoco.mjNIMP),
             ).reshape(num_reset, self._model.ngeom, mujoco.mjNIMP)
             writes.append(ModelWrite("geom_solimp", geom_solimp))
 
-        if randomization.dof_armature is not None:
+        dof_armature_field = randomization.get("dof_armature")
+        if dof_armature_field is not None:
             dof_armature = self._coerce_reset_field(
-                randomization.dof_armature,
+                dof_armature_field,
                 name="dof_armature",
                 num_reset=num_reset,
                 shaped_tail=(self.nv,),
             )
             writes.append(ModelWrite("dof_armature", dof_armature))
 
-        if randomization.dof_damping is not None:
+        dof_damping_field = randomization.get("dof_damping")
+        if dof_damping_field is not None:
             dof_damping = self._coerce_reset_field(
-                randomization.dof_damping,
+                dof_damping_field,
                 name="dof_damping",
                 num_reset=num_reset,
                 shaped_tail=(self.nv,),
             )
             writes.append(ModelWrite("dof_damping", dof_damping))
 
-        if randomization.dof_frictionloss is not None:
+        dof_frictionloss_field = randomization.get("dof_frictionloss")
+        if dof_frictionloss_field is not None:
             dof_frictionloss = self._coerce_reset_field(
-                randomization.dof_frictionloss,
+                dof_frictionloss_field,
                 name="dof_frictionloss",
                 num_reset=num_reset,
                 shaped_tail=(self.nv,),
             )
             writes.append(ModelWrite("dof_frictionloss", dof_frictionloss))
 
-        if randomization.kp is not None:
+        kp_field = randomization.get("kp")
+        if kp_field is not None:
             kp = self._coerce_reset_field(
-                randomization.kp,
+                kp_field,
                 name="kp",
                 num_reset=num_reset,
                 shaped_tail=(self._model.nu,),
@@ -3987,9 +4093,10 @@ class MuJoCoBackend(SimBackend):
                 (ModelWrite("actuator_gainprm", kp, 0), ModelWrite("actuator_biasprm", -kp, 1))
             )
 
-        if randomization.kd is not None:
+        kd_field = randomization.get("kd")
+        if kd_field is not None:
             kd = self._coerce_reset_field(
-                randomization.kd,
+                kd_field,
                 name="kd",
                 num_reset=num_reset,
                 shaped_tail=(self._model.nu,),

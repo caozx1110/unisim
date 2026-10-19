@@ -5,8 +5,9 @@ import numpy as np
 import pytest
 
 mujoco = pytest.importorskip("mujoco")
+torch = pytest.importorskip("torch")
 from unisim.backend.mjwarp.backend import MjwarpBackend
-from unisim.dr.types import ResetRandomizationPayload
+from unisim.dr.types import TensorResetRandomizationPayload
 from unisim.entities import EntityStatePatch, SceneResetRequest
 from unisim.scene import SceneCfg
 
@@ -37,6 +38,13 @@ def _preparation_backend():
     return backend
 
 
+def _payload(**fields):
+    """Build a host-plane (torch.cpu) reset payload from NumPy-valued fields."""
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(np.asarray(values)) for name, values in fields.items()}
+    )
+
+
 @pytest.mark.parametrize(
     "problem",
     [
@@ -62,27 +70,29 @@ def test_model_preparation_is_pure_and_rejects_invalid_final_values(problem):
     rows = np.array([2, 0])
     mass = backend._dr_body_mass[rows].copy()
     mass[:, 1] *= 2
-    payload = ResetRandomizationPayload(body_mass=mass)
+    payload = _payload(body_mass=mass)
     if problem == "late_gain_shape":
-        payload.kd = np.zeros((2, 9))
+        payload.kd = torch.zeros((2, 9))
     elif problem == "late_gain_nan":
-        payload.kd = np.full((2, 1), np.nan)
+        payload.kd = torch.full((2, 1), torch.nan)
     elif problem == "late_iquat":
-        payload.body_iquat = np.zeros((2, backend._nbody, 4))
+        payload.body_iquat = torch.zeros((2, backend._nbody, 4))
     elif problem == "mass_negative":
         payload.body_mass[:, 1] = -1
     elif problem == "inertia_negative":
-        payload.body_inertia = np.full((2, backend._nbody, 3), -0.1)
+        payload.body_inertia = torch.full((2, backend._nbody, 3), -0.1)
     elif problem == "armature_negative":
-        payload.dof_armature = np.full((2, backend._nv), -0.1)
+        payload.dof_armature = torch.full((2, backend._nv), -0.1)
     elif problem == "friction_negative":
-        payload.geom_friction = np.full((2, backend._cpu_model.ngeom, 3), -0.1)
+        payload.geom_friction = torch.full((2, backend._cpu_model.ngeom, 3), -0.1)
     elif problem == "mass_delta_negative":
-        payload.base_mass_delta = np.array([-10.0, -10.0])
+        payload.base_mass_delta = torch.tensor([-10.0, -10.0])
     elif problem == "offset_overflow":
-        payload.base_com_offset = np.full((2, 3), np.finfo(np.float64).max)
+        payload.base_com_offset = torch.full(
+            (2, 3), float(np.finfo(np.float64).max), dtype=torch.float64
+        )
     elif problem == "body_mass_shape":
-        payload.body_mass = np.zeros((2, 99))
+        payload.body_mass = torch.zeros((2, 99))
     with pytest.raises((ValueError, TypeError)):
         backend._prepare_reset_randomization(rows, payload)
     for name, value in before.items():
@@ -92,9 +102,7 @@ def test_model_preparation_is_pure_and_rejects_invalid_final_values(problem):
 def test_prepared_dr_rows_do_not_alias_callers_or_live_mirrors():
     backend = _preparation_backend()
     mass = backend._dr_body_mass[[2, 0]].copy()
-    payload = ResetRandomizationPayload(
-        body_mass=mass, kp=np.ones((2, 1)) * 3, kd=np.ones((2, 1)) * 2
-    )
+    payload = _payload(body_mass=mass, kp=np.ones((2, 1)) * 3, kd=np.ones((2, 1)) * 2)
     plan = backend._prepare_reset_randomization(np.array([2, 0]), payload)
     expected = plan.fields["body_mass"].copy()
     mass[:] = 7
@@ -123,9 +131,7 @@ def gpu_backend(tmp_path):
     "problem",
     ["shape", "nan", "duplicate", "negative", "overflow", "late_dr", "negative_mass", "quaternion"],
 )
-def test_invalid_host_commit_never_mutates_cache_model_or_device(
-    gpu_backend, monkeypatch, problem
-):
+def test_invalid_host_commit_never_mutates_cache_model_or_device(gpu_backend, monkeypatch, problem):
     backend = gpu_backend
     backend._host_step(np.ones((3, 1)))
     before = backend._host_get_state(("qpos", "qvel", "ctrl"))
@@ -146,13 +152,11 @@ def test_invalid_host_commit_never_mutates_cache_model_or_device(
         qvel = qvel.astype(np.float64)
         qvel[0, 0] = 1e100
     elif problem == "late_dr":
-        payload = ResetRandomizationPayload(body_mass=mass[rows] * 2, kd=np.zeros((2, 9)))
+        payload = _payload(body_mass=mass[rows] * 2, kd=np.zeros((2, 9)))
     elif problem == "negative_mass":
-        payload = ResetRandomizationPayload(body_mass=-mass[rows])
+        payload = _payload(body_mass=-mass[rows])
     elif problem == "quaternion":
-        payload = ResetRandomizationPayload(
-            body_mass=mass[rows] * 2, body_iquat=np.zeros((2, backend._nbody, 4))
-        )
+        payload = _payload(body_mass=mass[rows] * 2, body_iquat=np.zeros((2, backend._nbody, 4)))
     calls = []
     monkeypatch.setattr(backend, "_upload", lambda *args: calls.append("upload"))
     monkeypatch.setattr(backend, "_execute_device_reset", lambda: calls.append("reset"))
@@ -221,7 +225,7 @@ def test_host_native_failure_faults_all_state_reads(gpu_backend, monkeypatch, fa
     payload = None
     if failure == "model":
         monkeypatch.setattr(backend, "_upload", broken)
-        payload = ResetRandomizationPayload(body_mass=backend._dr_body_mass[[0]].copy())
+        payload = _payload(body_mass=backend._dr_body_mass[[0]].copy())
     else:
         monkeypatch.setattr(backend, "_execute_device_" + failure, broken)
     with pytest.raises(RuntimeError, match="native write"):

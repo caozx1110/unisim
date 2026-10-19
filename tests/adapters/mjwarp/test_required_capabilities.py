@@ -7,12 +7,13 @@ import pytest
 
 from unisim import MjwarpBackend
 from unisim.backend.mjwarp.randomization import PrimitiveGeomBounds
-from unisim.dr.types import ResetRandomizationPayload
+from unisim.dr.types import TensorResetRandomizationPayload
 from unisim.scene import SceneCfg
 
 mujoco = pytest.importorskip("mujoco")
 pytest.importorskip("mujoco_warp")
 warp = pytest.importorskip("warp")
+torch = pytest.importorskip("torch")
 
 MODEL = """<mujoco>
   <option timestep="0.005" gravity="0 0 0"/>
@@ -51,6 +52,13 @@ def backend(tmp_path_factory):
     path = tmp_path_factory.mktemp("required-mjwarp") / "scene.xml"
     path.write_text(MODEL)
     return MjwarpBackend(SceneCfg(model_file=str(path)), 3, 0.005, base_name="object")
+
+
+def _payload(**fields):
+    """Build a host-plane (torch.cpu) reset payload from NumPy-valued fields."""
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(np.asarray(values)) for name, values in fields.items()}
+    )
 
 
 def _reset(backend, rows=None, payload=None, velocity=None, position=None):
@@ -99,7 +107,7 @@ def test_extended_model_rows_bounds_and_contact_effect(backend) -> None:
     solimp[..., 2] *= 2
     damping = backend.get_dof_damping()[None] + 0.1
     frictionloss = backend.get_dof_frictionloss()[None] + 0.01
-    payload = ResetRandomizationPayload(
+    payload = _payload(
         geom_size=sizes,
         geom_solref=solref,
         geom_solimp=solimp,
@@ -109,7 +117,7 @@ def test_extended_model_rows_bounds_and_contact_effect(backend) -> None:
     _reset(backend, np.array([1], dtype=np.int32), payload, position=0.08)
     for field in payload.requested_terms():
         values = getattr(backend._device_model, field).numpy()
-        np.testing.assert_allclose(values[1], getattr(payload, field)[0])
+        np.testing.assert_allclose(values[1], getattr(payload, field)[0].numpy())
         defaults = getattr(backend._cpu_model, field)
         np.testing.assert_allclose(
             values[[0, 2]], np.tile(defaults[None], (2, *([1] * defaults.ndim)))
@@ -131,7 +139,7 @@ def test_positive_kd_payload_preserves_mujoco_position_actuator_sign(backend) ->
     _reset(
         backend,
         rows,
-        ResetRandomizationPayload(kp=requested_kp, kd=requested_kd),
+        _payload(kp=requested_kp, kd=requested_kd),
         position=0.08,
     )
 
@@ -146,7 +154,7 @@ def test_positive_kd_payload_preserves_mujoco_position_actuator_sign(backend) ->
 @pytest.mark.parametrize("field,amount", (("dof_damping", 10.0), ("dof_frictionloss", 5.0)))
 def test_dof_randomization_changes_selected_world_motion(backend, field, amount) -> None:
     # Reset both fields explicitly because model DR persists across state resets.
-    baseline = ResetRandomizationPayload(
+    baseline = _payload(
         dof_damping=np.tile(backend.get_dof_damping(), (3, 1)),
         dof_frictionloss=np.tile(backend.get_dof_frictionloss(), (3, 1)),
     )
@@ -156,7 +164,7 @@ def test_dof_randomization_changes_selected_world_motion(backend, field, amount)
     _reset(
         backend,
         np.array([1], dtype=np.int32),
-        ResetRandomizationPayload(**{field: values}),
+        _payload(**{field: values}),
         velocity=1.0,
         position=1.0,
     )
@@ -171,9 +179,9 @@ def test_new_field_validation_precedes_state_or_model_mutation(backend) -> None:
     before = backend._host_get_state(("qpos",))["qpos"].copy()
     size_before = backend._device_model.geom_size.numpy().copy()
     rows = np.array([0], dtype=np.int32)
-    payload = ResetRandomizationPayload(geom_size=backend.get_geom_sizes()[None].copy())
+    payload = _payload(geom_size=backend.get_geom_sizes()[None].copy())
     payload.geom_size[0, backend.get_geom_id("ball"), 0] = 0.2
-    payload.dof_damping = np.full((1, backend.get_init_qvel().size), np.nan)
+    payload.dof_damping = torch.full((1, backend.get_init_qvel().size), torch.nan)
     with pytest.raises(ValueError, match="finite"):
         _reset(backend, rows, payload, position=10.0)
     np.testing.assert_array_equal(backend._host_get_state(("qpos",))["qpos"], before)
@@ -191,9 +199,8 @@ def test_contact_parameters_change_selected_world_contact_force(backend, field) 
         "geom_solref": backend.get_geom_solref(),
         "geom_solimp": backend.get_geom_solimp(),
     }
-    payload = ResetRandomizationPayload(
-        **{name: np.tile(value[None], (3, 1, 1)) for name, value in defaults.items()}
-    )
+    tiled = {name: np.tile(value[None], (3, 1, 1)) for name, value in defaults.items()}
+    payload = _payload(**tiled)
     _reset(backend, payload=payload, position=0.045)
     original_force = backend._host_read_sensor("ball_force").copy()
     assert np.linalg.norm(original_force[0]) > 0
@@ -210,7 +217,7 @@ def test_contact_parameters_change_selected_world_contact_force(backend, field) 
     _reset(
         backend,
         np.array([1], dtype=np.int32),
-        ResetRandomizationPayload(**{field: values}),
+        _payload(**{field: values}),
         position=0.045,
     )
     changed_force = backend._host_read_sensor("ball_force")
@@ -247,7 +254,7 @@ def test_extended_field_shapes_ranges_and_dtypes_fail_before_mutation(backend, f
     before = backend._host_get_state(("qpos",))["qpos"].copy()
     error = TypeError if kind == "integer" else (ValueError, NotImplementedError)
     with pytest.raises(error):
-        _reset(backend, np.array([0]), ResetRandomizationPayload(**{field: values}), position=3)
+        _reset(backend, np.array([0]), _payload(**{field: values}), position=3)
     np.testing.assert_array_equal(backend._host_get_state(("qpos",))["qpos"], before)
 
 

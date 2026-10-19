@@ -42,6 +42,7 @@ from unisim.backend.base import (
     normalize_play_render_mode,
     unsupported_debug_overlay_error,
 )
+from unisim.dr._host import interval_payload_to_host, reset_payload_to_host_dict
 from unisim.dr.types import (
     INTERVAL_TERM_BODY_FORCE,
     INTERVAL_TERM_BODY_TORQUE,
@@ -57,11 +58,10 @@ from unisim.dr.types import (
     DomainRandomizationCapabilities,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
     require_op_body_ids,
-    require_op_host_payload,
+    validate_tensor_reset_payload,
 )
 from unisim.entity_state import entity_state_snapshot, prepare_scene_reset
 from unisim.scene import SceneCfg, require_scene_composition_support
@@ -1983,23 +1983,26 @@ class GenesisBackend(SimBackend):
 
     def _validate_tensor_reset_payload(
         self,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None,
+        randomization: TensorResetRandomizationPayload | None,
         *,
         row_count: int,
     ) -> TensorResetRandomizationPayload | None:
         """Validate a selected-row or full-width device reset payload."""
 
-        if randomization is None or randomization.is_empty():
+        if randomization is None:
             return None
         if not isinstance(randomization, TensorResetRandomizationPayload):
             raise TypeError(
                 "genesis tensor reset randomization requires a TensorResetRandomizationPayload"
             )
-        allowed = {RESET_TERM_BODY_MASS, RESET_TERM_KP, RESET_TERM_KD}
-        unsupported = set(randomization.requested_terms()) - allowed
+        if randomization.is_empty():
+            return None
+        unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
+            randomization.requested_terms(), plane="device"
+        )
         if unsupported:
             raise NotImplementedError(
-                "genesis tensor reset randomization does not support terms: "
+                "genesis tensor reset randomization does not support device terms: "
                 + ", ".join(sorted(unsupported))
             )
         widths = {
@@ -2011,6 +2014,11 @@ class GenesisBackend(SimBackend):
             value = getattr(randomization, term)
             if value is None:
                 continue
+            if isinstance(value, self._torch.Tensor) and value.device.type != "cuda":
+                raise ValueError(
+                    f"genesis tensor reset {term} must live on the CUDA device plane, "
+                    f"got {value.device}; torch.cpu payloads form the host plane"
+                )
             expected = (row_count, width)
             operand = self._validate_torch_operand(term, value, shape=expected)
             if not bool(self._torch.isfinite(operand).all().item()):
@@ -2548,7 +2556,7 @@ class GenesisBackend(SimBackend):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, dict[str, float]]:
         """Commit selected CUDA state while preserving untouched rows."""
 
@@ -2611,7 +2619,7 @@ class GenesisBackend(SimBackend):
         reset_mask: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
         *,
         full_refresh: bool = False,
     ) -> dict[str, dict[str, float]]:
@@ -3395,16 +3403,26 @@ class GenesisBackend(SimBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, dict[str, float]]:
+        host_randomization: dict[str, np.ndarray] | None = None
         if randomization is not None:
-            unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
-                randomization.requested_terms()
-            )
-            if unsupported:
-                raise NotImplementedError(
-                    f"Genesis reset randomization does not support terms: {sorted(unsupported)}"
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "genesis reset randomization must be a TensorResetRandomizationPayload or None"
                 )
+            if not randomization.is_empty():
+                unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
+                    randomization.requested_terms(), plane="host"
+                )
+                if unsupported:
+                    raise NotImplementedError(
+                        f"Genesis reset randomization does not support terms: {sorted(unsupported)}"
+                    )
+                # Host plane means torch.cpu tensors; materialize NumPy views at
+                # this private boundary through unisim.dr._host.
+                validate_tensor_reset_payload(randomization, device="cpu")
+                host_randomization = reset_payload_to_host_dict(randomization)
         self._require_state("set_state")
         rows = self._validate_rows(env_indices)
         qpos_array = np.asarray(qpos, dtype=np.float32)
@@ -3426,8 +3444,8 @@ class GenesisBackend(SimBackend):
         t0 = time.perf_counter()
         if self._portable_mode:
             portable_randomization = (
-                self._prepare_portable_reset_randomization(randomization, rows)
-                if randomization is not None and not randomization.is_empty()
+                self._prepare_portable_reset_randomization(host_randomization, rows)
+                if host_randomization is not None
                 else None
             )
             full_qpos = self._qpos_cache[1].copy()
@@ -3462,8 +3480,8 @@ class GenesisBackend(SimBackend):
         timing["set_state_reset_upload_ms"] = (time.perf_counter() - t0) * 1000.0
 
         t0 = time.perf_counter()
-        if randomization is not None and not randomization.is_empty():
-            self._apply_reset_randomization(randomization, rows)
+        if host_randomization is not None:
+            self._apply_reset_randomization(host_randomization, rows)
         self._refresh_host_cache()
         self._time_cache[rows] = 0.0
         timing["set_state_host_cache_refresh_ms"] = (time.perf_counter() - t0) * 1000.0
@@ -3511,6 +3529,11 @@ class GenesisBackend(SimBackend):
         return DomainRandomizationCapabilities(
             supported_reset_terms=frozenset(
                 {RESET_TERM_BODY_MASS, RESET_TERM_BASE_MASS, RESET_TERM_KP, RESET_TERM_KD}
+            ),
+            # The device plane is the CUDA tensor path in set_state_tensor /
+            # set_state_tensor_mask; the delta term stays host-only there.
+            supported_device_reset_terms=frozenset(
+                {RESET_TERM_BODY_MASS, RESET_TERM_KP, RESET_TERM_KD}
             ),
             supported_interval_terms=frozenset({INTERVAL_TERM_BODY_FORCE}),
         )
@@ -3630,13 +3653,11 @@ class GenesisBackend(SimBackend):
 
     def _prepare_portable_reset_randomization(
         self,
-        randomization: ResetRandomizationPayload,
+        host_values: Mapping[str, np.ndarray],
         rows: np.ndarray,
     ) -> _GenesisPortableResetRandomization:
         unsupported = [
-            term
-            for term in self._PORTABLE_UNSUPPORTED_RESET_TERMS
-            if getattr(randomization, term) is not None
+            term for term in self._PORTABLE_UNSUPPORTED_RESET_TERMS if term in host_values
         ]
         if unsupported:
             raise NotImplementedError(
@@ -3645,13 +3666,15 @@ class GenesisBackend(SimBackend):
             )
 
         body_mass: np.ndarray | None = None
-        if randomization.body_mass is not None:
-            body_mass = np.asarray(randomization.body_mass, dtype=np.float32)
+        body_mass_value = host_values.get("body_mass")
+        if body_mass_value is not None:
+            body_mass = np.asarray(body_mass_value, dtype=np.float32)
             expected = (rows.size, self._metadata.nbody)
             if body_mass.shape != expected:
                 raise ValueError(f"body_mass must have shape {expected}, got {body_mass.shape}")
             body_mass = body_mass.copy()
-        if randomization.base_mass_delta is not None:
+        base_mass_delta_value = host_values.get("base_mass_delta")
+        if base_mass_delta_value is not None:
             if body_mass is None:
                 body_mass = self._portable_default_body_mass(rows)
             if self._base_link_idx is None:
@@ -3660,7 +3683,7 @@ class GenesisBackend(SimBackend):
                     "the base link"
                 )
             delta = np.asarray(
-                randomization.base_mass_delta,
+                base_mass_delta_value,
                 dtype=np.float32,
             ).reshape(-1)
             if delta.shape != (rows.size,):
@@ -3696,24 +3719,26 @@ class GenesisBackend(SimBackend):
             )
 
         body_ipos: np.ndarray | None = None
-        if randomization.body_ipos is not None or randomization.base_com_offset is not None:
-            if randomization.body_ipos is None:
+        body_ipos_value = host_values.get("body_ipos")
+        base_com_offset_value = host_values.get("base_com_offset")
+        if body_ipos_value is not None or base_com_offset_value is not None:
+            if body_ipos_value is None:
                 ipos_values = self._portable_default_body_ipos[rows].copy()
             else:
-                ipos_values = np.asarray(randomization.body_ipos, dtype=np.float32)
+                ipos_values = np.asarray(body_ipos_value, dtype=np.float32)
                 ipos_expected = (rows.size, self._metadata.nbody, 3)
                 if ipos_values.shape != ipos_expected:
                     raise ValueError(
                         f"body_ipos must have shape {ipos_expected}, got {ipos_values.shape}"
                     )
                 ipos_values = ipos_values.copy()
-            if randomization.base_com_offset is not None:
+            if base_com_offset_value is not None:
                 if self._base_link_idx is None:
                     raise ValueError(
                         "genesis base_com_offset randomization requires base_name to "
                         "identify the base link"
                     )
-                delta = np.asarray(randomization.base_com_offset, dtype=np.float32)
+                delta = np.asarray(base_com_offset_value, dtype=np.float32)
                 if delta.shape != (rows.size, 3):
                     raise ValueError(
                         f"base_com_offset must have shape ({rows.size}, 3), got {delta.shape}"
@@ -3753,7 +3778,7 @@ class GenesisBackend(SimBackend):
         if not mapped_dofs.all():
             raise RuntimeError("portable genesis public DOF property binding is incomplete")
         for term, field in self._RESET_TERM_DOF_FIELDS.items():
-            value = getattr(randomization, term)
+            value = host_values.get(term)
             if value is None:
                 prepared_dof_values[field] = None
                 continue
@@ -3767,8 +3792,8 @@ class GenesisBackend(SimBackend):
                 raise ValueError(f"{term} must contain only non-negative values")
             prepared_dof_values[field] = values.copy()
         for value, name in (
-            (randomization.kp, "kp"),
-            (randomization.kd, "kd"),
+            (host_values.get("kp"), "kp"),
+            (host_values.get("kd"), "kd"),
         ):
             if value is None:
                 prepared_gains[name] = None
@@ -3879,17 +3904,13 @@ class GenesisBackend(SimBackend):
     )
 
     def _apply_reset_randomization(
-        self, randomization: ResetRandomizationPayload, rows: np.ndarray
+        self, host_values: Mapping[str, np.ndarray], rows: np.ndarray
     ) -> None:
         if self._portable_mode:
             raise NotImplementedError(
                 "portable genesis entity reset randomization is not supported"
             )
-        unsupported = [
-            term
-            for term in self._UNSUPPORTED_RESET_TERMS
-            if getattr(randomization, term) is not None
-        ]
+        unsupported = [term for term in self._UNSUPPORTED_RESET_TERMS if term in host_values]
         if unsupported:
             raise NotImplementedError(
                 "genesis backend does not support reset domain randomization terms: "
@@ -3897,14 +3918,15 @@ class GenesisBackend(SimBackend):
                 "measured items)."
             )
         envs_idx = rows.tolist()
-        body_mass = randomization.body_mass
-        if randomization.base_mass_delta is not None:
+        body_mass = host_values.get("body_mass")
+        base_mass_delta = host_values.get("base_mass_delta")
+        if base_mass_delta is not None:
             if self._base_link_idx is None:
                 raise ValueError(
                     "genesis base_mass_delta randomization requires base_name to identify "
                     "the base link"
                 )
-            delta = np.asarray(randomization.base_mass_delta, dtype=np.float32).reshape(-1)
+            delta = np.asarray(base_mass_delta, dtype=np.float32).reshape(-1)
             if delta.shape != (rows.size,):
                 raise ValueError(
                     f"base_mass_delta must have shape ({rows.size},), got {delta.shape}"
@@ -3923,8 +3945,8 @@ class GenesisBackend(SimBackend):
                 raise ValueError(f"body_mass must have shape {expected}, got {mass.shape}")
             self._entity.set_links_inertial_mass(self._to_device(mass), envs_idx=envs_idx)
         for value, name, setter in (
-            (randomization.kp, "kp", self._entity.set_dofs_kp),
-            (randomization.kd, "kd", self._entity.set_dofs_kv),
+            (host_values.get("kp"), "kp", self._entity.set_dofs_kp),
+            (host_values.get("kd"), "kd", self._entity.set_dofs_kv),
         ):
             if value is None:
                 continue
@@ -3952,17 +3974,18 @@ class GenesisBackend(SimBackend):
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), require_op_host_payload(op)
+                    interval_payload_to_host(require_op_body_ids(op)),
+                    interval_payload_to_host(op.payload),
                 ),
             }
             if self._portable_mode:
 
                 def apply_body_torque(op: IntervalTermOp) -> None:
-                    ids = require_op_body_ids(op)
+                    ids = interval_payload_to_host(require_op_body_ids(op))
                     self.apply_body_force(
                         ids,
                         np.zeros((self._num_envs, len(ids), 3), dtype=np.float32),
-                        torque=require_op_host_payload(op),
+                        torque=interval_payload_to_host(op.payload),
                     )
 
                 self._interval_term_handler_cache[INTERVAL_TERM_BODY_TORQUE] = apply_body_torque

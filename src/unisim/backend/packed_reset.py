@@ -8,64 +8,22 @@ from typing import Any
 import numpy as np
 
 from unisim.dr.types import (
-    RESET_TERM_BASE_COM,
-    RESET_TERM_BASE_MASS,
-    RESET_TERM_BODY_INERTIA,
-    RESET_TERM_BODY_IPOS,
-    RESET_TERM_BODY_IQUAT,
-    RESET_TERM_BODY_MASS,
-    RESET_TERM_DOF_ARMATURE,
-    RESET_TERM_DOF_DAMPING,
-    RESET_TERM_DOF_FRICTIONLOSS,
-    RESET_TERM_GEOM_FRICTION,
-    RESET_TERM_GEOM_SIZE,
-    RESET_TERM_GEOM_SOLIMP,
-    RESET_TERM_GEOM_SOLREF,
-    RESET_TERM_GRAVITY,
-    RESET_TERM_KD,
-    RESET_TERM_KP,
+    RESET_TERM_SPECS,
     TensorResetRandomizationPayload,
     _validate_reset_term,
 )
 
-PACKED_RESET_MODEL_FIELDS = frozenset(
-    {
-        RESET_TERM_GRAVITY,
-        RESET_TERM_BODY_IQUAT,
-        RESET_TERM_BODY_INERTIA,
-        RESET_TERM_BODY_IPOS,
-        RESET_TERM_BODY_MASS,
-        RESET_TERM_DOF_ARMATURE,
-        RESET_TERM_DOF_DAMPING,
-        RESET_TERM_DOF_FRICTIONLOSS,
-        RESET_TERM_GEOM_FRICTION,
-        RESET_TERM_GEOM_SIZE,
-        RESET_TERM_GEOM_SOLIMP,
-        RESET_TERM_GEOM_SOLREF,
-        RESET_TERM_KP,
-        RESET_TERM_KD,
-    }
-)
-PACKED_RESET_HOST_ONLY_FIELDS = frozenset({RESET_TERM_BASE_MASS, RESET_TERM_BASE_COM})
+# Field tables derive from the single authoritative RESET_TERM_SPECS source in
+# unisim.dr.types; every reset term is a packable model field, including the
+# delta terms whose merge with the baseline happens in Torch at commit time.
+PACKED_RESET_MODEL_FIELDS = frozenset(spec.name for spec in RESET_TERM_SPECS)
 PACKED_RESET_PERSISTENT_CHANNELS = frozenset(
     {"ctrl", "act", "qfrc_applied", "xfrc_applied", "qacc_warmstart"}
 )
 _PACKED_RESET_CANONICAL_NDIMS: dict[str, int] = {
-    RESET_TERM_GRAVITY: 1,
-    RESET_TERM_BODY_IQUAT: 2,
-    RESET_TERM_BODY_INERTIA: 2,
-    RESET_TERM_BODY_IPOS: 2,
-    RESET_TERM_BODY_MASS: 1,
-    RESET_TERM_DOF_ARMATURE: 1,
-    RESET_TERM_DOF_DAMPING: 1,
-    RESET_TERM_DOF_FRICTIONLOSS: 1,
-    RESET_TERM_GEOM_FRICTION: 2,
-    RESET_TERM_GEOM_SIZE: 2,
-    RESET_TERM_GEOM_SOLIMP: 2,
-    RESET_TERM_GEOM_SOLREF: 2,
-    RESET_TERM_KP: 1,
-    RESET_TERM_KD: 1,
+    spec.name: spec.tail_ndim for spec in RESET_TERM_SPECS
 }
+_PACKED_RESET_DELTA_FIELDS = frozenset(spec.name for spec in RESET_TERM_SPECS if spec.is_delta)
 
 
 def _expand_mask(mask: Any, ndim: int) -> Any:
@@ -130,6 +88,24 @@ class TorchPackedResetComposer:
             self._baselines[field] = self._torch.as_tensor(values, device=self.device)
         return self._baselines[field].detach()
 
+    def _new_staged(self, field: str) -> Any:
+        """Return a fresh staged table: zeros for delta terms, baseline copy else."""
+        if field in _PACKED_RESET_DELTA_FIELDS:
+            return self._torch.zeros_like(self.baseline(field))
+        return self.baseline(field).clone()
+
+    def _staged_final(self, field: str) -> Any:
+        """Return the staged table as final absolute values.
+
+        Delta terms merge in Torch at commit time: ``final = baseline + delta``.
+        The baseline itself is cold NumPy metadata materialized from
+        ``get_reset_term_default`` and promoted through prior commits.
+        """
+        staged = self._staged[field]
+        if field in _PACKED_RESET_DELTA_FIELDS:
+            return self.baseline(field) + staged
+        return staged
+
     def write_model_field(
         self,
         field: str,
@@ -138,13 +114,17 @@ class TorchPackedResetComposer:
         *,
         columns: Any | None = None,
     ) -> None:
-        """Merge a selected-row (optionally selected-column) final-value write."""
+        """Merge a selected-row (optionally selected-column) final-value write.
+
+        Delta-term values are staged as deltas and merged with the baseline in
+        Torch at commit time (``final = baseline + delta``).
+        """
         self._validate_field(field)
         rows = self._validate_rows(rows)
         values = self._validate_values(field, values, rows, columns)
         target = self._staged.get(field)
         if target is None:
-            target = self.baseline(field).clone()
+            target = self._new_staged(field)
         selected = target.index_select(0, rows)
         if columns is None:
             selected.copy_(values)
@@ -172,7 +152,7 @@ class TorchPackedResetComposer:
             )
         target = self._staged.get(field)
         if target is None:
-            target = baseline.clone()
+            target = self._new_staged(field)
         if columns is None:
             target.copy_(self._torch.where(_expand_mask(mask, values.ndim), values, target))
         else:
@@ -348,13 +328,14 @@ class TorchPackedResetComposer:
         """
         rows = self._validate_rows(rows)
         started = time.perf_counter()
+        finals = {field: self._staged_final(field) for field in self._staged}
         payload = (
             None
-            if not self._staged
+            if not finals
             else TensorResetRandomizationPayload(
                 **{
                     field: tensor.index_select(0, rows).contiguous()
-                    for field, tensor in self._staged.items()
+                    for field, tensor in finals.items()
                 }
             )
         )
@@ -363,8 +344,8 @@ class TorchPackedResetComposer:
         result = self.backend.set_state_tensor(rows, qpos, qvel, payload)
         self._apply_mocap_poses()
         commit_ms = (time.perf_counter() - commit_started) * 1000.0
-        for field, staged in self._staged.items():
-            self.baseline(field).index_copy_(0, rows, staged.index_select(0, rows))
+        for field, staged_final in finals.items():
+            self.baseline(field).index_copy_(0, rows, staged_final.index_select(0, rows))
         timing = dict((result or {}).get("timing", {}))
         timing.update(
             {
@@ -379,15 +360,16 @@ class TorchPackedResetComposer:
         """Commit full-width state plus staged writes selected by a bool mask."""
         mask = self._validate_state_mask(reset_mask)
         started = time.perf_counter()
+        finals = {field: self._staged_final(field) for field in self._staged}
         payload = (
             None
-            if not self._staged
+            if not finals
             else TensorResetRandomizationPayload(
                 **{
                     field: self._torch.where(
                         _expand_mask(mask, tensor.ndim), tensor, self.baseline(field)
                     ).contiguous()
-                    for field, tensor in self._staged.items()
+                    for field, tensor in finals.items()
                 }
             )
         )
@@ -396,9 +378,11 @@ class TorchPackedResetComposer:
         result = self.backend.set_state_tensor_mask(mask, qpos, qvel, payload, full_refresh=False)
         self._apply_mocap_poses()
         commit_ms = (time.perf_counter() - commit_started) * 1000.0
-        for field, staged in self._staged.items():
+        for field, staged_final in finals.items():
             self.baseline(field).copy_(
-                self._torch.where(_expand_mask(mask, staged.ndim), staged, self.baseline(field))
+                self._torch.where(
+                    _expand_mask(mask, staged_final.ndim), staged_final, self.baseline(field)
+                )
             )
         timing = dict((result or {}).get("timing", {}))
         timing.update(
@@ -453,11 +437,6 @@ class TorchPackedResetComposer:
         self._mocap_staged.clear()
 
     def _validate_field(self, field: str) -> None:
-        if field in PACKED_RESET_HOST_ONLY_FIELDS:
-            raise NotImplementedError(
-                f"reset field {field!r} is a host-only delta-merge term and is "
-                "deliberately excluded from device packed reset transactions"
-            )
         _validate_reset_term(field)
         if field not in PACKED_RESET_MODEL_FIELDS:
             raise NotImplementedError(f"packed reset transactions do not support {field!r}")

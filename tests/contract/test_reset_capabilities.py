@@ -5,12 +5,12 @@ import pytest
 
 from unisim import FakeBackend
 from unisim.backend.base import BackendMocapPoseBinding
-from unisim.dr.types import DomainRandomizationCapabilities, ResetRandomizationPayload
+from unisim.dr.types import DomainRandomizationCapabilities, TensorResetRandomizationPayload
 
 
 def test_new_reset_terms_are_never_silently_advertised_or_filtered() -> None:
     fields = ("geom_size", "geom_solref", "geom_solimp", "dof_damping", "dof_frictionloss")
-    payload = ResetRandomizationPayload(**{name: np.zeros((1, 1)) for name in fields})
+    payload = TensorResetRandomizationPayload(**{name: np.zeros((1, 1)) for name in fields})
     assert payload.requested_terms() == frozenset(fields)
     assert not payload.is_empty()
     unsupported = DomainRandomizationCapabilities().get_unsupported_reset_terms(
@@ -24,6 +24,61 @@ def test_new_reset_terms_are_never_silently_advertised_or_filtered() -> None:
     )
     supported_caps = DomainRandomizationCapabilities(supported_reset_terms=frozenset(fields))
     assert not supported_caps.get_unsupported_reset_terms(payload.requested_terms())
+
+
+def test_reset_randomization_conformance_round_trips_one_declared_term() -> None:
+    pytest.importorskip("torch")
+    from unisim.backend.base import (
+        TensorDataPlane,
+        TensorExecution,
+        TensorLifecycleCapabilities,
+    )
+    from unisim.conformance import assert_reset_randomization_conformance
+
+    class RoundTripBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__(num_envs=2, num_actuators=3)
+            self.kp_table = np.full(3, 20.0, dtype=np.float32)
+
+        def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
+            return DomainRandomizationCapabilities(supported_reset_terms=frozenset({"kp"}))
+
+        def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
+            return TensorLifecycleCapabilities(
+                execution=TensorExecution.HOST_BRIDGE,
+                selected_reset=True,
+                reset_randomization=True,
+                state_fields=frozenset({"qpos", "qvel"}),
+                torch_devices=("cpu",),
+                data_plane=TensorDataPlane.HOST_BRIDGE,
+                stream_event_ownership="test-stub",
+            )
+
+        def get_reset_term_default(self, term: str) -> np.ndarray:
+            assert term == "kp"
+            return self.kp_table.copy()
+
+        def get_default_qpos(self) -> np.ndarray:
+            return np.zeros(3, dtype=np.float32)
+
+        def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
+            if randomization is not None and randomization.kp is not None:
+                self.kp_table = randomization.kp.detach().cpu().numpy()[0].copy()
+            return None
+
+    backend = RoundTripBackend()
+    assert_reset_randomization_conformance(backend)
+    np.testing.assert_allclose(backend.kp_table, 20.05, rtol=1e-4)
+
+    class SilentBackend(RoundTripBackend):
+        def set_state_tensor(self, env_indices, qpos, qvel, randomization=None):
+            return None
+
+    with pytest.raises((AssertionError, ValueError)):
+        assert_reset_randomization_conformance(SilentBackend())
+
+    # FakeBackend declares no reset terms: the check is a no-op.
+    assert_reset_randomization_conformance(FakeBackend())
 
 
 @pytest.mark.parametrize(
@@ -70,7 +125,7 @@ def test_model_file_adapter_rejects_new_payload_before_any_state_access(adapter,
             np.array([0]),
             np.zeros((1, 1)),
             np.zeros((1, 1)),
-            ResetRandomizationPayload(**{field: np.zeros((1, 1))}),
+            TensorResetRandomizationPayload(**{field: np.zeros((1, 1))}),
         )
 
 

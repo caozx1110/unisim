@@ -19,7 +19,6 @@ from .conformance import assert_backend_conformance
 from .contract import (
     COMPLETION_CONTRACT_VERSION,
     COMPLETION_OPERATIONS,
-    PACKED_RESET_HOST_ONLY_FIELDS,
     PACKED_RESET_MODEL_FIELDS,
     PACKED_RESET_PERSISTENT_CHANNELS,
     BackendCapability,
@@ -132,7 +131,6 @@ __all__ = [
     "COMPLETION_OPERATIONS",
     "CompletionToken",
     "TensorIOSpec",
-    "PACKED_RESET_HOST_ONLY_FIELDS",
     "PACKED_RESET_MODEL_FIELDS",
     "PACKED_RESET_PERSISTENT_CHANNELS",
     "TorchPackedResetComposer",

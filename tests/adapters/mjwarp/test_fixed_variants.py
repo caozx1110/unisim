@@ -28,7 +28,7 @@ from unisim.dr.types import (
     FixedVariantLayout,
     FixedVariantPlan,
     ModelSourceDescriptor,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 from unisim.scene import SceneCfg
 
@@ -242,6 +242,7 @@ def test_mjwarp_fixed_variant_backend_defaults_playback_and_graph_safe_step(
     warp.init()
     if not bool(warp.get_device().is_cuda):
         pytest.skip("mjwarp fixed-variant runtime tests require CUDA")
+    torch = pytest.importorskip("torch")
 
     sphere = _write_variant(tmp_path / "sphere.xml", "sphere", rgba="1 0 0 1")
     cone = _write_variant(tmp_path / "cone.xml", "cone", rgba="0 0 1 1", mass=2.0)
@@ -302,7 +303,9 @@ def test_mjwarp_fixed_variant_backend_defaults_playback_and_graph_safe_step(
         np.array([1], dtype=np.int32),
         qpos[1:2],
         qvel[1:2],
-        randomization=ResetRandomizationPayload(body_mass=requested_mass[None]),
+        randomization=TensorResetRandomizationPayload(
+            body_mass=torch.as_tensor(requested_mass[None])
+        ),
     )
     committed_mass = backend.model.body_mass.numpy()
     np.testing.assert_allclose(committed_mass[0], original_mass[0], rtol=2e-6)

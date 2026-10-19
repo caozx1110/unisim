@@ -328,7 +328,7 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         declare(
             "tensor.device_reset_randomization",
             unsupported,
-            "Packed host-bridge reset applies host NumPy payloads only",
+            "Packed host-bridge reset applies host-plane (torch.cpu) payload terms only",
         )
         declare("tensor.fixed_variants", unsupported, "Packed tensor reset has no fixed variants")
         declare("tensor.host_pre_step_control", unsupported, "Host callbacks remain NumPy-only")
@@ -408,7 +408,7 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         declare(
             "tensor.device_reset_randomization",
             unsupported,
-            "Packed host-bridge reset applies host NumPy payloads only",
+            "Packed host-bridge reset applies host-plane (torch.cpu) payload terms only",
         )
         declare("tensor.fixed_variants", unsupported, "Packed tensor reset has no fixed variants")
         declare("tensor.host_pre_step_control", unsupported, "Host callbacks remain NumPy-only")

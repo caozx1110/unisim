@@ -21,9 +21,18 @@ from unisim.backend.isaacsim.raw_usd_cache import (
     RoleUSDCache,
     resolve_raw_usd_cache_root,
 )
-from unisim.dr.types import FixedVariantPlan, ModelSourceDescriptor, ResetRandomizationPayload
+from unisim.dr.types import FixedVariantPlan, ModelSourceDescriptor, TensorResetRandomizationPayload
 from unisim.entities import EntityInitialState, EntityVariantBinding, SceneEntitySpec
 from unisim.scene import SceneCfg
+
+
+def _tensor_reset_payload(**fields: np.ndarray) -> TensorResetRandomizationPayload:
+    """Build the torch-first payload lazily; Isaac-only paths always have Torch."""
+    torch = pytest.importorskip("torch")
+
+    return TensorResetRandomizationPayload(
+        **{name: torch.as_tensor(value, dtype=torch.float32) for name, value in fields.items()}
+    )
 
 
 def _final_operation_scene(tmp_path: Path) -> SceneCfg:
@@ -408,7 +417,7 @@ def test_final_integrated_mjcf_operation_scene_acceptance(tmp_path: Path, backen
                 np.array([0], dtype=np.intp),
                 np.asarray(current["qpos"])[[0]],
                 np.asarray(current["qvel"])[[0]],
-                ResetRandomizationPayload(geom_friction=friction_table[[0]]),
+                _tensor_reset_payload(geom_friction=friction_table[[0]]),
             )
             np.testing.assert_allclose(
                 owner.get_geom_friction()[0, 2:4, :2], 0.05, rtol=2e-5, atol=1e-6
@@ -451,7 +460,7 @@ def test_final_integrated_mjcf_operation_scene_acceptance(tmp_path: Path, backen
                 np.array([4], dtype=np.intp),
                 np.asarray(current["qpos"])[[4]],
                 np.asarray(current["qvel"])[[4]],
-                ResetRandomizationPayload(body_mass=mass_table[[4]]),
+                _tensor_reset_payload(body_mass=mass_table[[4]]),
             )
             np.testing.assert_allclose(
                 owner.get_body_mass()[:, object_body],

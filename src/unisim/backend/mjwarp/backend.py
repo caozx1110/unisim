@@ -44,6 +44,7 @@ from unisim.backend.base import (
     normalize_play_render_mode,
 )
 from unisim.backend.model_index import CompiledModelIndex
+from unisim.dr._host import interval_payload_to_host, reset_payload_to_host_dict
 from unisim.dr.types import (
     INTERVAL_TERM_BODY_FORCE,
     INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
@@ -70,12 +71,11 @@ from unisim.dr.types import (
     FixedVariantPlan,
     IntervalRandomizationPlan,
     IntervalTermOp,
-    ResetRandomizationPayload,
     TensorIntervalPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
     require_op_body_ids,
-    require_op_host_payload,
+    validate_tensor_reset_payload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.entity_state import entity_state_snapshot, prepare_scene_reset, row_columns
@@ -115,6 +115,19 @@ _RESET_SCRATCH_WORLD_FRACTION = 16
 
 def _expand_reset_mask(mask: Any, ndim: int) -> Any:
     return mask if ndim == 1 else mask.reshape(mask.shape + (1,) * (ndim - 1))
+
+
+def _reset_payload_plane_device(payload: TensorResetRandomizationPayload) -> Any:
+    """Return the shared Torch device backing a non-empty reset payload.
+
+    The payload's tensor devices decide its data plane: ``torch.cpu`` is the
+    host plane, any other device is the device plane. Mixed-device payloads
+    fail closed naming the offending field.
+    """
+    validate_tensor_reset_payload(payload)
+    first = getattr(payload, sorted(payload.requested_terms())[0])
+    validate_tensor_reset_payload(payload, device=first.device)
+    return first.device
 
 
 def _reset_scratch_capacity_for_batch(num_envs: int) -> int:
@@ -1979,9 +1992,10 @@ class MjwarpBackend(SimBackend):
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
         from unisim.backend.packed_reset import PACKED_RESET_MODEL_FIELDS
 
+        # Packed reset commits device-plane payloads through set_state_tensor,
+        # so the packable fields are exactly the declared device reset terms.
         packed_fields = frozenset(
-            (PACKED_RESET_MODEL_FIELDS & self.get_dr_capabilities().supported_reset_terms)
-            - {RESET_TERM_GEOM_SIZE}
+            PACKED_RESET_MODEL_FIELDS & self.get_dr_capabilities().supported_device_reset_terms
         )
         return TensorLifecycleCapabilities(
             execution=TensorExecution.DEVICE_RESIDENT,
@@ -2658,7 +2672,7 @@ class MjwarpBackend(SimBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, Any]:
         self._require_entity_healthy()
         self._sync_host_cache()
@@ -2723,24 +2737,32 @@ class MjwarpBackend(SimBackend):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, Any]:
         """Commit selected generalized state with device-resident scatter kernels."""
         import torch
 
         self._require_entity_healthy()
         device_randomization = None
-        if isinstance(randomization, TensorResetRandomizationPayload):
-            device_randomization = randomization
-            randomization = None
         model_randomized = False
         if randomization is not None:
-            updates = self._prepare_reset_randomization(
-                env_indices.detach().cpu().numpy(), randomization
-            )
-            self._apply_model_updates(updates)
-            model_randomized = bool(updates.fields or updates.actuator_fields)
-            randomization = None
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "mjwarp tensor reset randomization must be a "
+                    "TensorResetRandomizationPayload or None"
+                )
+            if not randomization.is_empty():
+                # The payload's tensor devices decide the data plane: torch.cpu
+                # takes the host mirror model-update path; any other device
+                # takes the device-resident scatter path.
+                if _reset_payload_plane_device(randomization).type == "cpu":
+                    updates = self._prepare_reset_randomization(
+                        env_indices.detach().cpu().numpy(), randomization
+                    )
+                    self._apply_model_updates(updates)
+                    model_randomized = bool(updates.fields or updates.actuator_fields)
+                else:
+                    device_randomization = randomization
         if self._xfrc_pending or self._device_xfrc_pending:
             raise NotImplementedError(
                 "mjwarp tensor reset does not support pending interval body wrenches"
@@ -2857,7 +2879,7 @@ class MjwarpBackend(SimBackend):
         reset_mask: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
         *,
         full_refresh: bool = False,
     ) -> dict[str, Any]:
@@ -2872,8 +2894,17 @@ class MjwarpBackend(SimBackend):
         self._require_entity_healthy()
         if randomization is not None:
             if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "mjwarp mask reset randomization must be a "
+                    "TensorResetRandomizationPayload or None"
+                )
+            if not randomization.is_empty() and (
+                _reset_payload_plane_device(randomization).type == "cpu"
+            ):
                 raise NotImplementedError(
-                    "MJWarp mask reset requires a device-resident TensorResetRandomizationPayload"
+                    "mjwarp mask reset requires a device-resident (non-torch.cpu) "
+                    "randomization payload; the host plane is not supported on "
+                    "the mask path"
                 )
         if reset_mask is None:
             raise TypeError("mjwarp tensor reset_mask must be a torch.Tensor")
@@ -3033,14 +3064,39 @@ class MjwarpBackend(SimBackend):
                     RESET_TERM_KD,
                 }
             ),
+            # The device plane scatters every host term except geom_size,
+            # whose derived geom_rbound/geom_aabb rows stay host-computed.
+            supported_device_reset_terms=frozenset(
+                {
+                    RESET_TERM_BASE_MASS,
+                    RESET_TERM_BASE_COM,
+                    RESET_TERM_GRAVITY,
+                    RESET_TERM_BODY_IQUAT,
+                    RESET_TERM_BODY_INERTIA,
+                    RESET_TERM_BODY_IPOS,
+                    RESET_TERM_BODY_MASS,
+                    RESET_TERM_DOF_ARMATURE,
+                    RESET_TERM_DOF_DAMPING,
+                    RESET_TERM_DOF_FRICTIONLOSS,
+                    RESET_TERM_GEOM_FRICTION,
+                    RESET_TERM_GEOM_SOLREF,
+                    RESET_TERM_GEOM_SOLIMP,
+                    RESET_TERM_KP,
+                    RESET_TERM_KD,
+                }
+            ),
             supported_interval_terms=frozenset(
                 {INTERVAL_TERM_BODY_FORCE, INTERVAL_TERM_BODY_TORQUE}
-                | ({INTERVAL_TERM_PUSH} if self._push_body_id is not None else set())
                 | (
                     {INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA}
                     if self._interval_root_velocity_qvel_ids is not None
                     else set()
                 )
+            ),
+            # Device-resident interval handling is the producer-sampled push
+            # staged straight into the live xfrc_applied field.
+            supported_device_interval_terms=frozenset(
+                {INTERVAL_TERM_PUSH} if self._push_body_id is not None else set()
             ),
             supports_fixed_variants=True,
             supported_fixed_variant_layouts=frozenset(
@@ -3054,12 +3110,12 @@ class MjwarpBackend(SimBackend):
     # ------------------------------------------------------------------ #
 
     def _validate_extended_randomization(
-        self, rows: np.ndarray, payload: ResetRandomizationPayload
+        self, rows: np.ndarray, host_values: Mapping[str, np.ndarray]
     ) -> dict[str, np.ndarray]:
         """Validate every new field before mutating state or device buffers."""
         staged: dict[str, np.ndarray] = {}
         for name in ("geom_size", "geom_solref", "geom_solimp", "dof_damping", "dof_frictionloss"):
-            values = getattr(payload, name)
+            values = host_values.get(name)
             if values is None:
                 continue
             if not isinstance(values, np.ndarray) or not np.issubdtype(values.dtype, np.floating):
@@ -3159,6 +3215,28 @@ class MjwarpBackend(SimBackend):
         mirror[:] = target.numpy()
         stale.discard(name)
 
+    def _dr_base_default_column_torch(self, name: str, base_id: int, device: Any) -> Any:
+        """Return the cached per-env immutable default base column on ``device``.
+
+        The column is cold metadata: ``_reset_field_defaults`` rows selected by
+        the fixed-variant assignment at ``base_id``, uploaded once per device.
+        """
+        import torch
+
+        cache = getattr(self, "_dr_base_default_columns", None)
+        if cache is None:
+            cache = {}
+            self._dr_base_default_columns = cache
+        key = (name, str(device))
+        column = cache.get(key)
+        if column is None:
+            values = np.ascontiguousarray(
+                self._reset_field_defaults[name][self._reset_default_assignment, base_id]
+            )
+            column = torch.as_tensor(values, dtype=torch.float32, device=device)
+            cache[key] = column
+        return column
+
     def _apply_tensor_reset_randomization(
         self,
         rows: Any | None,
@@ -3174,27 +3252,32 @@ class MjwarpBackend(SimBackend):
         is ``gravity``, ``body_mass``, ``body_ipos``, ``body_inertia``,
         ``body_iquat``, ``geom_friction``, ``geom_solref``, ``geom_solimp``,
         ``dof_armature``, ``dof_damping``, ``dof_frictionloss`` and the
-        actuator ``kp``/``kd`` gains, with value rules ported from the host
-        ``_validate_extended_randomization`` / ``_prepare_reset_randomization``
-        checks.  ``geom_size`` fails closed: its derived ``geom_rbound`` /
-        ``geom_aabb`` rows are computed host-side today, and no device-side
-        derivation exists in this slice.  Field validation shares one fused
-        device-side reduction (one D2H sync) with the reset entry operands
-        passed in ``validation``; a failed aggregate re-checks each operand on
-        the cold path so the error still names its field.
+        actuator ``kp``/``kd`` gains, plus the delta terms
+        ``base_mass_delta``/``base_com_offset`` whose merge with the immutable
+        per-env default column runs in Torch here, with value rules ported
+        from the host ``_validate_extended_randomization`` /
+        ``_prepare_reset_randomization`` checks.  ``geom_size`` fails closed:
+        its derived ``geom_rbound`` / ``geom_aabb`` rows are computed
+        host-side today, and no device-side derivation exists in this slice.
+        Field validation shares one fused device-side reduction (one D2H
+        sync) with the reset entry operands passed in ``validation``; a failed
+        aggregate re-checks each operand on the cold path so the error still
+        names its field.
         """
         import torch
 
         unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
-            payload.requested_terms()
+            payload.requested_terms(), plane="device"
         )
         if unsupported:
-            raise NotImplementedError(f"mjwarp does not support reset terms: {sorted(unsupported)}")
+            raise NotImplementedError(
+                f"mjwarp does not support device reset terms: {sorted(unsupported)}"
+            )
         if payload.geom_size is not None:
             raise NotImplementedError(
                 "mjwarp device reset randomization does not support geom_size: "
                 "derived geom_rbound/geom_aabb rows are computed host-side "
-                "today; use the host ResetRandomizationPayload path"
+                "today; use a host-plane (torch.cpu) payload instead"
             )
         num_rows = self._num_envs if rows is None else int(rows.shape[0])
         ngeom = int(self._cpu_model.ngeom)
@@ -3240,6 +3323,57 @@ class MjwarpBackend(SimBackend):
         )
         if kd is not None:
             checks.append(("kd", "finite", kd, self._torch_value_flag("finite", kd)))
+
+        # Delta terms merge with the immutable per-env default column in Torch
+        # (``final = baseline + delta``), mirroring the host path's rule that
+        # only the base component falls back to defaults while every other
+        # body keeps its current (possibly already randomized) rows.
+        for delta_term, target_name, delta_tail in (
+            (RESET_TERM_BASE_MASS, "body_mass", ()),
+            (RESET_TERM_BASE_COM, "body_ipos", (3,)),
+        ):
+            delta = getattr(payload, delta_term)
+            if delta is None:
+                continue
+            base_id = self._require_dr_base_body(delta_term)
+            delta_tensor = self._validate_torch_operand(
+                delta_term, delta, shape=(num_rows, *delta_tail), check_finite=False
+            )
+            checks.append(
+                (
+                    delta_term,
+                    "finite",
+                    delta_tensor,
+                    self._torch_value_flag("finite", delta_tensor),
+                )
+            )
+            baseline = self._dr_base_default_column_torch(target_name, base_id, delta_tensor.device)
+            staged_table = staged.get(target_name)
+            if staged_table is None:
+                view = self._model_torch_view(target_name)
+                staged_table = view.clone() if rows is None else view.index_select(0, rows)
+            staged_table = staged_table.clone()
+            if rows is None:
+                merged_column = baseline + delta_tensor
+                if reset_mask is not None:
+                    merged_column = torch.where(
+                        _expand_reset_mask(reset_mask, merged_column.ndim),
+                        merged_column,
+                        staged_table[:, base_id],
+                    )
+            else:
+                merged_column = baseline.index_select(0, rows) + delta_tensor
+            merged_rule = "non_negative" if target_name == "body_mass" else "finite"
+            checks.append(
+                (
+                    delta_term,
+                    merged_rule,
+                    merged_column,
+                    self._torch_value_flag(merged_rule, merged_column),
+                )
+            )
+            staged_table[:, base_id] = merged_column
+            staged[target_name] = staged_table
 
         # Fail closed on any invalid field before the first device mutation.
         self._validate_torch_fused(checks)
@@ -3316,22 +3450,32 @@ class MjwarpBackend(SimBackend):
     def _prepare_reset_randomization(
         self,
         rows: np.ndarray,
-        randomization: ResetRandomizationPayload | None,
+        randomization: TensorResetRandomizationPayload | None,
     ) -> ModelUpdates:
-        """Own and validate all model writes without touching host/device state."""
+        """Own and validate all model writes without touching host/device state.
+
+        The public payload is torch-first; host-plane (``torch.cpu``) tensors
+        are materialized to NumPy at this private boundary through
+        :mod:`unisim.dr._host`. Device-plane payloads fail closed naming the
+        offending field.
+        """
         if randomization is None:
             return ModelUpdates()
-        if not isinstance(randomization, ResetRandomizationPayload):
-            raise TypeError("randomization must be ResetRandomizationPayload or None")
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError("randomization must be a TensorResetRandomizationPayload or None")
         # A device-side scatter may have left host mirrors stale; refresh them
         # before any composition below reads `_dr_*` rows.
         for name in tuple(getattr(self, "_dr_mirror_stale", ())):
             self._require_fresh_dr_mirror(name)
+        if randomization.is_empty():
+            return ModelUpdates()
         unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
-            randomization.requested_terms()
+            randomization.requested_terms(), plane="host"
         )
         if unsupported:
             raise NotImplementedError(f"mjwarp does not support reset terms: {sorted(unsupported)}")
+        validate_tensor_reset_payload(randomization, device="cpu")
+        host_values = reset_payload_to_host_dict(randomization)
         num_reset = rows.size
         staged: dict[str, np.ndarray] = {}
         for name, tail in (
@@ -3343,12 +3487,13 @@ class MjwarpBackend(SimBackend):
             ("dof_armature", (self._nv,)),
             ("geom_friction", (int(self._cpu_model.ngeom), 3)),
         ):
-            value = getattr(randomization, name)
+            value = host_values.get(name)
             if value is not None:
                 staged[name] = self._coerce_dr_field(name, value, num_reset, tail)
-        if randomization.base_mass_delta is not None:
+        base_mass_delta = host_values.get("base_mass_delta")
+        if base_mass_delta is not None:
             base_id = self._require_dr_base_body("base_mass_delta")
-            delta = float_values("base_mass_delta", randomization.base_mass_delta, (num_reset,))
+            delta = float_values("base_mass_delta", base_mass_delta, (num_reset,))
             if "body_mass" not in staged:
                 # Only the base component uses immutable defaults; preserve
                 # previously randomized values of other bodies in selected rows.
@@ -3358,9 +3503,10 @@ class MjwarpBackend(SimBackend):
                 ]
             with np.errstate(over="ignore", invalid="ignore"):
                 staged["body_mass"][:, base_id] += delta
-        if randomization.base_com_offset is not None:
+        base_com_offset = host_values.get("base_com_offset")
+        if base_com_offset is not None:
             base_id = self._require_dr_base_body("base_com_offset")
-            offset = float_values("base_com_offset", randomization.base_com_offset, (num_reset, 3))
+            offset = float_values("base_com_offset", base_com_offset, (num_reset, 3))
             if "body_ipos" not in staged:
                 staged["body_ipos"] = self._dr_body_ipos[rows].copy()
                 staged["body_ipos"][:, base_id] = self._reset_field_defaults["body_ipos"][
@@ -3368,7 +3514,7 @@ class MjwarpBackend(SimBackend):
                 ]
             with np.errstate(over="ignore", invalid="ignore"):
                 staged["body_ipos"][:, base_id] += offset
-        staged.update(self._validate_extended_randomization(rows, randomization))
+        staged.update(self._validate_extended_randomization(rows, host_values))
         for name, values in staged.items():
             if not np.isfinite(values).all():
                 raise ValueError(f"computed {name} must be finite")
@@ -3396,14 +3542,16 @@ class MjwarpBackend(SimBackend):
             else (1 if set(staged) & {"body_inertia", "dof_armature"} else 0)
         )
         actuator_fields = {}
-        if randomization.kp is not None:
-            kp = self._coerce_dr_field("kp", randomization.kp, num_reset, (self._nu,))
+        kp_value = host_values.get("kp")
+        if kp_value is not None:
+            kp = self._coerce_dr_field("kp", kp_value, num_reset, (self._nu,))
             actuator_fields["actuator_gainprm"] = self._dr_actuator_gainprm.copy()
             actuator_fields["actuator_biasprm"] = self._dr_actuator_biasprm.copy()
             actuator_fields["actuator_gainprm"][rows, :, 0] = kp
             actuator_fields["actuator_biasprm"][rows, :, 1] = -kp
-        if randomization.kd is not None:
-            kd = self._coerce_dr_field("kd", randomization.kd, num_reset, (self._nu,))
+        kd_value = host_values.get("kd")
+        if kd_value is not None:
+            kd = self._coerce_dr_field("kd", kd_value, num_reset, (self._nu,))
             if "actuator_biasprm" not in actuator_fields:
                 actuator_fields["actuator_biasprm"] = self._dr_actuator_biasprm.copy()
             actuator_fields["actuator_biasprm"][rows, :, 2] = -kd
@@ -3451,14 +3599,17 @@ class MjwarpBackend(SimBackend):
                     cast(TensorIntervalPayload, op.payload)
                 ),
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), require_op_host_payload(op)
+                    interval_payload_to_host(require_op_body_ids(op)),
+                    interval_payload_to_host(op.payload),
                 ),
                 INTERVAL_TERM_BODY_TORQUE: lambda op: self._apply_body_torque(
-                    require_op_body_ids(op), require_op_host_payload(op)
+                    interval_payload_to_host(require_op_body_ids(op)),
+                    interval_payload_to_host(op.payload),
                 ),
                 INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA: (
                     lambda op: self._apply_body_linear_velocity_delta(
-                        require_op_body_ids(op), require_op_host_payload(op)
+                        interval_payload_to_host(require_op_body_ids(op)),
+                        interval_payload_to_host(op.payload),
                     )
                 ),
             }

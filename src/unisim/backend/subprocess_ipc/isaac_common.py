@@ -13,8 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from unisim.dr._host import interval_payload_to_host
 from unisim.dr.interval import INTERVAL_TERM_BODY_FORCE, INTERVAL_TERM_BODY_TORQUE, IntervalTermOp
-from unisim.dr.types import require_op_host_payload
 
 
 def initialize_staged_body_wrench(backend: Any) -> np.ndarray | None:
@@ -50,7 +50,7 @@ def interval_term_handlers(
 def apply_interval_body_force(backend: Any, op: IntervalTermOp) -> None:
     if op.body_ids is None:
         raise ValueError("interval body force requires body_ids")
-    backend.apply_body_force(op.body_ids, require_op_host_payload(op))
+    backend.apply_body_force(op.body_ids, interval_payload_to_host(op.payload))
 
 
 def apply_interval_body_torque(
@@ -58,7 +58,7 @@ def apply_interval_body_torque(
 ) -> None:
     if op.body_ids is None:
         raise ValueError("interval body torque requires body_ids")
-    torque = require_op_host_payload(op)
+    torque = interval_payload_to_host(op.payload)
     if direct_torque:
         backend._apply_body_torque(op.body_ids, torque)
         return

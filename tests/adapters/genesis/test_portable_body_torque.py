@@ -1,4 +1,5 @@
 """Real Genesis CPU acceptance for portable world-frame body torque."""
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import pytest
 
 pytest.importorskip("mujoco")
 pytest.importorskip("genesis")
-pytest.importorskip("torch")
+torch = pytest.importorskip("torch")
 
 from tests.adapters.genesis.test_portable_entities import _scene
 from unisim.backend.genesis.backend import GenesisBackend
@@ -94,9 +95,21 @@ def test_portable_entities_body_torque_mapping_and_reset_cancellation(tmp_path: 
     backend.apply_interval_randomization(
         IntervalRandomizationPlan(
             ops=(
-                IntervalTermOp(INTERVAL_TERM_BODY_FORCE, interval_force, body_ids=(object_body,)),
-                IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, interval_torque, body_ids=(object_body,)),
-                IntervalTermOp(INTERVAL_TERM_BODY_TORQUE, interval_torque, body_ids=(object_body,)),
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_FORCE,
+                    torch.as_tensor(interval_force),
+                    body_ids=torch.as_tensor((object_body,)),
+                ),
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_TORQUE,
+                    torch.as_tensor(interval_torque),
+                    body_ids=torch.as_tensor((object_body,)),
+                ),
+                IntervalTermOp(
+                    INTERVAL_TERM_BODY_TORQUE,
+                    torch.as_tensor(interval_torque),
+                    body_ids=torch.as_tensor((object_body,)),
+                ),
             )
         )
     )

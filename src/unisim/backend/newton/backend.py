@@ -45,7 +45,6 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     DomainRandomizationCapabilities,
-    ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
 )
@@ -1748,28 +1747,31 @@ class NewtonBackend(SimBackend):
 
     def _validate_tensor_reset_payload(
         self,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None,
+        randomization: TensorResetRandomizationPayload | None,
         *,
         row_count: int,
     ) -> TensorResetRandomizationPayload | None:
         """Validate selected-row or full-width device PD gain tables."""
 
-        if randomization is None or randomization.is_empty():
+        if randomization is None:
             return None
         if not isinstance(randomization, TensorResetRandomizationPayload):
             raise TypeError(
                 "newton tensor reset randomization requires a TensorResetRandomizationPayload"
             )
-        supported = {RESET_TERM_KP, RESET_TERM_KD}
-        unsupported = set(randomization.requested_terms()) - supported
+        if randomization.is_empty():
+            return None
+        unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
+            randomization.requested_terms(), plane="device"
+        )
         if unsupported:
             raise NotImplementedError(
-                "newton tensor reset randomization does not support terms: "
+                "newton tensor reset randomization does not support device terms: "
                 + ", ".join(sorted(unsupported))
             )
         import torch
 
-        for term in supported:
+        for term in (RESET_TERM_KP, RESET_TERM_KD):
             value = getattr(randomization, term)
             if value is None:
                 continue
@@ -1783,7 +1785,13 @@ class NewtonBackend(SimBackend):
                 )
             if value.dtype != torch.float32 or not bool(value.is_contiguous()):
                 raise TypeError(f"newton tensor reset {term} must be contiguous float32")
-            self._tensor_device(value.device)
+            try:
+                self._tensor_device(value.device)
+            except ValueError:
+                raise ValueError(
+                    f"newton tensor reset {term} must live on the device plane "
+                    f"({self._tensor_device()}), got {value.device}"
+                ) from None
             if not bool(torch.isfinite(value).all().item()):
                 raise ValueError(f"newton tensor reset {term} values must be finite")
             if bool((value < 0.0).any().item()):
@@ -1812,7 +1820,7 @@ class NewtonBackend(SimBackend):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         import torch
 
@@ -1885,7 +1893,7 @@ class NewtonBackend(SimBackend):
         reset_mask: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
         *,
         full_refresh: bool = False,
     ) -> dict | None:
@@ -2143,7 +2151,7 @@ class NewtonBackend(SimBackend):
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict[str, dict[str, float]]:
         self._require_state("set_state")
         rows = np.asarray(env_indices, dtype=np.intp)
@@ -2157,8 +2165,16 @@ class NewtonBackend(SimBackend):
             raise ValueError("qpos shape does not match selected Newton worlds")
         if qvel_array.shape != (rows.size, self._metadata.nv):
             raise ValueError("qvel shape does not match selected Newton worlds")
-        if randomization is not None and not randomization.is_empty():
-            raise NotImplementedError("newton backend does not yet support reset randomization")
+        if randomization is not None:
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "newton reset randomization must be a TensorResetRandomizationPayload or None"
+                )
+            if not randomization.is_empty():
+                raise NotImplementedError(
+                    "newton host-plane reset randomization is unsupported; use a device-plane "
+                    "payload with set_state_tensor"
+                )
         if not rows.size:
             return {"timing": {"set_state_upload_ms": 0.0, "set_state_cache_ms": 0.0}}
 
@@ -2281,8 +2297,10 @@ class NewtonBackend(SimBackend):
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
         if self._portable_mode:
             return DomainRandomizationCapabilities()
+        # kp/kd randomization is a device-plane-only path (set_state_tensor);
+        # the host plane stays empty and fails closed.
         return DomainRandomizationCapabilities(
-            supported_reset_terms=frozenset({RESET_TERM_KP, RESET_TERM_KD})
+            supported_device_reset_terms=frozenset({RESET_TERM_KP, RESET_TERM_KD})
         )
 
     def get_reset_term_default(self, term: str) -> np.ndarray:

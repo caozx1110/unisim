@@ -18,7 +18,11 @@ from unisim import (
     TensorExecution,
 )
 from unisim.dr.interval import INTERVAL_TERM_PUSH, TensorIntervalPayload
-from unisim.dr.types import IntervalRandomizationPlan, IntervalTermOp, ResetRandomizationPayload
+from unisim.dr.types import (
+    IntervalRandomizationPlan,
+    IntervalTermOp,
+    TensorResetRandomizationPayload,
+)
 from unisim.scene import SceneCfg
 from unisim.support import _assert_tensor_platform_capabilities
 
@@ -348,6 +352,7 @@ def test_mjwarp_snapshot_carries_mocap_state(tmp_path: Path) -> None:
 def test_mjwarp_body_ipos_default_stability_and_per_env_current_query(
     tmp_path: Path,
 ) -> None:
+    torch = pytest.importorskip("torch")
     backend = _make_backend(tmp_path, base_name="base")
     nbody = int(backend._cpu_model.nbody)
     base_id = int(backend.get_body_ids(["base"])[0])
@@ -363,7 +368,10 @@ def test_mjwarp_body_ipos_default_stability_and_per_env_current_query(
     ipos = np.tile(canonical, (2, 1, 1))
     ipos[:, base_id, 0] += np.array([0.1, -0.2], dtype=np.float32)
     backend._host_set_state(
-        rows, qpos, qvel, randomization=ResetRandomizationPayload(body_ipos=ipos)
+        rows,
+        qpos,
+        qvel,
+        randomization=TensorResetRandomizationPayload(body_ipos=torch.as_tensor(ipos)),
     )
 
     # Default-facing queries never drift with reset randomization (issue #87).
@@ -381,9 +389,9 @@ def test_mjwarp_body_ipos_default_stability_and_per_env_current_query(
         np.array([1], dtype=np.int32),
         qpos[[1]],
         qvel[[1]],
-        randomization=ResetRandomizationPayload(
-            body_ipos=np.tile(canonical, (1, 1, 1)),
-            base_com_offset=np.array([[0.3, 0.0, 0.0]], dtype=np.float32),
+        randomization=TensorResetRandomizationPayload(
+            body_ipos=torch.as_tensor(np.tile(canonical, (1, 1, 1))),
+            base_com_offset=torch.tensor([[0.3, 0.0, 0.0]], dtype=torch.float32),
         ),
     )
     after = backend.get_body_ipos(env_ids=rows)
@@ -396,8 +404,8 @@ def test_mjwarp_body_ipos_default_stability_and_per_env_current_query(
         np.array([0], dtype=np.int32),
         qpos[[0]],
         qvel[[0]],
-        randomization=ResetRandomizationPayload(
-            base_com_offset=np.array([[0.0, 0.05, 0.0]], dtype=np.float32)
+        randomization=TensorResetRandomizationPayload(
+            base_com_offset=torch.tensor([[0.0, 0.05, 0.0]], dtype=torch.float32)
         ),
     )
     final = backend.get_body_ipos(env_ids=rows)
@@ -741,9 +749,13 @@ def test_mjwarp_mask_tensor_reset_rejects_randomization() -> None:
     mask = torch.zeros((2,), dtype=torch.bool, device="cuda")
     qpos = backend.get_state_views(("qpos",))["qpos"].clone()
     qvel = backend.get_state_views(("qvel",))["qvel"].clone()
+    # Host-plane (torch.cpu) payloads fail closed on the device-only mask path.
     with pytest.raises(NotImplementedError, match="device-resident"):
         backend.set_state_tensor_mask(
-            mask, qpos, qvel, randomization=ResetRandomizationPayload(kp=np.ones((0, 1)))
+            mask,
+            qpos,
+            qvel,
+            randomization=TensorResetRandomizationPayload(kp=torch.ones((2, 1))),
         )
 
 
@@ -906,7 +918,7 @@ def test_mjwarp_device_push_is_device_resident_and_consumed_by_tensor_step(
     torch.testing.assert_close(xfrc[:, backend._push_body_id, 0:3].cpu(), force.cpu())
     torch.testing.assert_close(
         xfrc[:, backend._push_body_id, 3:6].cpu(),
-        torch.zeros_like(force),
+        torch.zeros_like(force, device="cpu"),
     )
     if backend._nbody > 1:
         torch.testing.assert_close(

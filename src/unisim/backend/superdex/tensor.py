@@ -18,6 +18,7 @@ from unisim.backend.base import (
     TensorProcessTopology,
     tensor_device_matches,
 )
+from unisim.dr.types import TensorResetRandomizationPayload
 
 if TYPE_CHECKING:
     import torch
@@ -370,7 +371,16 @@ class SuperDexHostBridgeTransferPlan(HostBridgeTransferPlan):
         self._last_reset_rows_device = None
         self.last_timing = {}
         if randomization is not None:
-            raise NotImplementedError("SuperDex packed reset does not support randomization")
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "SuperDex packed reset randomization must be a "
+                    "TensorResetRandomizationPayload"
+                )
+            if not randomization.is_empty():
+                requested = ", ".join(sorted(randomization.requested_terms()))
+                raise NotImplementedError(
+                    f"SuperDex packed reset does not support randomization terms: {requested}."
+                )
 
         values = {"env_indices": env_indices, "qpos": qpos, "qvel": qvel}
         for name, value in values.items():

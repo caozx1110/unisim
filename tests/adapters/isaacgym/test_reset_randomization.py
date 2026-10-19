@@ -27,9 +27,20 @@ from unisim.dr.types import (
     RESET_TERM_KD,
     RESET_TERM_KP,
     IntervalRandomizationPlan,
-    ResetRandomizationPayload,
+    TensorResetRandomizationPayload,
 )
 from unisim.scene_layout import CompiledSceneLayout, EntityLayout, GeomLayout, JointLayout
+
+
+def _payload(**fields) -> TensorResetRandomizationPayload:
+    """Build a host-plane torch payload from NumPy-shaped field values."""
+    torch = pytest.importorskip("torch")
+    return TensorResetRandomizationPayload(
+        **{
+            name: torch.as_tensor(np.asarray(value, dtype=np.float32))
+            for name, value in fields.items()
+        }
+    )
 
 _MOCK_WORKER = Path(__file__).resolve().parent / "mock_worker.py"
 
@@ -126,6 +137,9 @@ def test_mapped_capabilities_declare_bounded_reset_and_interval_terms() -> None:
     # a multi-root scene has no single base target: those terms stay unsupported.
     for term in ("gravity", "dof_damping", "base_mass_delta", "base_com_offset", "body_iquat"):
         assert not capabilities.supports_reset_term(term)
+    # The device plane (CUDA IPC lane) carries PD gains only.
+    assert capabilities.supported_device_reset_terms == frozenset({RESET_TERM_KP, RESET_TERM_KD})
+    assert not capabilities.supported_device_interval_terms
     # No fixed-variant plan is bound to this scene.
     assert not capabilities.supports_fixed_variants
 
@@ -149,6 +163,7 @@ def test_model_file_capabilities_stay_fail_closed() -> None:
     backend._staged_body_wrench = None
     capabilities = backend.get_dr_capabilities()
     assert capabilities.supported_reset_terms == {RESET_TERM_KP, RESET_TERM_KD}
+    assert capabilities.supported_device_reset_terms == {RESET_TERM_KP, RESET_TERM_KD}
     assert not capabilities.supported_interval_terms
     assert not capabilities.supports_fixed_variants
 
@@ -172,8 +187,9 @@ def _full_state_rows(count):
 
 
 def test_mapped_reset_randomization_validates_and_forwards_all_terms() -> None:
+    torch = pytest.importorskip("torch")
     backend, commits = _set_state_backend()
-    payload = ResetRandomizationPayload(
+    payload = _payload(
         kp=np.full((2, 1), 30.0),
         kd=np.full((2, 1), 2.0),
         body_mass=np.full((2, 4), 2.5),
@@ -199,7 +215,26 @@ def test_mapped_reset_randomization_validates_and_forwards_all_terms() -> None:
         "dof_frictionloss",
         "geom_friction",
     ):
-        assert getattr(validated, field).dtype == np.float32
+        tensor = getattr(validated, field)
+        assert isinstance(tensor, torch.Tensor)
+        assert tensor.dtype == torch.float32
+        assert tensor.device == torch.device("cpu")
+
+
+def test_mapped_reset_randomization_rejects_non_torch_and_device_payloads() -> None:
+    torch = pytest.importorskip("torch")
+    backend, commits = _set_state_backend()
+    # The unified payload is torch-first: NumPy fields fail closed by type.
+    numpy_payload = TensorResetRandomizationPayload(kp=np.full((1, 1), 30.0, dtype=np.float32))
+    with pytest.raises(TypeError, match="kp"):
+        backend._set_mapped_state(np.array([1]), *_full_state_rows(1), numpy_payload)
+    # A non-host-plane tensor fails closed naming the term.
+    meta_payload = TensorResetRandomizationPayload(
+        kp=torch.zeros((1, 1), dtype=torch.float32, device=torch.device("meta"))
+    )
+    with pytest.raises(ValueError, match="kp"):
+        backend._set_mapped_state(np.array([1]), *_full_state_rows(1), meta_payload)
+    assert commits == []
 
 
 @pytest.mark.parametrize(
@@ -216,7 +251,7 @@ def test_mapped_reset_unsupported_terms_fail_closed(term: str) -> None:
         "body_iquat": (4, 4),
         "geom_size": (3, 3),
     }[term]
-    payload = ResetRandomizationPayload(**{term: np.zeros((1, *tail), dtype=np.float32)})
+    payload = _payload(**{term: np.zeros((1, *tail), dtype=np.float32)})
     with pytest.raises(NotImplementedError, match=term):
         backend._set_mapped_state(np.array([1]), *_full_state_rows(1), payload)
     assert commits == []
@@ -242,7 +277,7 @@ def test_mapped_reset_field_validation(field, value, message) -> None:
         value = np.asarray(value, dtype=np.float32)
         value[0, 3] = 0.5  # floating-root column
         message = "zero on floating-root columns"
-    payload = ResetRandomizationPayload(**{field: np.asarray(value, dtype=np.float32)})
+    payload = _payload(**{field: np.asarray(value, dtype=np.float32)})
     with pytest.raises(ValueError, match=message):
         backend._set_mapped_state(np.array([1]), *_full_state_rows(1), payload)
     assert commits == []
@@ -411,7 +446,7 @@ def test_mock_worker_roundtrip_applies_reset_randomization(tmp_path: Path) -> No
         qpos = np.zeros((num_envs, layout.nq), dtype=np.float32)
         qpos[:, 3] = 1.0
         qvel = np.zeros((num_envs, layout.nv), dtype=np.float32)
-        randomization = ResetRandomizationPayload(
+        randomization = _payload(
             kp=np.full((num_envs, 1), 42.0),
             body_mass=np.full((num_envs, layout.nbody), 3.0),
             dof_frictionloss=np.zeros((num_envs, layout.nv)),
@@ -468,9 +503,7 @@ def test_mock_worker_rejects_unsupported_term_before_wire(tmp_path: Path) -> Non
                 np.arange(num_envs),
                 qpos,
                 qvel,
-                randomization=ResetRandomizationPayload(
-                    gravity=np.zeros((num_envs, 3), dtype=np.float32)
-                ),
+                randomization=_payload(gravity=np.zeros((num_envs, 3), dtype=np.float32)),
             )
     finally:
         backend.close()

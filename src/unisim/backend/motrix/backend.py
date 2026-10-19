@@ -6,7 +6,7 @@ import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 import numpy as np
 
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     # optional dependency as Any; runtime never executes this import.
     from motrixsim import SceneData, SceneModel
 
+from unisim.dr._host import interval_payload_to_host, reset_payload_to_host_dict
 from unisim.dr.types import (
     INTERVAL_TERM_BODY_FORCE,
     INTERVAL_TERM_BODY_TORQUE,
@@ -33,10 +34,10 @@ from unisim.dr.types import (
     DomainRandomizationCapabilities,
     FixedVariantLayout,
     IntervalTermOp,
-    ResetRandomizationPayload,
+    TensorIntervalPayload,
     TensorResetRandomizationPayload,
     require_op_body_ids,
-    require_op_host_payload,
+    validate_tensor_reset_payload,
 )
 from unisim.entity_state import (
     entity_state_snapshot,
@@ -96,6 +97,33 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 DEFAULT_MOTRIX_MAX_ITERATIONS = 3
+
+
+def _reset_payload_plane_device(payload: TensorResetRandomizationPayload) -> Any:
+    """Return the shared Torch device backing a non-empty reset payload.
+
+    The payload's tensor devices decide its data plane: ``torch.cpu`` is the
+    host plane, any other device is the device plane. Mixed-device payloads
+    fail closed naming the offending field.
+    """
+    validate_tensor_reset_payload(payload)
+    first = getattr(payload, sorted(payload.requested_terms())[0])
+    validate_tensor_reset_payload(payload, device=first.device)
+    return first.device
+
+
+def _interval_push_force_host(payload: Any) -> np.ndarray:
+    """Convert a producer-sampled push payload to a host NumPy force table.
+
+    The producer owns random generation; the op carries a full-width
+    ``(num_envs, 3)`` Torch tensor or a :class:`TensorIntervalPayload` whose
+    ``push_force`` holds that table. A missing payload fails closed.
+    """
+    if isinstance(payload, TensorIntervalPayload):
+        payload = payload.push_force
+    if payload is None:
+        raise ValueError("interval term 'push' requires a producer-sampled payload")
+    return interval_payload_to_host(payload)
 
 
 def _require_not_none(value: T | None, error_message: str) -> T:
@@ -1228,6 +1256,7 @@ class MotrixBackend(SimBackend):
         # Sized to the full env count and rewritten in place each call.
         self._set_state_mask_scratch: np.ndarray = np.zeros(self._num_envs, dtype=bool)
         self._set_state_qpos_motrix_scratch: np.ndarray | None = None
+        self._native_default_qpos_mujoco: np.ndarray | None = None
 
     @staticmethod
     def _audit_portable_source_sensor_contract(
@@ -2235,10 +2264,30 @@ class MotrixBackend(SimBackend):
         return self._motrix_qpos_to_mujoco(qpos)
 
     def get_default_qpos(self) -> np.ndarray:
+        """Return the default public qpos row (base block plus selected DoFs).
+
+        The width matches ``get_public_state_widths().nq`` so the row is
+        directly compatible with ``set_state_tensor``; portable scenes report
+        the env-0 canonical row of the composed layout.
+        """
         if self._portable_mode:
-            return self._portable_default_qpos.copy()
-        qpos = np.array(self._model.compute_init_dof_pos(), dtype=self._np_dtype)
-        return self._motrix_qpos_to_mujoco(qpos)
+            return self._portable_default_qpos[0].copy()
+        native = self._motrix_qpos_to_mujoco(
+            np.array(self._model.compute_init_dof_pos(), dtype=self._np_dtype)
+        )
+        indices = (
+            self._actuator_joint_pos_indices
+            if self._actuator_joint_pos_indices is not None
+            else self._joint_dof_pos_indices
+        )
+        tail = native[np.asarray(indices, dtype=np.intp)]
+        if self._body_floatingbase is not None:
+            return np.concatenate((native[:7], tail))
+        # Fixed-base models prepend the static base link pose to the public
+        # block even though it has no native DoF counterpart.
+        base_pos = np.asarray(self._body_link.get_pose(self._data), dtype=self._np_dtype)[0, :3]
+        base_quat = self._xyzw_to_wxyz(np.asarray(self._body_link.get_rotation(self._data)))[0]
+        return np.concatenate((base_pos, base_quat, tail))
 
     def get_default_dof_pos(self) -> np.ndarray:
         if self._portable_mode:
@@ -2257,9 +2306,15 @@ class MotrixBackend(SimBackend):
         return np.asarray(qpos[indices], dtype=self._np_dtype).copy()
 
     def get_init_qvel(self) -> np.ndarray:
+        """Return a zero public qvel row matching ``get_public_state_widths().nv``."""
         if self._portable_mode:
             return self._portable_default_qvel[0].copy()
-        return np.zeros((self._model.num_dof_vel,), dtype=self._np_dtype)
+        indices = (
+            self._actuator_joint_vel_indices
+            if self._actuator_joint_vel_indices is not None
+            else self._joint_dof_vel_indices
+        )
+        return np.zeros((6 + len(indices),), dtype=self._np_dtype)
 
     def get_root_state_layout(self, root_body_name: str) -> BackendRootStateLayout:
         if self._portable_mode:
@@ -2937,23 +2992,66 @@ class MotrixBackend(SimBackend):
             }
         }
 
+    def _host_reset_randomization_dict(
+        self, randomization: TensorResetRandomizationPayload | None
+    ) -> dict[str, np.ndarray] | None:
+        """Validate a torch-first reset payload and convert it to host NumPy.
+
+        The payload's tensor devices decide the data plane: ``torch.cpu`` is
+        checked against the host-plane terms, any other device against the
+        device-plane terms; undeclared terms fail closed naming the term.
+        """
+        if randomization is None:
+            return None
+        if not isinstance(randomization, TensorResetRandomizationPayload):
+            raise TypeError(
+                "Motrix reset randomization must be a TensorResetRandomizationPayload or None"
+            )
+        if randomization.is_empty():
+            return {}
+        plane: Literal["host", "device"] = (
+            "host" if _reset_payload_plane_device(randomization).type == "cpu" else "device"
+        )
+        unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
+            randomization.requested_terms(), plane=plane
+        )
+        if unsupported:
+            raise NotImplementedError(
+                f"Motrix reset randomization does not support terms: {sorted(unsupported)}"
+            )
+        return reset_payload_to_host_dict(randomization)
+
     def _host_set_state(
         self,
         env_indices: np.ndarray,
         qpos: np.ndarray,
         qvel: np.ndarray,
-        randomization: ResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
+        # Capability preflight remains before state/runtime access, including
+        # the historical unbound-method diagnostic used by optional adapters.
+        # The host/device term sets coincide on this host bridge, so the
+        # preflight checks the host plane; the helper below re-checks against
+        # the payload's true plane before conversion.
         if randomization is not None:
-            unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
-                randomization.requested_terms()
-            )
-            if unsupported:
-                raise NotImplementedError(
-                    f"Motrix reset randomization does not support terms: {sorted(unsupported)}"
+            if not isinstance(randomization, TensorResetRandomizationPayload):
+                raise TypeError(
+                    "Motrix reset randomization must be a TensorResetRandomizationPayload or None"
                 )
+            if not randomization.is_empty():
+                unsupported = self.get_dr_capabilities().get_unsupported_reset_terms(
+                    randomization.requested_terms(), plane="host"
+                )
+                if unsupported:
+                    raise NotImplementedError(
+                        f"Motrix reset randomization does not support terms: {sorted(unsupported)}"
+                    )
+        host_randomization = self._host_reset_randomization_dict(randomization)
         if self._portable_mode:
-            return self._portable_set_state(env_indices, qpos, qvel, randomization=randomization)
+            return self._portable_set_state(
+                env_indices, qpos, qvel, randomization=host_randomization
+            )
+        qpos, qvel = self._public_state_rows_to_native(qpos, qvel)
         timing: dict[str, float] = {
             "set_state_mask_ms": 0.0,
             "set_state_data_slice_ms": 0.0,
@@ -3019,7 +3117,7 @@ class MotrixBackend(SimBackend):
 
         t0 = time.perf_counter()
         self._apply_reset_randomization(
-            data_slice, env_indices, randomization, env_ids_intp=env_ids_intp
+            data_slice, env_indices, host_randomization, env_ids_intp=env_ids_intp
         )
         timing["set_state_reset_rand_ms"] = (time.perf_counter() - t0) * 1000.0
 
@@ -3169,7 +3267,7 @@ class MotrixBackend(SimBackend):
         qpos: np.ndarray,
         qvel: np.ndarray,
         *,
-        randomization: ResetRandomizationPayload | None,
+        randomization: Mapping[str, np.ndarray] | None,
     ) -> dict | None:
         self._require_portable_healthy("set_state")
         portable_randomization = (
@@ -3177,7 +3275,7 @@ class MotrixBackend(SimBackend):
                 randomization,
                 np.asarray(env_indices, dtype=np.intp),
             )
-            if randomization is not None and not randomization.is_empty()
+            if randomization
             else None
         )
         rows = np.asarray(env_indices, dtype=np.intp)
@@ -3309,6 +3407,9 @@ class MotrixBackend(SimBackend):
         return mask
 
     def get_dr_capabilities(self) -> DomainRandomizationCapabilities:
+        # Motrix is a host-bridge adapter: device-resident payloads cross to
+        # host NumPy at the private boundary, so the device plane declares the
+        # same terms as the host plane.
         if self._portable_mode:
             supported_interval_terms: frozenset[str] = frozenset()
             supported_reset_terms: set[str] = set()
@@ -3342,7 +3443,9 @@ class MotrixBackend(SimBackend):
                 ),
                 supports_per_env_playback=self._portable_uniform_mesh_variants,
                 supported_interval_terms=supported_interval_terms,
+                supported_device_interval_terms=supported_interval_terms,
                 supported_reset_terms=frozenset(supported_reset_terms),
+                supported_device_reset_terms=frozenset(supported_reset_terms),
             )
         supported_reset_terms = {
             RESET_TERM_BASE_MASS,
@@ -3356,20 +3459,30 @@ class MotrixBackend(SimBackend):
             supported_reset_terms.add(RESET_TERM_GEOM_FRICTION)
         if getattr(self, "_supports_gravity_override", False):
             supported_reset_terms.add(RESET_TERM_GRAVITY)
+        supported_reset = frozenset(supported_reset_terms)
+        supported_interval = frozenset(
+            {INTERVAL_TERM_PUSH}
+            | (
+                {INTERVAL_TERM_BODY_FORCE}
+                if getattr(self, "_supports_external_force", False)
+                else set()
+            )
+        )
         return DomainRandomizationCapabilities(
-            supported_reset_terms=frozenset(supported_reset_terms),
-            supported_interval_terms=frozenset(
-                {INTERVAL_TERM_PUSH}
-                | (
-                    {INTERVAL_TERM_BODY_FORCE}
-                    if getattr(self, "_supports_external_force", False)
-                    else set()
-                )
-            ),
+            supported_reset_terms=supported_reset,
+            supported_device_reset_terms=supported_reset,
+            supported_interval_terms=supported_interval,
+            supported_device_interval_terms=supported_interval,
         )
 
     def get_reset_term_default(self, term: str) -> np.ndarray:
-        """Return the Motrix default table for a curated reset term."""
+        """Return the committed per-environment table for a curated reset term.
+
+        Reset-term defaults serve as packed-reset baselines, so they track
+        committed randomization: values are read back live from the native
+        override state (unmapped portable columns keep their construction
+        defaults).  Delta terms keep zero baselines.
+        """
         portable_reset_terms = {
             RESET_TERM_BASE_MASS,
             RESET_TERM_BASE_COM,
@@ -3386,15 +3499,23 @@ class MotrixBackend(SimBackend):
             if term == RESET_TERM_BASE_MASS:
                 value = np.zeros((self._num_envs,), dtype=np.float64)
             elif term == RESET_TERM_BODY_MASS:
-                value = self._portable_default_body_mass
+                value = self._portable_live_link_table(
+                    "get_mass_override", self._portable_default_body_mass
+                )
             elif term == RESET_TERM_BASE_COM:
                 value = np.zeros((self._num_envs, 3), dtype=np.float64)
             elif term == RESET_TERM_BODY_IPOS:
-                value = self._portable_default_body_ipos
+                value = self._portable_live_link_table(
+                    "get_center_of_mass_override", self._portable_default_body_ipos
+                )
             elif term == RESET_TERM_DOF_ARMATURE:
-                value = self._portable_default_dof_armature
+                value = self._portable_live_joint_table(
+                    "get_armature_override", self._portable_default_dof_armature
+                )
             elif term == RESET_TERM_DOF_FRICTIONLOSS:
-                value = self._portable_default_dof_frictionloss
+                value = self._portable_live_joint_table(
+                    "get_frictionloss_override", self._portable_default_dof_frictionloss
+                )
             else:
                 raise NotImplementedError(f"MotrixBackend does not support reset term {term!r}")
             result = np.array(value, dtype=np.float64, copy=True)
@@ -3403,22 +3524,73 @@ class MotrixBackend(SimBackend):
         if term in (RESET_TERM_BASE_MASS, RESET_TERM_BASE_COM):
             value = np.zeros(() if term == RESET_TERM_BASE_MASS else (3,), dtype=np.float64)
         elif term == RESET_TERM_BODY_MASS:
-            value = self.get_body_mass().astype(np.float64, copy=False)
+            value = self._live_link_table("get_mass_override")
         elif term == RESET_TERM_BODY_IPOS:
-            value = self.get_body_ipos().astype(np.float64, copy=False)
+            value = self._live_link_table("get_center_of_mass_override")
         elif term == RESET_TERM_KP:
-            value = self.get_actuator_gains()[0].astype(np.float64, copy=False)
+            value = self._live_actuator_gain_table("get_kp_override")
         elif term == RESET_TERM_KD:
-            value = self.get_actuator_gains()[1].astype(np.float64, copy=False)
+            value = self._live_actuator_gain_table("get_kd_override")
         elif term == RESET_TERM_GEOM_FRICTION:
-            value = self.get_geom_friction().astype(np.float64, copy=False)
+            value = self._live_geom_friction_table()
         elif term == RESET_TERM_GRAVITY:
-            value = self.get_gravity().astype(np.float64, copy=False)
+            value = np.asarray(self._model.get_gravity_override(self._data), dtype=np.float32)
         else:
             raise NotImplementedError(f"MotrixBackend does not expose reset term {term!r}")
         result = np.array(value, dtype=np.float64, copy=True)
         result.setflags(write=False)
         return result
+
+    def _live_link_table(self, getter: str) -> np.ndarray:
+        """Assemble the committed per-env link override table from native reads."""
+        columns = [
+            np.asarray(getattr(self._links_by_id[link_id], getter)(self._data), dtype=np.float32)
+            for link_id in range(len(self._links_by_id))
+        ]
+        return np.stack(columns, axis=1)
+
+    def _live_actuator_gain_table(self, getter: str) -> np.ndarray:
+        """Assemble the committed per-env actuator gain table from native reads."""
+        actuators = sorted(self._position_actuators, key=lambda actuator: int(actuator.index))
+        columns = [
+            np.asarray(getattr(actuator, getter)(self._data), dtype=np.float32)
+            for actuator in actuators
+        ]
+        return np.stack(columns, axis=1)
+
+    def _live_geom_friction_table(self) -> np.ndarray:
+        """Assemble the committed per-env geom friction table from native reads."""
+        columns = [
+            np.asarray(
+                self._geoms_by_id[geom_id].get_friction_override(self._data), dtype=np.float32
+            )
+            for geom_id in range(len(self._geoms_by_id))
+        ]
+        return np.stack(columns, axis=1)
+
+    def _portable_live_link_table(self, getter: str, defaults: np.ndarray) -> np.ndarray:
+        """Read committed link overrides per env; unmapped columns keep defaults."""
+        values = np.array(defaults, dtype=np.float32, copy=True)
+        for runtime in self._portable_runtimes:
+            for public_id, native_id in enumerate(runtime.binding.public_to_native_body):
+                if native_id < 0:
+                    continue
+                link = runtime.binding.links_by_id[int(native_id)]
+                column = np.asarray(getattr(link, getter)(runtime.data), dtype=np.float32)
+                values[runtime.rows, public_id] = column.reshape(
+                    len(runtime.rows), *values.shape[2:]
+                )
+        return values
+
+    def _portable_live_joint_table(self, getter: str, defaults: np.ndarray) -> np.ndarray:
+        """Read committed joint scalar overrides per env; unmapped DoFs keep defaults."""
+        values = np.array(defaults, dtype=np.float32, copy=True)
+        for runtime in self._portable_runtimes:
+            for public_dof, joint in runtime.binding.joints_by_public_dof.items():
+                values[runtime.rows, public_dof] = np.asarray(
+                    getattr(joint, getter)(runtime.data), dtype=np.float32
+                ).reshape(-1)
+        return values
 
     def _portable_base_body_public_id(self) -> int:
         matches = np.flatnonzero(self._portable_public_to_native_body == int(self._body_link.index))
@@ -3431,7 +3603,7 @@ class MotrixBackend(SimBackend):
 
     def _prepare_portable_reset_randomization(
         self,
-        randomization: ResetRandomizationPayload,
+        randomization: Mapping[str, np.ndarray],
         rows: np.ndarray,
     ) -> _MotrixPortableResetRandomization:
         body_mass: np.ndarray | None = None
@@ -3439,19 +3611,21 @@ class MotrixBackend(SimBackend):
         dof_armature: np.ndarray | None = None
         dof_frictionloss: np.ndarray | None = None
 
-        if randomization.body_mass is not None or randomization.base_mass_delta is not None:
-            if randomization.body_mass is None:
+        body_mass_field = randomization.get("body_mass")
+        base_mass_delta_field = randomization.get("base_mass_delta")
+        if body_mass_field is not None or base_mass_delta_field is not None:
+            if body_mass_field is None:
                 mass_values = self._portable_default_body_mass[rows].copy()
             else:
-                mass_values = np.asarray(randomization.body_mass, dtype=np.float32)
+                mass_values = np.asarray(body_mass_field, dtype=np.float32)
                 mass_expected = (rows.size, self.get_scene_layout().nbody)
                 if mass_values.shape != mass_expected:
                     raise ValueError(
                         f"body_mass must have shape {mass_expected}, got {mass_values.shape}"
                     )
                 mass_values = mass_values.copy()
-            if randomization.base_mass_delta is not None:
-                delta = np.asarray(randomization.base_mass_delta, dtype=np.float32).reshape(-1)
+            if base_mass_delta_field is not None:
+                delta = np.asarray(base_mass_delta_field, dtype=np.float32).reshape(-1)
                 delta_expected = (rows.size,)
                 if delta.shape != delta_expected:
                     raise ValueError(
@@ -3472,19 +3646,21 @@ class MotrixBackend(SimBackend):
                 )
             body_mass = mass_values
 
-        if randomization.body_ipos is not None or randomization.base_com_offset is not None:
-            if randomization.body_ipos is None:
+        body_ipos_field = randomization.get("body_ipos")
+        base_com_offset_field = randomization.get("base_com_offset")
+        if body_ipos_field is not None or base_com_offset_field is not None:
+            if body_ipos_field is None:
                 ipos_values = self._portable_default_body_ipos[rows].copy()
             else:
-                ipos_values = np.asarray(randomization.body_ipos, dtype=np.float32)
+                ipos_values = np.asarray(body_ipos_field, dtype=np.float32)
                 ipos_expected = (rows.size, self.get_scene_layout().nbody, 3)
                 if ipos_values.shape != ipos_expected:
                     raise ValueError(
                         f"body_ipos must have shape {ipos_expected}, got {ipos_values.shape}"
                     )
                 ipos_values = ipos_values.copy()
-            if randomization.base_com_offset is not None:
-                delta = np.asarray(randomization.base_com_offset, dtype=np.float32)
+            if base_com_offset_field is not None:
+                delta = np.asarray(base_com_offset_field, dtype=np.float32)
                 com_delta_expected = (rows.size, 3)
                 if delta.shape != com_delta_expected:
                     raise ValueError(
@@ -3510,7 +3686,7 @@ class MotrixBackend(SimBackend):
             (RESET_TERM_DOF_FRICTIONLOSS, "dof_frictionloss"),
         )
         for term, attribute in portable_dof_terms:
-            value = getattr(randomization, term)
+            value = randomization.get(term)
             if value is None:
                 continue
             values = np.asarray(value, dtype=np.float32)
@@ -3625,11 +3801,14 @@ class MotrixBackend(SimBackend):
         # Built lazily once.  Angular-velocity and linear-velocity terms have
         # no handler and fail closed in the base dispatch.  Wrench terms stay
         # gated inside ``apply_body_force`` on the runtime native API probes.
+        # Op payloads and body_ids are torch-first; this host bridge converts
+        # them through the private ``unisim.dr._host`` helpers at the boundary.
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
                 INTERVAL_TERM_PUSH: lambda op: self.push_robots(op.payload),
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), require_op_host_payload(op)
+                    interval_payload_to_host(require_op_body_ids(op)),
+                    interval_payload_to_host(op.payload),
                 ),
             }
             if (
@@ -3639,11 +3818,11 @@ class MotrixBackend(SimBackend):
             ):
 
                 def apply_body_torque(op: IntervalTermOp) -> None:
-                    ids = require_op_body_ids(op)
+                    ids = interval_payload_to_host(require_op_body_ids(op))
                     self.apply_body_force(
                         ids,
                         np.zeros((self._num_envs, len(ids), 3), dtype=np.float32),
-                        torque=require_op_host_payload(op),
+                        torque=interval_payload_to_host(op.payload),
                     )
 
                 self._interval_term_handler_cache[INTERVAL_TERM_BODY_TORQUE] = apply_body_torque
@@ -4141,7 +4320,7 @@ class MotrixBackend(SimBackend):
         env_indices: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
     ) -> dict | None:
         """Bridge selected accelerator reset state to CPU MotrixSim physics."""
         from .tensor import motrix_set_state_tensor
@@ -4153,7 +4332,7 @@ class MotrixBackend(SimBackend):
         reset_mask: Any,
         qpos: Any,
         qvel: Any,
-        randomization: ResetRandomizationPayload | TensorResetRandomizationPayload | None = None,
+        randomization: TensorResetRandomizationPayload | None = None,
         *,
         full_refresh: bool = False,
     ) -> dict | None:
@@ -4256,6 +4435,59 @@ class MotrixBackend(SimBackend):
         for quat_indices in self._floating_base_quat_indices:
             qpos_mujoco[..., quat_indices] = qpos[..., quat_indices[[3, 0, 1, 2]]]
         return qpos_mujoco
+
+    def _public_state_rows_to_native(
+        self, qpos: np.ndarray, qvel: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Translate public-width state rows into the native DoF layout.
+
+        The public tensor layout always carries ``[base_pos, base_quat]`` and
+        ``[base_lin_vel, base_ang_vel]`` blocks plus the selected public DoF
+        columns, while the native MotrixSim DoF vectors carry a floating root
+        only when the model has one.  Rows already in native width pass
+        through unchanged.  Unselected native DoFs keep their model defaults,
+        matching the ``data_slice.reset(self._model)`` the caller performs
+        before writing.
+        """
+        native_nq = int(self._model.num_dof_pos)
+        native_nv = int(self._model.num_dof_vel)
+        if qpos.shape[1] == native_nq and qvel.shape[1] == native_nv:
+            return qpos, qvel
+        pos_indices = np.asarray(
+            self._actuator_joint_pos_indices
+            if self._actuator_joint_pos_indices is not None
+            else self._joint_dof_pos_indices,
+            dtype=np.intp,
+        )
+        vel_indices = np.asarray(
+            self._actuator_joint_vel_indices
+            if self._actuator_joint_vel_indices is not None
+            else self._joint_dof_vel_indices,
+            dtype=np.intp,
+        )
+        public_nq = 7 + pos_indices.size
+        public_nv = 6 + vel_indices.size
+        if qpos.shape[1] != public_nq or qvel.shape[1] != public_nv:
+            raise ValueError(
+                f"qpos/qvel must have native widths ({native_nq}, {native_nv}) or public "
+                f"widths ({public_nq}, {public_nv}); got ({qpos.shape[1]}, {qvel.shape[1]})"
+            )
+        default = self._native_default_qpos_mujoco
+        if default is None:
+            default = self._motrix_qpos_to_mujoco(
+                np.asarray(self._model.compute_init_dof_pos(), dtype=self._np_dtype)
+            )
+            self._native_default_qpos_mujoco = default
+        full_qpos = np.broadcast_to(default, (qpos.shape[0], native_nq)).copy()
+        full_qvel = np.zeros((qvel.shape[0], native_nv), dtype=self._np_dtype)
+        if self._body_floatingbase is not None:
+            full_qpos[:, :7] = qpos[:, :7]
+            full_qvel[:, :6] = qvel[:, :6]
+        # Fixed-base models carry a static base-link pose block with no native
+        # DoF counterpart; it is shape-validated above and not applied.
+        full_qpos[:, pos_indices] = qpos[:, 7:]
+        full_qvel[:, vel_indices] = qvel[:, 6:]
+        return full_qpos, full_qvel
 
     def _refresh_link_pose_cache(
         self,
@@ -4449,14 +4681,25 @@ class MotrixBackend(SimBackend):
             self._portable_faulted = True
             raise
 
-    def push_robots(self, force_range):
+    def push_robots(self, push: Any) -> None:
+        """Apply producer-sampled push forces through the Motrix Link API.
+
+        The producer owns random generation. ``push`` is a full-width
+        ``(num_envs, 3)`` Torch tensor or a :class:`TensorIntervalPayload`
+        whose ``push_force`` carries that table; this host bridge converts it
+        to NumPy at the boundary and a missing payload fails closed.
+        """
         if self._portable_mode:
             raise NotImplementedError("portable Motrix scenes do not support interval pushes")
-        ex_force = np.random.rand(self.num_envs, 3) * 2 - 1  # [x_force, y_force, z_force]
-        ex_force[:, 0] *= force_range[0]
-        ex_force[:, 1] *= force_range[1]
-        ex_force[:, 2] *= force_range[2]
-        self._push_body_link.add_external_force(self._data, ex_force, local=True)
+        ex_force = np.asarray(_interval_push_force_host(push), dtype=np.float32)
+        expected_shape = (self.num_envs, 3)
+        if ex_force.shape != expected_shape:
+            raise ValueError(f"push force must have shape {expected_shape}, got {ex_force.shape}")
+        if not np.isfinite(ex_force).all():
+            raise ValueError("push force must contain finite values")
+        self._push_body_link.add_external_force(
+            self._data, np.ascontiguousarray(ex_force), local=True
+        )
 
     def apply_body_force(
         self,
@@ -4774,14 +5017,12 @@ class MotrixBackend(SimBackend):
         self,
         data_slice,
         env_indices: np.ndarray,
-        randomization: ResetRandomizationPayload | None,
+        randomization: Mapping[str, np.ndarray] | None,
         env_ids_intp: np.ndarray | None = None,
     ) -> None:
-        if randomization is None or randomization.is_empty():
+        if not randomization:
             return
-        unsupported = (
-            randomization.requested_terms() - self.get_dr_capabilities().supported_reset_terms
-        )
+        unsupported = frozenset(randomization) - self.get_dr_capabilities().supported_reset_terms
         if unsupported:
             terms = ", ".join(sorted(unsupported))
             raise NotImplementedError(
@@ -4793,72 +5034,80 @@ class MotrixBackend(SimBackend):
         )
         num_reset = len(env_ids)
         body_mass = None
-        if randomization.body_mass is not None:
+        body_mass_field = randomization.get("body_mass")
+        if body_mass_field is not None:
             body_mass = self._coerce_reset_field(
-                randomization.body_mass,
+                body_mass_field,
                 name="body_mass",
                 num_reset=num_reset,
                 shaped_tail=(int(self._model.num_links),),
             )
-        if randomization.base_mass_delta is not None:
+        base_mass_delta_field = randomization.get("base_mass_delta")
+        if base_mass_delta_field is not None:
             if body_mass is None:
                 body_mass = np.broadcast_to(
                     self._default_body_mass,
                     (num_reset, int(self._model.num_links)),
                 ).copy()
             body_mass[:, int(self._body_link.index)] += np.asarray(
-                randomization.base_mass_delta, dtype=np.float32
+                base_mass_delta_field, dtype=np.float32
             )
         if body_mass is not None:
             self._set_link_mass_overrides(data_slice, body_mass)
 
         body_ipos = None
-        if randomization.body_ipos is not None:
+        body_ipos_field = randomization.get("body_ipos")
+        if body_ipos_field is not None:
             body_ipos = self._coerce_reset_field(
-                randomization.body_ipos,
+                body_ipos_field,
                 name="body_ipos",
                 num_reset=num_reset,
                 shaped_tail=(int(self._model.num_links), 3),
             )
-        if randomization.base_com_offset is not None:
+        base_com_offset_field = randomization.get("base_com_offset")
+        if base_com_offset_field is not None:
             if body_ipos is None:
                 body_ipos = np.broadcast_to(
                     self._default_body_ipos,
                     (num_reset, int(self._model.num_links), 3),
                 ).copy()
             body_ipos[:, int(self._body_link.index), :] += np.asarray(
-                randomization.base_com_offset, dtype=np.float32
+                base_com_offset_field, dtype=np.float32
             )
         if body_ipos is not None:
             self._set_link_ipos_overrides(data_slice, body_ipos)
 
-        if randomization.geom_friction is not None:
+        geom_friction_field = randomization.get("geom_friction")
+        if geom_friction_field is not None:
             geom_friction = self._coerce_reset_field(
-                randomization.geom_friction,
+                geom_friction_field,
                 name="geom_friction",
                 num_reset=num_reset,
                 shaped_tail=(int(self._model.num_geoms), 3),
             )
             self._set_geom_friction_overrides(data_slice, geom_friction)
 
-        if randomization.gravity is not None:
+        gravity_field = randomization.get("gravity")
+        if gravity_field is not None:
             gravity = self._coerce_reset_field(
-                randomization.gravity,
+                gravity_field,
                 name="gravity",
                 num_reset=num_reset,
                 shaped_tail=(3,),
             )
             self._set_gravity_override(data_slice, gravity)
 
-        if randomization.kp is not None:
-            kp = np.asarray(randomization.kp, dtype=np.float32)
+        kp_field = randomization.get("kp")
+        if kp_field is not None:
+            kp = np.asarray(kp_field, dtype=np.float32)
             expected_shape = (num_reset, self.num_actuators)
             if kp.shape != expected_shape:
                 raise ValueError(f"kp must have shape {expected_shape}, got {kp.shape}")
             self._set_position_actuator_kp_override(data_slice, kp)
 
-        if randomization.kd is not None:
-            kd = np.asarray(randomization.kd, dtype=np.float32)
+        kd_field = randomization.get("kd")
+        if kd_field is not None:
+            kd = np.asarray(kd_field, dtype=np.float32)
             expected_shape = (num_reset, self.num_actuators)
             if kd.shape != expected_shape:
                 raise ValueError(f"kd must have shape {expected_shape}, got {kd.shape}")

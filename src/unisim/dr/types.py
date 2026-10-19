@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -18,9 +18,6 @@ from .interval import (  # noqa: F401
 )
 from .interval import (
     require_op_body_ids as require_op_body_ids,
-)
-from .interval import (
-    require_op_host_payload as require_op_host_payload,
 )
 
 RESET_TERM_BASE_COM = "base_com_offset"
@@ -41,26 +38,50 @@ RESET_TERM_KP = "kp"
 RESET_TERM_KD = "kd"
 
 
-_RESET_TERM_NAMES = frozenset(
-    (
-        RESET_TERM_BASE_COM,
-        RESET_TERM_BASE_MASS,
-        RESET_TERM_GRAVITY,
-        RESET_TERM_BODY_IQUAT,
-        RESET_TERM_BODY_INERTIA,
-        RESET_TERM_BODY_IPOS,
-        RESET_TERM_BODY_MASS,
-        RESET_TERM_DOF_ARMATURE,
-        RESET_TERM_DOF_DAMPING,
-        RESET_TERM_DOF_FRICTIONLOSS,
-        RESET_TERM_GEOM_FRICTION,
-        RESET_TERM_GEOM_SIZE,
-        RESET_TERM_GEOM_SOLREF,
-        RESET_TERM_GEOM_SOLIMP,
-        RESET_TERM_KP,
-        RESET_TERM_KD,
-    )
+@dataclass(frozen=True, slots=True)
+class ResetTermSpec:
+    """Declared payload contract for one reset randomization term.
+
+    ``tail_ndim`` is the rank of the canonical model table (and equivalently
+    of one selected row); a per-environment table has rank ``tail_ndim + 1``.
+    ``is_delta`` marks terms whose payload values are deltas merged with the
+    adapter baseline (``final = baseline + delta``) instead of final absolute
+    values.
+    """
+
+    name: str
+    tail_ndim: int
+    is_delta: bool = False
+
+
+RESET_TERM_SPECS: tuple[ResetTermSpec, ...] = (
+    ResetTermSpec(name=RESET_TERM_BASE_COM, tail_ndim=1, is_delta=True),
+    ResetTermSpec(name=RESET_TERM_BASE_MASS, tail_ndim=0, is_delta=True),
+    ResetTermSpec(name=RESET_TERM_GRAVITY, tail_ndim=1),
+    ResetTermSpec(name=RESET_TERM_BODY_IQUAT, tail_ndim=2),
+    ResetTermSpec(name=RESET_TERM_BODY_INERTIA, tail_ndim=2),
+    ResetTermSpec(name=RESET_TERM_BODY_IPOS, tail_ndim=2),
+    ResetTermSpec(name=RESET_TERM_BODY_MASS, tail_ndim=1),
+    ResetTermSpec(name=RESET_TERM_DOF_ARMATURE, tail_ndim=1),
+    ResetTermSpec(name=RESET_TERM_DOF_DAMPING, tail_ndim=1),
+    ResetTermSpec(name=RESET_TERM_DOF_FRICTIONLOSS, tail_ndim=1),
+    ResetTermSpec(name=RESET_TERM_GEOM_FRICTION, tail_ndim=2),
+    ResetTermSpec(name=RESET_TERM_GEOM_SIZE, tail_ndim=2),
+    ResetTermSpec(name=RESET_TERM_GEOM_SOLREF, tail_ndim=2),
+    ResetTermSpec(name=RESET_TERM_GEOM_SOLIMP, tail_ndim=2),
+    ResetTermSpec(name=RESET_TERM_KP, tail_ndim=1),
+    ResetTermSpec(name=RESET_TERM_KD, tail_ndim=1),
 )
+
+_RESET_TERM_NAMES = frozenset(spec.name for spec in RESET_TERM_SPECS)
+
+
+def reset_term_spec(name: str) -> ResetTermSpec:
+    """Return the spec for ``name`` or raise a stable ``KeyError``."""
+    for spec in RESET_TERM_SPECS:
+        if spec.name == name:
+            return spec
+    raise KeyError(f"unknown reset randomization term: {name!r}")
 
 
 def _validate_reset_term(term: str) -> None:
@@ -178,34 +199,72 @@ class FixedVariantPlan:
         return (type(self), (self.assignment, self.variants, self.layout))
 
 
+DataPlaneName = Literal["host", "device"]
+
+
 @dataclass(frozen=True)
 class DomainRandomizationCapabilities:
-    """Backend domain-randomization capability declaration.
+    """Backend domain-randomization capability declaration, split by data plane.
 
-    ``supported_interval_terms`` is the authoritative set-based declaration of
-    interval term support.
+    ``supported_reset_terms`` and ``supported_interval_terms`` declare the
+    **host plane**: payloads whose tensors live on ``torch.cpu``.
+    ``supported_device_reset_terms`` and ``supported_device_interval_terms``
+    declare the **device plane**: payloads whose tensors live on any other
+    Torch device. Both device sets default to empty, so undeclared device
+    support fails closed. The plane of a payload is decided by its tensors'
+    devices; there is no separate configuration switch.
     """
 
     supported_reset_terms: frozenset[str] = field(default_factory=frozenset)
     supported_interval_terms: frozenset[str] = field(default_factory=frozenset)
+    supported_device_reset_terms: frozenset[str] = field(default_factory=frozenset)
+    supported_device_interval_terms: frozenset[str] = field(default_factory=frozenset)
     supports_fixed_variants: bool = False
     supported_fixed_variant_layouts: frozenset[FixedVariantLayout] = field(
         default_factory=frozenset
     )
     supports_per_env_playback: bool = False
 
-    def supports_reset_term(self, term: str) -> bool:
-        return term in self.supported_reset_terms
+    @staticmethod
+    def _validate_plane(plane: str) -> None:
+        if plane not in ("host", "device"):
+            raise ValueError(f"plane must be 'host' or 'device', got {plane!r}")
 
-    def supports_interval_term(self, term: str) -> bool:
-        """Return whether the backend declares support for one interval term."""
-        return term in self.supported_interval_terms
+    def _reset_terms_for_plane(self, plane: str) -> frozenset[str]:
+        self._validate_plane(plane)
+        if plane == "device":
+            return self.supported_device_reset_terms
+        return self.supported_reset_terms
 
-    def get_unsupported_interval_terms(self, terms: Iterable[str]) -> frozenset[str]:
-        return frozenset(term for term in terms if not self.supports_interval_term(term))
+    def _interval_terms_for_plane(self, plane: str) -> frozenset[str]:
+        self._validate_plane(plane)
+        if plane == "device":
+            return self.supported_device_interval_terms
+        return self.supported_interval_terms
 
-    def get_unsupported_reset_terms(self, requested_terms: frozenset[str]) -> frozenset[str]:
-        return frozenset(term for term in requested_terms if not self.supports_reset_term(term))
+    def supports_reset_term(self, term: str, *, plane: DataPlaneName = "host") -> bool:
+        """Return whether the backend declares ``term`` on the given plane."""
+        return term in self._reset_terms_for_plane(plane)
+
+    def supports_interval_term(self, term: str, *, plane: DataPlaneName = "host") -> bool:
+        """Return whether the backend declares one interval term on a plane."""
+        return term in self._interval_terms_for_plane(plane)
+
+    def get_unsupported_interval_terms(
+        self, terms: Iterable[str], *, plane: DataPlaneName = "host"
+    ) -> frozenset[str]:
+        """Return requested interval terms unsupported on the given plane."""
+        return frozenset(
+            term for term in terms if not self.supports_interval_term(term, plane=plane)
+        )
+
+    def get_unsupported_reset_terms(
+        self, requested_terms: Iterable[str], *, plane: DataPlaneName = "host"
+    ) -> frozenset[str]:
+        """Return requested reset terms unsupported on the given plane."""
+        return frozenset(
+            term for term in requested_terms if not self.supports_reset_term(term, plane=plane)
+        )
 
     def fixed_variant_rejections(self, plan: FixedVariantPlan) -> tuple[str, ...]:
         """Return human-readable reasons why ``plan`` cannot be realized."""
@@ -218,82 +277,27 @@ class DomainRandomizationCapabilities:
             reasons.append(f"fixed variant layout '{plan.layout.value}' is unsupported")
         return tuple(reasons)
 
-@dataclass
-class ResetRandomizationPayload:
-    base_mass_delta: np.ndarray | None = None
-    base_com_offset: np.ndarray | None = None
-    gravity: np.ndarray | None = None
-    body_iquat: np.ndarray | None = None
-    body_inertia: np.ndarray | None = None
-    body_ipos: np.ndarray | None = None
-    body_mass: np.ndarray | None = None
-    dof_armature: np.ndarray | None = None
-    geom_friction: np.ndarray | None = None
-    kp: np.ndarray | None = None
-    kd: np.ndarray | None = None
-    # Dense model-column tables for selected reset rows. Geometry bounds are
-    # derived by the adapter; callers must never supply independent bounds.
-    geom_size: np.ndarray | None = None
-    geom_solref: np.ndarray | None = None
-    geom_solimp: np.ndarray | None = None
-    dof_damping: np.ndarray | None = None
-    dof_frictionloss: np.ndarray | None = None
-
-    def requested_terms(self) -> frozenset[str]:
-        terms: set[str] = set()
-        if self.base_mass_delta is not None:
-            terms.add(RESET_TERM_BASE_MASS)
-        if self.base_com_offset is not None:
-            terms.add(RESET_TERM_BASE_COM)
-        if self.gravity is not None:
-            terms.add(RESET_TERM_GRAVITY)
-        if self.body_iquat is not None:
-            terms.add(RESET_TERM_BODY_IQUAT)
-        if self.body_inertia is not None:
-            terms.add(RESET_TERM_BODY_INERTIA)
-        if self.body_ipos is not None:
-            terms.add(RESET_TERM_BODY_IPOS)
-        if self.body_mass is not None:
-            terms.add(RESET_TERM_BODY_MASS)
-        if self.dof_armature is not None:
-            terms.add(RESET_TERM_DOF_ARMATURE)
-        if self.geom_friction is not None:
-            terms.add(RESET_TERM_GEOM_FRICTION)
-        if self.kp is not None:
-            terms.add(RESET_TERM_KP)
-        if self.kd is not None:
-            terms.add(RESET_TERM_KD)
-        for term in (
-            RESET_TERM_GEOM_SIZE,
-            RESET_TERM_GEOM_SOLREF,
-            RESET_TERM_GEOM_SOLIMP,
-            RESET_TERM_DOF_DAMPING,
-            RESET_TERM_DOF_FRICTIONLOSS,
-        ):
-            if getattr(self, term) is not None:
-                terms.add(term)
-        return frozenset(terms)
-
-    def is_empty(self) -> bool:
-        return not self.requested_terms()
-
 
 @dataclass
 class TensorResetRandomizationPayload:
-    """Device-resident reset randomization payload for tensor lifecycles.
+    """The single public reset randomization payload, torch-first.
 
-    Values are engine-native device arrays (Torch tensors today) living on the
-    backend's declared Torch device; the base contract deliberately stays
-    Torch-free, so fields are typed ``Any``.  Each value is a dense
-    selected-row table shaped ``(num_rows, *canonical_tail)`` holding FINAL
-    ABSOLUTE values with the same post-composition semantics as the matching
-    :class:`ResetRandomizationPayload` fields.  ``base_mass_delta`` and
-    ``base_com_offset`` are deliberately absent: delta-merge terms remain
-    host-only.  Backends accept this payload only when their
-    ``TensorLifecycleCapabilities.device_reset_randomization`` flag is set;
-    every other adapter fails closed.
+    Values are Torch tensors; the base contract deliberately stays Torch-free,
+    so fields are typed ``Any`` and validated lazily by
+    :func:`validate_tensor_reset_payload`. Each value is a dense selected-row
+    table shaped ``(num_rows, *canonical_tail)``. Non-delta terms hold FINAL
+    ABSOLUTE values. The delta terms ``base_mass_delta`` and
+    ``base_com_offset`` hold deltas that the consuming adapter merges with its
+    baseline (``final = baseline + delta``); the packed reset composer performs
+    that merge in Torch at commit time. Tensors on ``torch.cpu`` form the host
+    plane; tensors on any other device form the device plane. Backends check
+    the requested terms against the matching
+    :class:`DomainRandomizationCapabilities` plane set and fail closed on
+    undeclared terms.
     """
 
+    base_mass_delta: Any | None = None
+    base_com_offset: Any | None = None
     gravity: Any | None = None
     body_iquat: Any | None = None
     body_inertia: Any | None = None
@@ -303,6 +307,8 @@ class TensorResetRandomizationPayload:
     geom_friction: Any | None = None
     kp: Any | None = None
     kd: Any | None = None
+    # Dense model-column tables for selected reset rows. Geometry bounds are
+    # derived by the adapter; callers must never supply independent bounds.
     geom_size: Any | None = None
     geom_solref: Any | None = None
     geom_solimp: Any | None = None
@@ -311,28 +317,54 @@ class TensorResetRandomizationPayload:
 
     def requested_terms(self) -> frozenset[str]:
         return frozenset(
-            term
-            for term in (
-                RESET_TERM_GRAVITY,
-                RESET_TERM_BODY_IQUAT,
-                RESET_TERM_BODY_INERTIA,
-                RESET_TERM_BODY_IPOS,
-                RESET_TERM_BODY_MASS,
-                RESET_TERM_DOF_ARMATURE,
-                RESET_TERM_GEOM_FRICTION,
-                RESET_TERM_KP,
-                RESET_TERM_KD,
-                RESET_TERM_GEOM_SIZE,
-                RESET_TERM_GEOM_SOLREF,
-                RESET_TERM_GEOM_SOLIMP,
-                RESET_TERM_DOF_DAMPING,
-                RESET_TERM_DOF_FRICTIONLOSS,
-            )
-            if getattr(self, term) is not None
+            payload_field.name
+            for payload_field in fields(self)
+            if getattr(self, payload_field.name) is not None
         )
 
     def is_empty(self) -> bool:
         return not self.requested_terms()
+
+
+def validate_tensor_reset_payload(
+    payload: TensorResetRandomizationPayload,
+    *,
+    device: Any | None = None,
+    allowed_terms: Iterable[str] | None = None,
+) -> None:
+    """Validate a torch-first reset payload with a lazy Torch import.
+
+    Every populated field must be a ``torch.Tensor``. When ``device`` is given,
+    all tensors must live on that device; when ``allowed_terms`` is given, any
+    requested term outside the allowlist fails closed naming the term. An empty
+    payload is valid and never imports Torch.
+    """
+    if not isinstance(payload, TensorResetRandomizationPayload):
+        raise TypeError("payload must be a TensorResetRandomizationPayload")
+    requested = payload.requested_terms()
+    if allowed_terms is not None:
+        unsupported = requested - frozenset(allowed_terms)
+        if unsupported:
+            raise ValueError(f"reset terms not allowed here: {sorted(unsupported)}")
+    if not requested:
+        return
+    import torch
+
+    accepted_device = None if device is None else torch.device(device)
+    for payload_field in fields(payload):
+        value = getattr(payload, payload_field.name)
+        if value is None:
+            continue
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(
+                f"reset field {payload_field.name!r} must be a torch.Tensor, "
+                f"got {type(value).__name__}"
+            )
+        if accepted_device is not None and value.device != accepted_device:
+            raise ValueError(
+                f"reset field {payload_field.name!r} must live on {accepted_device}, "
+                f"got {value.device}"
+            )
 
 
 @dataclass

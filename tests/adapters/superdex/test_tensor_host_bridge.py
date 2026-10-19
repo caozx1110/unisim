@@ -522,12 +522,23 @@ def test_packed_compile_and_hot_path_capabilities_fail_closed(backend, monkeypat
         plan.write_control(torch.zeros((3, 1), dtype=torch.float32))
     with pytest.raises(NotImplementedError, match="pre-step control"):
         backend.step_tensor(torch.zeros((3, 1), dtype=torch.float32))
-    with pytest.raises(NotImplementedError, match="randomization"):
+    with pytest.raises(TypeError, match="TensorResetRandomizationPayload"):
         plan.apply_reset(
             torch.tensor([0], dtype=torch.int64),
             torch.zeros((1, backend.model.nq), dtype=torch.float32),
             torch.zeros((1, backend.model.nv), dtype=torch.float32),
             randomization=object(),
+        )
+    from unisim.dr.types import TensorResetRandomizationPayload
+
+    with pytest.raises(NotImplementedError, match="kp"):
+        plan.apply_reset(
+            torch.tensor([0], dtype=torch.int64),
+            torch.zeros((1, backend.model.nq), dtype=torch.float32),
+            torch.zeros((1, backend.model.nv), dtype=torch.float32),
+            randomization=TensorResetRandomizationPayload(
+                kp=torch.zeros((1, 1), dtype=torch.float32)
+            ),
         )
     monkeypatch.setattr(backend, "_pre_step_control_fn", None)
 

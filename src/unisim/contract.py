@@ -28,7 +28,6 @@ from .backend.base import (
     validate_tensor_device,
 )
 from .backend.packed_reset import (
-    PACKED_RESET_HOST_ONLY_FIELDS,
     PACKED_RESET_MODEL_FIELDS,
     PACKED_RESET_PERSISTENT_CHANNELS,
     TorchPackedResetComposer,
@@ -55,7 +54,6 @@ __all__ = [
     "TensorLifecycleCapabilities",
     "TensorRuntimeDiagnostic",
     "TensorIOSpec",
-    "PACKED_RESET_HOST_ONLY_FIELDS",
     "PACKED_RESET_MODEL_FIELDS",
     "PACKED_RESET_PERSISTENT_CHANNELS",
     "TorchPackedResetComposer",
