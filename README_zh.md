@@ -41,7 +41,7 @@ backend.step(ctrl)         # 热路径：校验数组和缓存句柄
 
 确定性 `FakeBackend` 和 `assert_backend_conformance` 辅助函数让消费者无需安装引擎即可测试任务代码。`BenchmarkCase` 和 `BenchmarkResult` 是为未来 benchmark 包保留的 schema 扩展点；本仓库不实现负载运行器。
 
-外部 worker 根目录可通过 `UNISIM_ISAACGYM_HOME`、`UNISIM_ISAACGYM_PYTHON`、`UNISIM_ISAACSIM_HOME` 和 `UNISIM_ISAACSIM_PYTHON` 配置。旧 `UNILAB_*` 拼写仍作为迁移回退保留。
+外部 worker 根目录可通过 `UNISIM_ISAACGYM_HOME`、`UNISIM_ISAACGYM_PYTHON`、`UNISIM_ISAACSIM_HOME` 和 `UNISIM_ISAACSIM_PYTHON` 配置。仅读取 `UNISIM_*` 拼写；已退役的 `UNILAB_*` 名称不生效。
 
 ## 文档
 
