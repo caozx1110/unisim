@@ -1,0 +1,11 @@
+<mujoco model="unisim-g1-contact-floor-control">
+  <option integrator="implicitfast" timestep="0.006666666666666667"/>
+  <worldbody>
+    <body name="floor">
+      <inertial mass="88000" pos="0 0 0" diaginertia="1 1 1"/>
+      <!-- This is UniSim's diagnostic control, not UniLab's mutable owner asset.
+           The bounded task-local box gives plane controls a stable baseline. -->
+      <geom name="floor" type="box" size="0.25 0.25 0.05" pos="0 0 -0.05" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>
