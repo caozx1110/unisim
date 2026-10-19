@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import xml.etree.ElementTree as ET
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -91,38 +92,54 @@ def _mapped_scene(fixtures: Any) -> Any:
     )
 
 
+_CONTROL_FLOOR = Path(__file__).resolve().parent / "fixtures" / "g1_contact_floor_entity.xml"
+
+
+def _floor_control(case: str, tmp_path: Path) -> Path:
+    """Build one stable control floor without mutating checked-in fixtures or owner assets."""
+
+    tree = ET.parse(_CONTROL_FLOOR)
+    body = tree.find("./worldbody/body[@name='floor']")
+    geom = tree.find("./worldbody/body[@name='floor']/geom[@name='floor']")
+    if body is None or geom is None:
+        raise AssertionError(f"control floor lacks its fixed floor body/geom: {_CONTROL_FLOOR}")
+    if case == "finite_box":
+        return _CONTROL_FLOOR
+    if case == "zero_size_plane":
+        inertial = body.find("inertial")
+        if inertial is not None:
+            body.remove(inertial)
+        geom.clear()
+        geom.set("name", "floor")
+        geom.set("type", "plane")
+        geom.set("size", "0 0 0.05")
+    elif case == "finite_plane":
+        # MuJoCo ignores mass on a plane geom, while USD import gives the finite
+        # plane its default rigid-body mass. Keep the authored fixed-body inertia
+        # so this diagnostic control reaches rollout.
+        geom.clear()
+        geom.set("name", "floor")
+        geom.set("type", "plane")
+        geom.set("size", "10 10 0.05")
+    else:
+        raise ValueError(f"unknown IsaacSim contact diagnostic case {case!r}")
+    ET.indent(tree, space="  ")
+    path = tmp_path / f"{case}_floor_entity.xml"
+    tree.write(path, encoding="utf-8", xml_declaration=False)
+    return path
+
+
 def _case_fixtures(fixtures: Any, tmp_path: Path, case: str) -> Any:
     """Resolve a reproducible floor control without mutating checked-in sources."""
 
-    if case == "finite_box":
-        return fixtures
-    source = fixtures.isaacsim_floor.read_text(encoding="utf-8")
-    original = '<geom name="floor" type="box" size="0.25 0.25 0.05" pos="0 0 -0.05" mass="1"/>'
-    if source.count(original) != 1:
-        raise ValueError(f"mapped floor fixture no longer contains the repro geom: {source!r}")
-    if case == "zero_size_plane":
-        replacement = '<geom name="floor" type="plane" size="0 0 0.05"/>'
-    elif case == "finite_plane":
-        # MuJoCo ignores mass on a plane geom, while USD import gives the
-        # finite plane its default rigid-body mass.  Author the expected fixed
-        # body inertia explicitly so the diagnostic control reaches rollout.
-        replacement = (
-            '<inertial mass="88000" pos="0 0 0" diaginertia="1 1 1"/>'
-            '<geom name="floor" type="plane" size="10 10 0.05"/>'
-        )
-    else:
-        raise ValueError(f"unknown IsaacSim contact diagnostic case {case!r}")
-    path = tmp_path / f"{case}_floor_entity.xml"
-    path.write_text(source.replace(original, replacement), encoding="utf-8")
-    return replace(fixtures, isaacsim_floor=path)
+    if not _CONTROL_FLOOR.is_file():
+        raise AssertionError(f"missing checked-in contact control floor: {_CONTROL_FLOOR}")
+    return replace(fixtures, isaacsim_floor=_floor_control(case, tmp_path))
 
 
-def test_production_floor_is_an_explicit_task_local_finite_box() -> None:
-    import xml.etree.ElementTree as ET
-
-    fixtures = resolve_g1_fixture_paths()
-    pytest_skip_if_fixture_unavailable(fixtures)
-    geom = ET.parse(fixtures.isaacsim_floor).find("./worldbody/body/geom")
+def test_contact_control_floor_is_structurally_explicit() -> None:
+    root = ET.parse(_CONTROL_FLOOR).getroot()
+    geom = root.find("./worldbody/body[@name='floor']/geom[@name='floor']")
     assert geom is not None
     assert geom.attrib == {
         "name": "floor",
@@ -133,16 +150,40 @@ def test_production_floor_is_an_explicit_task_local_finite_box() -> None:
     }
 
 
-def test_contact_controls_reproduce_reference_plane_cases_from_the_task_local_box_floor(
+def test_contact_controls_skip_cleanly_when_sibling_fixtures_are_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.adapters.isaac import g1_parity_harness
+
+    for name in (
+        "DEFAULT_CANONICAL_SCENE",
+        "DEFAULT_ISAACSIM_ROBOT",
+        "DEFAULT_ISAACSIM_FLOOR",
+        "DEFAULT_ISAACSIM_CONTACT_SENSORS",
+    ):
+        monkeypatch.setattr(g1_parity_harness, name, tmp_path / f"missing-{name}.xml")
+    fixtures = g1_parity_harness.resolve_g1_fixture_paths()
+    with pytest.raises(pytest.skip.Exception, match="G1 parity fixtures are unavailable"):  # pyright: ignore[reportAttributeAccessIssue]
+        g1_parity_harness.pytest_skip_if_fixture_unavailable(fixtures)
+
+
+def test_contact_controls_reproduce_reference_plane_cases_from_the_checked_in_box_floor(
     tmp_path: Path,
 ) -> None:
-    fixtures = resolve_g1_fixture_paths()
-    pytest_skip_if_fixture_unavailable(fixtures)
-    assert _case_fixtures(fixtures, tmp_path, "finite_box") is fixtures
-    zero = _case_fixtures(fixtures, tmp_path, "zero_size_plane").isaacsim_floor
-    finite = _case_fixtures(fixtures, tmp_path, "finite_plane").isaacsim_floor
-    assert '<geom name="floor" type="plane" size="0 0 0.05"/>' in zero.read_text()
-    assert 'size="10 10 0.05"' in finite.read_text()
+    finite_box = _floor_control("finite_box", tmp_path)
+    zero = _floor_control("zero_size_plane", tmp_path)
+    finite = _floor_control("finite_plane", tmp_path)
+
+    def floor_geom(path: Path) -> ET.Element:
+        geom = ET.parse(path).find("./worldbody/body/geom[@name='floor']")
+        assert geom is not None
+        return geom
+
+    assert finite_box == _CONTROL_FLOOR
+    assert floor_geom(zero).attrib == {"name": "floor", "type": "plane", "size": "0 0 0.05"}
+    assert ET.parse(zero).find("./worldbody/body/inertial") is None
+    assert floor_geom(finite).attrib == {"name": "floor", "type": "plane", "size": "10 10 0.05"}
+    assert ET.parse(finite).find("./worldbody/body/inertial") is not None
 
 
 def _force_snapshot(backend: Any) -> dict[str, np.ndarray]:
