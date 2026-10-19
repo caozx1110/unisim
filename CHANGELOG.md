@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.2 - 2026-10-19
+
+- Preserved the private Motrix whole-MJCF materialization seam used by SDK-free downstream contract tests while keeping the 1.8.1 FrameQuat inventory on the production path. The backend accepts both the historical two-tuple fake boundary and the production three-tuple sensor inventory, so fake models without physical sensors remain testable without weakening real FrameQuat conversion.
+
 ## 1.8.1 - 2026-10-19
 
 - Fixed MotrixSim FrameQuat sensor semantics. Motrix native frame sensors return quaternion components in `xyzw` order, while UniSim sensor consumers follow MuJoCo's public `wxyz` convention. Source body/site FrameQuat sensors and generated body-tracking quaternion sensors are now inventoried as FrameQuat at materialization, and individual, batched, selected-row, and packed host-bridge reads reorder only those four-column sensors. This removes a large artificial G1 foot roll/pitch penalty and restores SAC `g1_walk_flat` training quality on Motrix without changing the underlying physics (UniLab #2387).
