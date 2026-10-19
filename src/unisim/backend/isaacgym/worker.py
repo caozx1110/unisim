@@ -22,19 +22,33 @@ from typing import Any, Dict, List, Tuple, cast
 
 import numpy as np
 
-from unisim.backend.subprocess_ipc.protocol_loader import (
-    protocol_module_from_path,
-    worker_profiler_from_path,
+_WORKER_PROFILE_ENVIRONMENT = (
+    "UNISIM_ISAAC_WORKER_PROFILE_TRACE",
+    "UNISIM_ISAAC_WORKER_PROFILE_START_COMMAND",
+    "UNISIM_ISAAC_WORKER_PROFILE_STOP_COMMAND",
 )
 
 
 def _load_protocol(path: str) -> Any:
     """Load the shared protocol module by file path (no package import)."""
-    return protocol_module_from_path(path)
+    spec = importlib.util.spec_from_file_location("unisim_subprocess_protocol", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load protocol module from {path!r}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load_worker_profiler(protocol_path: str) -> Any:
-    return worker_profiler_from_path(protocol_path)
+    if not any(name in os.environ for name in _WORKER_PROFILE_ENVIRONMENT):
+        return None
+    path = os.path.join(os.path.dirname(protocol_path), "worker_profile.py")
+    spec = importlib.util.spec_from_file_location("unisim_worker_profile", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load worker profiler module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.profiler_from_environment()
 
 
 class _WorkerContext:
