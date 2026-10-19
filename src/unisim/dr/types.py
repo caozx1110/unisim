@@ -218,62 +218,6 @@ class DomainRandomizationCapabilities:
             reasons.append(f"fixed variant layout '{plan.layout.value}' is unsupported")
         return tuple(reasons)
 
-    def filter_reset_payload(
-        self, payload: ResetRandomizationPayload
-    ) -> tuple[ResetRandomizationPayload | None, frozenset[str]]:
-        unsupported = self.get_unsupported_reset_terms(payload.requested_terms())
-        if not unsupported:
-            return payload, frozenset()
-
-        filtered = ResetRandomizationPayload(
-            base_mass_delta=(
-                payload.base_mass_delta if self.supports_reset_term(RESET_TERM_BASE_MASS) else None
-            ),
-            base_com_offset=(
-                payload.base_com_offset if self.supports_reset_term(RESET_TERM_BASE_COM) else None
-            ),
-            gravity=payload.gravity if self.supports_reset_term(RESET_TERM_GRAVITY) else None,
-            body_iquat=(
-                payload.body_iquat if self.supports_reset_term(RESET_TERM_BODY_IQUAT) else None
-            ),
-            body_inertia=(
-                payload.body_inertia if self.supports_reset_term(RESET_TERM_BODY_INERTIA) else None
-            ),
-            body_ipos=(
-                payload.body_ipos if self.supports_reset_term(RESET_TERM_BODY_IPOS) else None
-            ),
-            body_mass=(
-                payload.body_mass if self.supports_reset_term(RESET_TERM_BODY_MASS) else None
-            ),
-            dof_armature=(
-                payload.dof_armature if self.supports_reset_term(RESET_TERM_DOF_ARMATURE) else None
-            ),
-            geom_friction=(
-                payload.geom_friction
-                if self.supports_reset_term(RESET_TERM_GEOM_FRICTION)
-                else None
-            ),
-            kp=payload.kp if self.supports_reset_term(RESET_TERM_KP) else None,
-            kd=payload.kd if self.supports_reset_term(RESET_TERM_KD) else None,
-            geom_size=payload.geom_size if self.supports_reset_term(RESET_TERM_GEOM_SIZE) else None,
-            geom_solref=(
-                payload.geom_solref if self.supports_reset_term(RESET_TERM_GEOM_SOLREF) else None
-            ),
-            geom_solimp=(
-                payload.geom_solimp if self.supports_reset_term(RESET_TERM_GEOM_SOLIMP) else None
-            ),
-            dof_damping=(
-                payload.dof_damping if self.supports_reset_term(RESET_TERM_DOF_DAMPING) else None
-            ),
-            dof_frictionloss=(
-                payload.dof_frictionloss
-                if self.supports_reset_term(RESET_TERM_DOF_FRICTIONLOSS)
-                else None
-            ),
-        )
-        return (None if filtered.is_empty() else filtered), unsupported
-
-
 @dataclass
 class ResetRandomizationPayload:
     base_mass_delta: np.ndarray | None = None
