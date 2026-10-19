@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +26,7 @@ from unisim.backend.motrix import tensor as motrix_tensor
 from unisim.dr.types import ModelSourceDescriptor
 from unisim.entities import EntityInitialState, SceneEntitySpec
 from unisim.scene import SceneCfg
+from unisim.support import _assert_tensor_platform_capabilities
 
 torch = pytest.importorskip("torch")
 
@@ -62,6 +65,7 @@ def backend(tmp_path: Path) -> MotrixBackend:
 
 def test_tensor_capability_matrix_is_narrow_and_fail_closed(backend: MotrixBackend) -> None:
     capabilities = backend.get_tensor_capabilities()
+    _assert_tensor_platform_capabilities("motrix", capabilities)
     assert backend.tensor_execution() is TensorExecution.HOST_BRIDGE
     assert capabilities.execution is TensorExecution.HOST_BRIDGE
     assert capabilities.state_fields == frozenset({"qpos", "qvel", "ctrl"})
@@ -226,6 +230,124 @@ def test_selected_read_before_full_read_preserves_all_rows_or_fails_closed(
         np.testing.assert_allclose(
             updated[name].detach().numpy(), backend._host_read_sensor(name), atol=1e-6
         )
+
+
+def test_mask_reset_publishes_selected_rows_to_host_bridge_plans(backend: MotrixBackend) -> None:
+    plan = backend.compile_host_bridge_io(
+        TensorIOSpec(
+            state_fields=("qpos", "qvel"),
+            sensor_names=("angle", "speed"),
+            device="cpu",
+        )
+    )
+    full_views = plan.read_state_sensors()
+    mask = torch.tensor([False, True, True])
+    qpos = full_views["qpos"].clone()
+    qvel = full_views["qvel"].clone()
+    qpos[mask, 0] = torch.tensor([0.4, -0.2])
+    qvel[mask, -1] = torch.tensor([1.5, -0.7])
+
+    backend.set_state_tensor_mask(mask, qpos, qvel)
+    selected = plan.read_selected_state_sensors()
+
+    np.testing.assert_allclose(selected["qpos"].detach().numpy(), qpos, atol=1e-6)
+    np.testing.assert_allclose(selected["qvel"].detach().numpy(), qvel, atol=1e-6)
+    np.testing.assert_allclose(
+        selected["angle"].detach().numpy()[mask],
+        qpos[mask, 7:8],
+        atol=1e-6,
+    )
+
+
+def test_selected_physical_sensors_use_one_batched_read(
+    backend: MotrixBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = backend.compile_host_bridge_io(
+        TensorIOSpec(
+            state_fields=("qpos", "qvel"),
+            sensor_names=("angle", "speed"),
+            device="cpu",
+        )
+    )
+    full_views = plan.read_state_sensors()
+    rows = np.asarray((2, 0), dtype=np.int64)
+    qpos = full_views["qpos"][rows].clone()
+    qvel = full_views["qvel"][rows].clone()
+    qpos[:, 0] = torch.tensor((0.3, -0.1), dtype=torch.float32)
+    qvel[:, -1] = torch.tensor((-0.4, 0.8), dtype=torch.float32)
+    plan.apply_reset(
+        torch.tensor(rows, dtype=torch.int64),
+        qpos,
+        qvel,
+    )
+
+    original_sensor_rows_batch = backend._host_read_sensor_rows_batch
+    calls: list[Sequence[str]] = []
+
+    def tracking_sensor_rows_batch(names: Sequence[str], env_ids):
+        calls.append(tuple(names))
+        return original_sensor_rows_batch(names, env_ids)
+
+    monkeypatch.setattr(backend, "_host_read_sensor_rows_batch", tracking_sensor_rows_batch)
+
+    def fail_base_read(*args: object, name: str = "") -> None:
+        raise AssertionError(f"{name} should not be read after apply_reset")
+
+    for name in (
+        "_host_get_base_pos",
+        "_host_get_base_quat",
+        "_host_get_base_lin_vel",
+        "_host_get_base_ang_vel",
+    ):
+        monkeypatch.setattr(backend, name, partial(fail_base_read, name=name))
+    selected = plan.read_selected_state_sensors()
+
+    assert calls == [("angle", "speed")]
+    np.testing.assert_allclose(
+        selected["angle"].numpy()[rows],
+        qpos[:, 7:8],
+    )
+    np.testing.assert_allclose(
+        selected["speed"].numpy()[rows],
+        qvel[:, -1:],
+    )
+
+
+def test_selected_reset_payload_matches_canonical_reread(backend: MotrixBackend) -> None:
+    """The cached reset packet remains equivalent to authoritative state reads."""
+
+    plan = backend.compile_host_bridge_io(
+        TensorIOSpec(
+            state_fields=("qpos", "qvel"),
+            sensor_names=("angle", "speed"),
+            device="cpu",
+        )
+    )
+    state = backend._host_get_state()
+    rows = np.asarray((2, 0), dtype=np.int64)
+    qpos = state["qpos"][rows].copy()
+    qvel = state["qvel"][rows].copy()
+    qpos[:, 0] = (0.3, -0.1)
+    qpos[:, 7] = (0.4, -0.2)
+    qvel[:, -1] = (1.5, -0.7)
+    plan.apply_reset(
+        torch.tensor(rows, dtype=torch.int64),
+        torch.tensor(qpos, dtype=torch.float32),
+        torch.tensor(qvel, dtype=torch.float32),
+    )
+
+    selected = plan.read_selected_state_sensors()
+    canonical = backend._host_get_state()
+
+    for name, expected_rows in (("qpos", qpos), ("qvel", qvel)):
+        np.testing.assert_allclose(selected[name].numpy()[rows], expected_rows, atol=1e-6)
+        np.testing.assert_allclose(selected[name].numpy()[rows], canonical[name][rows], atol=1e-6)
+    np.testing.assert_allclose(
+        selected["angle"].numpy()[rows], backend._host_read_sensor("angle")[rows], atol=1e-6
+    )
+    np.testing.assert_allclose(
+        selected["speed"].numpy()[rows], backend._host_read_sensor("speed")[rows], atol=1e-6
+    )
 
 
 def test_selected_read_does_not_compute_unselected_rows(

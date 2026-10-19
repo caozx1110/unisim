@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 
 from unisim.adapters import ADAPTER_SPECS, adapter_spec
-from unisim.backend.base import TensorDataPlane, TensorExecution, TensorProcessTopology
+from unisim.backend.base import (
+    TensorDataPlane,
+    TensorExecution,
+    TensorLifecycleCapabilities,
+    TensorProcessTopology,
+)
 from unisim.capabilities import (
     CapabilityCondition,
     CapabilityDeclaration,
@@ -87,6 +92,72 @@ class TensorPlatformProfile:
     fixed_variants: SupportLevel
     host_pre_step_control: SupportLevel
     packed_host_bridge: SupportLevel
+
+
+@dataclass(frozen=True)
+class _TensorPlatformBoundary:
+    execution: TensorExecution
+    process_topology: TensorProcessTopology
+    data_plane: TensorDataPlane
+    torch_devices: tuple[str, ...]
+
+
+_TENSOR_PLATFORM_BOUNDARIES: dict[str, _TensorPlatformBoundary] = {
+    "mujoco": _TensorPlatformBoundary(
+        TensorExecution.HOST_BRIDGE,
+        TensorProcessTopology.IN_PROCESS,
+        TensorDataPlane.HOST_BRIDGE,
+        ("cpu", "cuda"),
+    ),
+    "motrix": _TensorPlatformBoundary(
+        TensorExecution.HOST_BRIDGE,
+        TensorProcessTopology.IN_PROCESS,
+        TensorDataPlane.HOST_BRIDGE,
+        ("cpu", "cuda"),
+    ),
+    "drake": _TensorPlatformBoundary(
+        TensorExecution.HOST_BRIDGE,
+        TensorProcessTopology.IN_PROCESS,
+        TensorDataPlane.HOST_BRIDGE,
+        ("cpu", "cuda"),
+    ),
+    "superdex": _TensorPlatformBoundary(
+        TensorExecution.HOST_BRIDGE,
+        TensorProcessTopology.IN_PROCESS,
+        TensorDataPlane.HOST_BRIDGE,
+        ("cpu", "cuda"),
+    ),
+    "mjwarp": _TensorPlatformBoundary(
+        TensorExecution.DEVICE_RESIDENT,
+        TensorProcessTopology.IN_PROCESS,
+        TensorDataPlane.DIRECT,
+        ("cuda",),
+    ),
+    "newton": _TensorPlatformBoundary(
+        TensorExecution.DEVICE_RESIDENT,
+        TensorProcessTopology.IN_PROCESS,
+        TensorDataPlane.DIRECT,
+        ("cuda",),
+    ),
+    "genesis": _TensorPlatformBoundary(
+        TensorExecution.DEVICE_RESIDENT,
+        TensorProcessTopology.IN_PROCESS,
+        TensorDataPlane.DIRECT,
+        ("cuda",),
+    ),
+    "isaacgym": _TensorPlatformBoundary(
+        TensorExecution.DEVICE_RESIDENT,
+        TensorProcessTopology.EXTERNAL_WORKER,
+        TensorDataPlane.CUDA_IPC,
+        ("cuda",),
+    ),
+    "isaacsim": _TensorPlatformBoundary(
+        TensorExecution.DEVICE_RESIDENT,
+        TensorProcessTopology.EXTERNAL_WORKER,
+        TensorDataPlane.CUDA_IPC,
+        ("cuda",),
+    ),
+}
 
 
 _TENSOR_WORKER_REQUIREMENTS = {
@@ -1394,40 +1465,18 @@ def _tensor_platform_profile(name: str) -> TensorPlatformProfile:
             )
         return declaration.reason
 
-    execution_reason = reviewed_reason("tensor.execution").upper()
-    if "DEVICE_RESIDENT" in execution_reason:
-        execution = TensorExecution.DEVICE_RESIDENT
-    elif "HOST_BRIDGE" in execution_reason:
-        execution = TensorExecution.HOST_BRIDGE
-    else:
-        raise ValueError(f"Unsupported reviewed tensor execution for {name}: {execution_reason}")
-
-    topology_reason = reviewed_reason("tensor.process_topology")
-    topology = {
-        "in_process": TensorProcessTopology.IN_PROCESS,
-        "external_worker": TensorProcessTopology.EXTERNAL_WORKER,
-    }.get(topology_reason)
-    if topology is None:
-        raise ValueError(f"Unsupported tensor process topology for {name}: {topology_reason}")
-
-    data_plane_reason = reviewed_reason("tensor.data_plane")
-    data_plane = {
-        "direct": TensorDataPlane.DIRECT,
-        "cuda_ipc": TensorDataPlane.CUDA_IPC,
-        "host_bridge": TensorDataPlane.HOST_BRIDGE,
-    }.get(data_plane_reason)
-    if data_plane is None:
-        raise ValueError(f"Unsupported tensor data plane for {name}: {data_plane_reason}")
-
-    device_reason = reviewed_reason("tensor.torch_devices").upper()
-    device_families = set(device_reason.replace(",", " ").split())
-    torch_devices: tuple[str, ...]
-    if {"CPU", "CUDA"} <= device_families:
-        torch_devices = ("cpu", "cuda")
-    elif "CUDA" in device_families:
-        torch_devices = ("cuda",)
-    else:
-        raise ValueError(f"Unsupported reviewed Torch device family for {name}: {device_reason}")
+    for feature in (
+        "tensor.execution",
+        "tensor.process_topology",
+        "tensor.data_plane",
+        "tensor.torch_devices",
+    ):
+        reviewed_reason(feature)
+    boundary = _TENSOR_PLATFORM_BOUNDARIES[name]
+    execution = boundary.execution
+    topology = boundary.process_topology
+    data_plane = boundary.data_plane
+    torch_devices = boundary.torch_devices
 
     def support(feature: str) -> SupportLevel:
         return report.get(feature).support
@@ -1460,6 +1509,16 @@ def _tensor_platform_profile(name: str) -> TensorPlatformProfile:
         host_pre_step_control=support("tensor.host_pre_step_control"),
         packed_host_bridge=support("tensor.packed_host_bridge"),
     )
+
+
+def _assert_tensor_platform_capabilities(
+    name: str, capabilities: TensorLifecycleCapabilities
+) -> None:
+    boundary = _TENSOR_PLATFORM_BOUNDARIES[name]
+    assert capabilities.execution is boundary.execution
+    assert capabilities.process_topology is boundary.process_topology
+    assert capabilities.data_plane is boundary.data_plane
+    assert capabilities.torch_devices == boundary.torch_devices
 
 
 def get_tensor_platform_profiles() -> dict[str, TensorPlatformProfile]:

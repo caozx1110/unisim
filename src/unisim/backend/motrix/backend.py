@@ -3974,18 +3974,24 @@ class MotrixBackend(SimBackend):
         return self._model.get_sensor_value(name, self._data)  # type: ignore[no-any-return]
 
     def _host_read_sensor_rows(self, name: str, env_ids: np.ndarray) -> np.ndarray:
-        self._validate_sensor_names((name,))
+        return self._host_read_sensor_rows_batch((name,), env_ids)
+
+    def _host_read_sensor_rows_batch(self, names: Sequence[str], env_ids: np.ndarray) -> np.ndarray:
+        sensor_names = self._validate_sensor_names(names)
         rows = np.asarray(env_ids, dtype=np.intp)
+        if rows.ndim != 1 or np.any(rows < 0) or np.any(rows >= self._num_envs):
+            raise IndexError(f"env_ids must be one-dimensional and in [0, {self._num_envs})")
+        if not sensor_names:
+            return np.empty((rows.shape[0], 0), dtype=self._np_dtype)
         if self._portable_mode:
             self._require_portable_healthy("get_sensor_data_rows")
-            if rows.ndim != 1 or np.any(rows < 0) or np.any(rows >= self._num_envs):
-                raise IndexError(f"env_ids must be one-dimensional and in [0, {self._num_envs})")
-            return self._portable_sensor_value(name)[rows]
+            values = self._portable_sensor_values(sensor_names)
+            return values[rows]
         mask = np.zeros(self._num_envs, dtype=bool)
         mask[rows] = True
         selected_rows = np.flatnonzero(mask)
-        selected_values = self._model.get_sensor_value(name, self._data[mask])
-        return selected_values[np.searchsorted(selected_rows, rows)]  # type: ignore[no-any-return]
+        selected_values = self._model.get_sensor_values(sensor_names, self._data[mask])
+        return selected_values[np.searchsorted(selected_rows, rows)]
 
     def _host_read_sensor_batch(self, names: Sequence[str]) -> np.ndarray:
         sensor_names = self._validate_sensor_names(names)

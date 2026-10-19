@@ -298,8 +298,15 @@ def _read_selected_sensor_sources(
         for name, (body_index, prefix) in resolved.body_slots.items():
             sources[name] = np.asarray(arrays_by_prefix[prefix][:, body_index, :], dtype=np.float32)
     if resolved.physical:
+        values = np.asarray(
+            backend._host_read_sensor_rows_batch(resolved.physical, selected_rows),
+            dtype=np.float32,
+        )
+        cursor = 0
         for name in resolved.physical:
-            sources[name] = backend._host_read_sensor_rows(name, selected_rows)
+            width = resolved.physical_widths[name]
+            sources[name] = values[:, cursor : cursor + width]
+            cursor += width
     del sensor_names
     return sources
 
@@ -351,14 +358,16 @@ def _pack_state_sensors(
     widths: Mapping[str, int],
     rows: np.ndarray | None = None,
     resolved: _ResolvedSensorNames | None = None,
+    states: dict[str, np.ndarray] | None = None,
 ) -> None:
     selected = slice(None) if rows is None else rows
     canonical_fields = tuple(name for name in ("qpos", "qvel") if name in state_fields)
-    states = (
-        _read_selected_states(backend, canonical_fields, rows)
-        if rows is not None and canonical_fields
-        else (_canonical_states(backend, canonical_fields) if canonical_fields else {})
-    )
+    if states is None:
+        states = (
+            _read_selected_states(backend, canonical_fields, rows)
+            if rows is not None and canonical_fields
+            else (_canonical_states(backend, canonical_fields) if canonical_fields else {})
+        )
     if "ctrl" in state_fields:
         states["ctrl"] = _current_controls(backend)
     for name in state_fields:
@@ -665,12 +674,12 @@ def motrix_set_state_tensor_mask(
         raise NotImplementedError("MotrixSim tensor mask reset does not support full refresh")
     _synchronize_device(reset_mask)
     rows = selected_rows.detach().cpu().numpy()
-    result = backend._host_set_state(
-        rows,
-        qpos.index_select(0, selected_rows).detach().cpu().numpy(),
-        qvel.index_select(0, selected_rows).detach().cpu().numpy(),
-        host_randomization,
-    )
+    host_qpos = qpos.index_select(0, selected_rows).detach().cpu().numpy()
+    host_qvel = qvel.index_select(0, selected_rows).detach().cpu().numpy()
+    result = backend._host_set_state(rows, host_qpos, host_qvel, host_randomization)
+    for plan in backend._host_bridge_plans:
+        if isinstance(plan, MotrixHostBridgeTransferPlan):
+            plan._publish_mask_reset_rows(selected_rows, host_qpos, host_qvel)
     return {} if result is None else result
 
 
@@ -762,6 +771,8 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         self._control_ready = False
         self._last_reset_rows_host: np.ndarray | None = None
         self._last_reset_rows_device: torch.Tensor | None = None
+        self._last_reset_qpos_host: np.ndarray | None = None
+        self._last_reset_qvel_host: np.ndarray | None = None
         self._closed = False
         self._validate_layout()
         # Selected reads publish only reset rows into the full-width packet.
@@ -853,7 +864,9 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
             }
         )
 
-    def _pack_host_packet(self, rows: np.ndarray | None = None) -> Any:
+    def _pack_host_packet(
+        self, rows: np.ndarray | None = None, *, states: dict[str, np.ndarray] | None = None
+    ) -> Any:
         buffers = self._buffers()
         packet = buffers.selected_host[: rows.shape[0]] if rows is not None else buffers.host_packet
         packet_np = packet.numpy()
@@ -866,6 +879,7 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
             {**self._field_widths, **self._sensor_widths},
             rows,
             self._resolved_sensors,
+            states,
         )
         return packet
 
@@ -952,6 +966,8 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         require_motrix_tensor_runtime(self._backend)
         self._last_reset_rows_host = None
         self._last_reset_rows_device = None
+        self._last_reset_qpos_host = None
+        self._last_reset_qvel_host = None
         self.last_timing = {}
         if randomization is not None:
             raise NotImplementedError("MotrixSim packed reset does not support randomization")
@@ -1021,6 +1037,8 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         )
         self._last_reset_rows_host = rows
         self._last_reset_rows_device = rows_device
+        self._last_reset_qpos_host = np.ascontiguousarray(host_qpos, dtype=np.float32)
+        self._last_reset_qvel_host = np.ascontiguousarray(host_qvel, dtype=np.float32)
         self._record(
             "d2h",
             "reset",
@@ -1029,6 +1047,30 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
             self._pin,
         )
         return {"timing": dict(self.last_timing)}
+
+    def _publish_mask_reset_rows(
+        self, selected_rows: Any, qpos: Any | None = None, qvel: Any | None = None
+    ) -> None:
+        import torch
+
+        self._require_open()
+        order = torch.argsort(selected_rows)
+        rows_device = selected_rows.index_select(0, order).detach().clone()
+        rows = rows_device.detach().cpu().numpy().astype(np.intp, copy=True)
+        host_order = order.detach().cpu().numpy()
+
+        def selected_values(values: Any) -> np.ndarray:
+            selected = (
+                values.index_select(0, order)
+                if isinstance(values, torch.Tensor)
+                else np.asarray(values)[host_order]
+            )
+            return np.ascontiguousarray(selected, dtype=np.float32)
+
+        self._last_reset_rows_host = rows
+        self._last_reset_rows_device = rows_device
+        self._last_reset_qpos_host = selected_values(qpos) if qpos is not None else None
+        self._last_reset_qvel_host = selected_values(qvel) if qvel is not None else None
 
     def read_selected_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()
@@ -1041,7 +1083,18 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         self.last_timing = {}
         started = time.perf_counter()
         count = int(rows.shape[0])
-        selected_host = self._pack_host_packet(rows)
+        states = None
+        if self._last_reset_qpos_host is not None and self._last_reset_qvel_host is not None:
+            # Reset randomization currently changes dynamics terms only, and the
+            # qpos conversion used by `_host_set_state` is an exact quaternion
+            # round-trip. The committed reset payload therefore equals a canonical
+            # re-read. If state commit ever mutates qpos/qvel, publish that state
+            # here instead so this cache cannot diverge from canonical state.
+            states = {
+                "qpos": self._last_reset_qpos_host,
+                "qvel": self._last_reset_qvel_host,
+            }
+        selected_host = self._pack_host_packet(rows, states=states)
         buffers = self._buffers()
         buffers.selected_packet[:count].copy_(selected_host, non_blocking=self._pin)
         _synchronize_device(buffers.selected_packet)
@@ -1062,6 +1115,8 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         self._control_ready = False
         self._last_reset_rows_host = None
         self._last_reset_rows_device = None
+        self._last_reset_qpos_host = None
+        self._last_reset_qvel_host = None
         self._buffer_slots.clear()
         self._closed = True
 

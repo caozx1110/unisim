@@ -33,6 +33,7 @@ from unisim.backend.isaacgym.tensor import (
     torch_from_cuda_pointer,
 )
 from unisim.backend.subprocess_ipc import cuda_ipc, protocol
+from unisim.support import _assert_tensor_platform_capabilities
 
 
 def _fake_gpu_backend() -> IsaacGymBackend:
@@ -76,6 +77,7 @@ def test_gpu_backend_declares_external_cuda_ipc_capability_matrix() -> None:
     backend = _fake_gpu_backend()
     assert backend.tensor_execution() is TensorExecution.DEVICE_RESIDENT
     capabilities = backend.get_tensor_capabilities()
+    _assert_tensor_platform_capabilities("isaacgym", capabilities)
     assert capabilities.process_topology is TensorProcessTopology.EXTERNAL_WORKER
     assert capabilities.data_plane is TensorDataPlane.CUDA_IPC
     assert capabilities.state_fields == frozenset({"qpos", "qvel"})

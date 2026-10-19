@@ -497,6 +497,36 @@ def test_tensor_platform_matrix_matches_reviewed_backend_boundaries() -> None:
         assert profile.macos_tensor_profile == "Unsupported; no CPU, MPS, or ROCm fallback"
         assert profile.rocm_tensor_profile == "Unsupported; no CPU, MPS, or ROCm fallback"
 
+
+def test_tensor_platform_boundaries_are_declared_as_enums() -> None:
+    profiles = get_tensor_platform_profiles()
+
+    for name, boundary in support_module._TENSOR_PLATFORM_BOUNDARIES.items():
+        profile = profiles[name]
+        assert profile.execution is boundary.execution
+        assert profile.process_topology is boundary.process_topology
+        assert profile.data_plane is boundary.data_plane
+        assert profile.torch_devices == boundary.torch_devices
+
+
+def test_runtime_capability_guard_compares_all_platform_boundaries() -> None:
+    profiles = get_tensor_platform_profiles()
+
+    for name, boundary in support_module._TENSOR_PLATFORM_BOUNDARIES.items():
+        runtime = TensorLifecycleCapabilities(
+            execution=boundary.execution,
+            state_views=True,
+            state_fields=frozenset({"qpos"}),
+            sensor_views=True,
+            stepping=True,
+            process_topology=boundary.process_topology,
+            data_plane=boundary.data_plane,
+            stream_event_ownership="reviewed test boundary",
+            torch_devices=boundary.torch_devices,
+        )
+        support_module._assert_tensor_platform_capabilities(name, runtime)
+        assert profiles[name].execution is runtime.execution
+
     for name in ("isaacgym", "isaacsim"):
         profile = profiles[name]
         assert profile.execution.value == "device_resident"
