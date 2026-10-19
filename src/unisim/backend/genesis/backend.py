@@ -61,6 +61,7 @@ from unisim.dr.types import (
     TensorResetRandomizationPayload,
     _validate_reset_term,
     require_op_body_ids,
+    require_op_host_payload,
 )
 from unisim.entity_state import entity_state_snapshot, prepare_scene_reset
 from unisim.scene import SceneCfg, require_scene_composition_support
@@ -3951,7 +3952,7 @@ class GenesisBackend(SimBackend):
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), op.payload
+                    require_op_body_ids(op), require_op_host_payload(op)
                 ),
             }
             if self._portable_mode:
@@ -3961,7 +3962,7 @@ class GenesisBackend(SimBackend):
                     self.apply_body_force(
                         ids,
                         np.zeros((self._num_envs, len(ids), 3), dtype=np.float32),
-                        torque=op.payload,
+                        torque=require_op_host_payload(op),
                     )
 
                 self._interval_term_handler_cache[INTERVAL_TERM_BODY_TORQUE] = apply_body_torque

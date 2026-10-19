@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -16,7 +17,8 @@ from unisim import (
     MjwarpBackend,
     TensorExecution,
 )
-from unisim.dr.types import ResetRandomizationPayload
+from unisim.dr.interval import INTERVAL_TERM_PUSH, TensorIntervalPayload
+from unisim.dr.types import IntervalRandomizationPlan, IntervalTermOp, ResetRandomizationPayload
 from unisim.scene import SceneCfg
 from unisim.support import _assert_tensor_platform_capabilities
 
@@ -875,10 +877,64 @@ def test_mjwarp_capture_replay_trajectory_matches_eager_modes(tmp_path: Path) ->
     eager.close()
 
 
+def _push_payload(torch: Any, values: Any) -> TensorIntervalPayload:
+    force = torch.as_tensor(values, dtype=torch.float32, device="cuda")
+    return TensorIntervalPayload(push_force=force)
+
+
+def test_mjwarp_device_push_is_device_resident_and_consumed_by_tensor_step(
+    tmp_path: Path,
+) -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(tmp_path, "pushed.xml", base_name="base")
+    force = torch.tensor([[1.25, -0.5, 0.25], [-2.0, 0.5, 1.0]], device="cuda")
+    host_mirror_before = backend._xfrc_staging.copy()
+    stale_before = backend._host_cache_stale
+
+    with patch("numpy.random.uniform", side_effect=AssertionError("host sampling leaked")):
+        backend.apply_interval_randomization(
+            IntervalRandomizationPlan(
+                ops=(IntervalTermOp(INTERVAL_TERM_PUSH, _push_payload(torch, force)),)
+            )
+        )
+
+    assert backend._device_xfrc_pending
+    assert not backend._xfrc_pending
+    np.testing.assert_array_equal(backend._xfrc_staging, host_mirror_before)
+    assert backend._host_cache_stale == stale_before
+    xfrc = backend._stable_device_xfrc_view()
+    torch.testing.assert_close(xfrc[:, backend._push_body_id, 0:3].cpu(), force.cpu())
+    torch.testing.assert_close(
+        xfrc[:, backend._push_body_id, 3:6].cpu(),
+        torch.zeros_like(force),
+    )
+    if backend._nbody > 1:
+        torch.testing.assert_close(
+            xfrc[:, [i for i in range(backend._nbody) if i != backend._push_body_id], :].cpu(),
+            torch.zeros((backend.num_envs, backend._nbody - 1, 6), dtype=xfrc.dtype, device="cpu"),
+        )
+
+    backend.step_tensor(torch.zeros((backend.num_envs, backend.num_actuators), device="cuda"))
+    torch.cuda.synchronize()
+    assert not backend._device_xfrc_pending
+    torch.testing.assert_close(xfrc.cpu(), torch.zeros_like(xfrc, device="cpu"))
+
+
+def test_mjwarp_device_push_rejects_host_payload_and_input_hazards(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    backend = _make_backend(tmp_path, "reject.xml", base_name="base")
+    with pytest.raises(TypeError, match="device-resident TensorIntervalPayload"):
+        backend.push_robots(np.array([1.0, 1.0, 1.0], dtype=np.float32))
+
+    backend.step_tensor(torch.zeros((backend.num_envs, backend.num_actuators), device="cuda"))
+    with pytest.raises(RuntimeError, match="previous tensor step receipt"):
+        backend.push_robots(_push_payload(torch, torch.zeros((backend.num_envs, 3))))
+
+
 def test_mjwarp_tensor_reset_rejects_pending_wrench_and_mocap(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
     pushed = _make_backend(tmp_path, "pushed.xml", base_name="base")
-    pushed.push_robots(np.array([1.0, 1.0, 1.0], dtype=np.float32))
+    pushed.push_robots(_push_payload(torch, torch.ones((pushed.num_envs, 3))))
     rows = torch.tensor([0], dtype=torch.int64, device="cuda")
     qpos = torch.zeros((1, 1), dtype=torch.float32, device="cuda")
     qvel = torch.zeros_like(qpos)

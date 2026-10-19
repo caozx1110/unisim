@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
 from os import PathLike
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import numpy as np
 
@@ -71,9 +71,11 @@ from unisim.dr.types import (
     IntervalRandomizationPlan,
     IntervalTermOp,
     ResetRandomizationPayload,
+    TensorIntervalPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
     require_op_body_ids,
+    require_op_host_payload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.entity_state import entity_state_snapshot, prepare_scene_reset, row_columns
@@ -223,6 +225,7 @@ class MjwarpBackend(SimBackend):
     _reset_scratch_reset_graph: Any | None
     _reset_scratch_forward_graph: Any | None
     _cuda_graph_disable_reason: str | None
+    _device_xfrc_pending: bool
 
     def __init__(
         self,
@@ -443,6 +446,10 @@ class MjwarpBackend(SimBackend):
         ).copy()
         self._xfrc_staging = np.zeros((self._num_envs, self._nbody, 6), dtype=np.float32)
         self._xfrc_pending = False
+        # Device-resident interval pushes are staged directly in xfrc_applied.
+        # This flag is separate from the host mirror so tensor operation never
+        # has to publish or mutate that mirror merely to stage a push.
+        self._device_xfrc_pending = False
         self._actuator_names = tuple(
             deps.mujoco.mj_id2name(
                 self._cpu_model,
@@ -788,6 +795,7 @@ class MjwarpBackend(SimBackend):
             self._time_cache[:] = plan.time
             self._xfrc_staging[:] = plan.staged_wrenches
             self._xfrc_pending = bool(np.any(plan.staged_wrenches))
+            self._device_xfrc_pending = False
             self._tracked_body_state_dirty = dirty
             self._host_cache_stale = False
             timing["host_cache_refresh_ms"] = (time.perf_counter() - start) * 1000.0
@@ -1491,6 +1499,10 @@ class MjwarpBackend(SimBackend):
             view = self._torch_view(getattr(self._device_data, name))
             self._state_torch_views[name] = view
         return view
+
+    def _stable_device_xfrc_view(self) -> Any:
+        """Return the live Torch external-wrench field for device pushes."""
+        return self._stable_tensor_field_view("xfrc_applied")
 
     def _validate_torch_operand(
         self,
@@ -2427,6 +2439,7 @@ class MjwarpBackend(SimBackend):
             self._xfrc_staging.fill(0.0)
             self._upload(self._device_data.xfrc_applied, self._xfrc_staging)
             self._xfrc_pending = False
+        self._device_xfrc_pending = False
         self._synchronize()
         physics_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -2599,6 +2612,9 @@ class MjwarpBackend(SimBackend):
                 self._xfrc_staging.fill(0.0)
                 self._upload(self._device_data.xfrc_applied, self._xfrc_staging)
                 self._xfrc_pending = False
+            if self._device_xfrc_pending:
+                self._stable_device_xfrc_view().zero_()
+                self._device_xfrc_pending = False
         except BaseException:
             self._entity_faulted = True
             raise
@@ -2725,7 +2741,7 @@ class MjwarpBackend(SimBackend):
             self._apply_model_updates(updates)
             model_randomized = bool(updates.fields or updates.actuator_fields)
             randomization = None
-        if self._xfrc_pending:
+        if self._xfrc_pending or self._device_xfrc_pending:
             raise NotImplementedError(
                 "mjwarp tensor reset does not support pending interval body wrenches"
             )
@@ -2811,6 +2827,7 @@ class MjwarpBackend(SimBackend):
                 self._stable_tensor_field_view(name).index_copy_(
                     0, rows, values.index_select(0, rows)
                 )
+            self._device_xfrc_pending = False
             # Derived kinematics/sensor state is refreshed lazily by the first
             # tensor sensor view or host-cache publication.  The task runtime
             # always reads sensors immediately after selected reset, so an
@@ -2923,6 +2940,7 @@ class MjwarpBackend(SimBackend):
             for name in self._tensor_reset_defaults:
                 current = self._stable_tensor_field_view(name)
                 current.masked_fill_(mask_tensor.reshape(-1, *([1] * (current.ndim - 1))), 0)
+            self._device_xfrc_pending = False
 
             # The default publication keeps derived tracked-body state lazy while
             # qpos/qvel/time remain authoritative. It must not materialize rows
@@ -3401,11 +3419,26 @@ class MjwarpBackend(SimBackend):
         if plan.is_empty():
             return
         self._reject_wrench_write_inside_pre_step_control("apply_interval_randomization")
+        has_device_payload = any(
+            isinstance(op.payload, TensorIntervalPayload) for op in plan.iter_ops()
+        )
+        if has_device_payload:
+            if len(plan.iter_ops()) != 1:
+                raise NotImplementedError(
+                    "a mjwarp device interval plan must contain exactly one device payload"
+                )
+            super().apply_interval_randomization(plan)
+            return
+        if self._device_xfrc_pending:
+            raise NotImplementedError(
+                "mixing device-resident and host interval wrenches is unsupported"
+            )
         self._sync_host_cache()
         # A non-empty plan starts from cleared external wrenches, matching the
         # MuJoCo backend: ops within one plan accumulate, while a later plan
         # replaces anything a previous plan staged before it was consumed.
         self._xfrc_staging.fill(0.0)
+        self._xfrc_pending = False
         super().apply_interval_randomization(plan)
 
     def _interval_term_handlers(self) -> dict[str, Callable[[IntervalTermOp], None]]:
@@ -3414,37 +3447,60 @@ class MjwarpBackend(SimBackend):
         # silently dropped).
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
-                INTERVAL_TERM_PUSH: lambda op: self.push_robots(op.payload),
+                INTERVAL_TERM_PUSH: lambda op: self.push_robots(
+                    cast(TensorIntervalPayload, op.payload)
+                ),
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), op.payload
+                    require_op_body_ids(op), require_op_host_payload(op)
                 ),
                 INTERVAL_TERM_BODY_TORQUE: lambda op: self._apply_body_torque(
-                    require_op_body_ids(op), op.payload
+                    require_op_body_ids(op), require_op_host_payload(op)
                 ),
                 INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA: (
                     lambda op: self._apply_body_linear_velocity_delta(
-                        require_op_body_ids(op), op.payload
+                        require_op_body_ids(op), require_op_host_payload(op)
                     )
                 ),
             }
         return self._interval_term_handler_cache
 
-    def push_robots(self, force_range: Sequence[float] | np.ndarray) -> None:
-        """Sample one world-frame push force per env and stage it for the next step."""
+    def push_robots(self, force_range: TensorIntervalPayload) -> None:
+        """Stage caller-owned device push forces for the next tensor step.
+
+        The producer owns random generation on the backend Torch device. This
+        boundary receives final full-width forces, validates them on their
+        device, and scatters directly into the live ``xfrc_applied`` field; it
+        does not sample on the host, publish the host cache, or mutate the host
+        wrench mirror.
+        """
         self._reject_wrench_write_inside_pre_step_control("push_robots")
-        self._sync_host_cache()
         if self._push_body_id is None:
             raise NotImplementedError(
                 "mjwarp interval push requires base_name or push_body_name to identify "
                 "a push target body"
             )
-        limit = np.asarray(force_range, dtype=np.float32)
-        if limit.shape != (3,) or not np.isfinite(limit).all():
-            raise ValueError(f"push force_range must be a finite (3,) array, got {limit.shape}")
-        self._xfrc_staging.fill(0.0)
-        sampled = np.random.uniform(-1.0, 1.0, size=(self._num_envs, 3)).astype(np.float32)
-        self._xfrc_staging[:, self._push_body_id, 0:3] = sampled * limit
-        self._xfrc_pending = True
+        if self._host_cache_stale:
+            # A pending async tensor step is a live-input hazard, not merely a
+            # host-publication concern: xfrc staging would race that step.
+            raise RuntimeError(
+                "mjwarp device push requires the previous tensor step receipt to be awaited"
+            )
+        # Zero before the first mutation; validation failure leaves no partial force.
+        xfrc = self._stable_device_xfrc_view()
+        if self._xfrc_pending:
+            raise NotImplementedError(
+                "mixing host and device-resident interval wrenches is unsupported"
+            )
+        if not isinstance(force_range, TensorIntervalPayload):
+            raise TypeError("mjwarp interval push requires a device-resident TensorIntervalPayload")
+        sampled = self._validate_torch_operand(
+            "push_force",
+            force_range.push_force,
+            shape=(self._num_envs, 3),
+        )
+        xfrc.zero_()
+        xfrc[:, self._push_body_id, 0:3].copy_(sampled)
+        self._device_xfrc_pending = True
 
     def apply_body_force(
         self,

@@ -19,7 +19,9 @@ from unisim.dr import (
     IntervalRandomizationPlan,
     IntervalTermOp,
     IntervalTermSpec,
+    TensorIntervalPayload,
     interval_term_spec,
+    require_op_host_payload,
     validate_interval_op,
 )
 from unisim.fake import FakeBackend
@@ -57,6 +59,25 @@ def test_interval_term_op_validation_builtin_contract() -> None:
         IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))).validate()
 
 
+def test_tensor_interval_payload_validation_defers_engine_rules() -> None:
+    class FakeTensor:
+        pass
+
+    tensor = FakeTensor()
+    payload = TensorIntervalPayload(push_force=tensor)
+    op = IntervalTermOp(INTERVAL_TERM_PUSH, payload)
+    validate_interval_op(op)
+    op.validate()
+    assert payload.requested_terms() == frozenset({INTERVAL_TERM_PUSH})
+    assert not payload.is_empty()
+
+    with pytest.raises(ValueError, match="exactly the interval term"):
+        validate_interval_op(IntervalTermOp(INTERVAL_TERM_BODY_FORCE, payload, body_ids=BODY_IDS))
+    with pytest.raises(ValueError, match="does not accept body_ids"):
+        validate_interval_op(IntervalTermOp(INTERVAL_TERM_PUSH, payload, body_ids=BODY_IDS))
+    assert TensorIntervalPayload().is_empty()
+
+
 def test_interval_term_op_validation_passes_custom_terms() -> None:
     # Custom terms are backend-owned: no spec, no validation.
     op = IntervalTermOp("custom_spin", np.zeros((7, 2)))
@@ -71,6 +92,14 @@ def test_interval_term_op_and_plan_pickle_round_trip() -> None:
     assert [restored_op.term for restored_op in restored.ops] == ["body_force", "custom"]
     np.testing.assert_array_equal(restored.ops[0].payload, op.payload)
     np.testing.assert_array_equal(restored.ops[0].body_ids, BODY_IDS)
+
+
+def test_host_adapter_payloads_reject_device_payload() -> None:
+    device_op = IntervalTermOp(INTERVAL_TERM_PUSH, TensorIntervalPayload(push_force=object()))
+    with pytest.raises(TypeError, match="does not accept a device-resident payload"):
+        require_op_host_payload(device_op)
+    host_op = IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.ones((2, 1, 3)), body_ids=BODY_IDS)
+    assert require_op_host_payload(host_op) is host_op.payload
 
 
 def test_plan_iter_ops_preserves_explicit_order() -> None:

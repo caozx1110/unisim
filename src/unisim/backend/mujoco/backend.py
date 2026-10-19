@@ -49,6 +49,7 @@ from unisim.dr.types import (
     TensorResetRandomizationPayload,
     _validate_reset_term,
     require_op_body_ids,
+    require_op_host_payload,
 )
 from unisim.dtype import get_global_dtype
 from unisim.entities import SceneEntitySpec, SceneResetRequest
@@ -3162,21 +3163,21 @@ class MuJoCoBackend(SimBackend):
         # the backend lifetime and is never rebuilt per plan.
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
-                INTERVAL_TERM_PUSH: lambda op: self.push_robots(op.payload),
+                INTERVAL_TERM_PUSH: lambda op: self.push_robots(require_op_host_payload(op)),
                 INTERVAL_TERM_BODY_FORCE: lambda op: self.apply_body_force(
-                    require_op_body_ids(op), op.payload
+                    require_op_body_ids(op), require_op_host_payload(op)
                 ),
                 INTERVAL_TERM_BODY_TORQUE: lambda op: self._apply_body_torque(
-                    require_op_body_ids(op), op.payload
+                    require_op_body_ids(op), require_op_host_payload(op)
                 ),
                 INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA: (
                     lambda op: self._apply_body_velocity_delta(
-                        require_op_body_ids(op), op.payload, None
+                        require_op_body_ids(op), require_op_host_payload(op), None
                     )
                 ),
                 INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA: (
                     lambda op: self._apply_body_velocity_delta(
-                        require_op_body_ids(op), None, op.payload
+                        require_op_body_ids(op), None, require_op_host_payload(op)
                     )
                 ),
             }

@@ -72,6 +72,7 @@ from unisim.dr.types import (
     ResetRandomizationPayload,
     TensorResetRandomizationPayload,
     _validate_reset_term,
+    require_op_host_payload,
 )
 from unisim.entities import SceneResetRequest
 from unisim.progress import progress_enabled
@@ -841,12 +842,12 @@ class IsaacSimBackend(MjcfSubprocessBackend):
     def _apply_interval_body_force(self, op: IntervalTermOp) -> None:
         if op.body_ids is None:
             raise ValueError("interval body force requires body_ids")
-        self.apply_body_force(op.body_ids, op.payload)
+        self.apply_body_force(op.body_ids, require_op_host_payload(op))
 
     def _apply_interval_body_torque(self, op: IntervalTermOp) -> None:
         if op.body_ids is None:
             raise ValueError("interval body torque requires body_ids")
-        self._apply_body_torque(op.body_ids, op.payload)
+        self._apply_body_torque(op.body_ids, require_op_host_payload(op))
 
     def _apply_body_torque(self, body_ids: np.ndarray, torque: np.ndarray) -> None:
         zero_force = np.zeros((self._num_envs, len(body_ids), 3), dtype=np.float32)
