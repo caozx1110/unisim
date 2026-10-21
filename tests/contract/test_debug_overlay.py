@@ -17,6 +17,20 @@ from unisim.backend.base import (
 )
 from unisim.fake import FakeBackend
 
+# Constructor-guaranteed private state that SDK-free skeleton instances
+# (built via __new__ without __init__) must declare explicitly, so capability
+# queries read the same values a default-constructed backend would report.
+_SKELETON_PRIVATE_DEFAULTS = {
+    "SuperDexBackend": {"_execution_mode": "batch"},
+}
+
+
+def _skeleton_backend(backend_cls):
+    backend = backend_cls.__new__(backend_cls)
+    for name, value in _SKELETON_PRIVATE_DEFAULTS.get(backend_cls.__name__, {}).items():
+        setattr(backend, name, value)
+    return backend
+
 
 class TestDebugPrimitive:
     def test_sphere_defaults(self) -> None:
@@ -194,7 +208,7 @@ class TestPlayCapabilities:
         import importlib
 
         backend_cls = getattr(importlib.import_module(module_path), class_name)
-        backend = backend_cls.__new__(backend_cls)
+        backend = _skeleton_backend(backend_cls)
         assert backend.get_play_capabilities().supports_debug_overlay
 
     def test_only_mjwarp_supports_interactive_overlay(self) -> None:
@@ -210,7 +224,7 @@ class TestPlayCapabilities:
             ("unisim.backend.subprocess_ipc.backend", "MjcfSubprocessBackend", False),
         ):
             backend_cls = getattr(importlib.import_module(module_path), class_name)
-            backend = backend_cls.__new__(backend_cls)
+            backend = _skeleton_backend(backend_cls)
             assert backend.get_play_capabilities().supports_interactive_debug_overlay is expected, (
                 f"{class_name} interactive overlay capability mismatch"
             )
