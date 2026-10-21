@@ -59,6 +59,44 @@ def test_worker_adapters_fail_closed_without_runtime(backend_type, monkeypatch):
         unisim.create_backend(backend_type)
 
 
+def test_factory_drake_warns_and_ignores_mujoco_only_options(tmp_path, monkeypatch):
+    from unisim.backend.drake import backend as drake_backend
+    from unisim.scene import SceneCfg
+
+    calls: list[dict[str, object]] = []
+
+    class _RoutedBackend:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            calls.append({"args": args, "kwargs": kwargs})
+
+    # Stubbing the adapter class keeps this factory test free of the optional
+    # Drake SDK; the constructor never runs the real DrakeUni loader.
+    monkeypatch.setattr(drake_backend, "DrakeBackend", _RoutedBackend)
+    scene = SceneCfg(model_file=str(tmp_path / "drake.xml"))
+    with pytest.warns(
+        UserWarning,
+        match=r"drake ignores non-default MuJoCo-only backend options: "
+        r"post_step_forward_sensor=True, iterations=4, chunk_size=8, cpu_ids=\[0, 1\], "
+        r"bench_nsteps=3",
+    ):
+        unisim.create_backend(
+            "drake",
+            scene=scene,
+            num_envs=2,
+            sim_dt=0.002,
+            post_step_forward_sensor=True,
+            iterations=4,
+            chunk_size=8,
+            cpu_ids=[0, 1],
+            bench_nsteps=3,
+        )
+
+    assert len(calls) == 1
+    kwargs = calls[0]["kwargs"]
+    assert kwargs == {"drake_backend_mode": "batch"}
+
+
+
 def test_protocol_round_trip():
     from unisim.backend.subprocess_ipc.protocol import decode_message, pack_message
 
