@@ -179,6 +179,7 @@ def test_failed_step_retains_staged_wrench():
 
 
 def test_new_interval_plan_replaces_unconsumed_direct_wrench():
+    torch = pytest.importorskip("torch")
     owner = _host()
     owner.apply_body_force(np.asarray([2]), np.ones((2, 1, 3)))
     from unisim.dr.interval import IntervalTermOp
@@ -187,8 +188,8 @@ def test_new_interval_plan_replaces_unconsumed_direct_wrench():
         ops=(
             IntervalTermOp(
                 INTERVAL_TERM_BODY_FORCE,
-                np.full((2, 1, 3), 7.0, dtype=np.float32),
-                body_ids=np.asarray([2]),
+                torch.full((2, 1, 3), 7.0),
+                body_ids=torch.as_tensor([2]),
             ),
         )
     )

@@ -2289,6 +2289,7 @@ def test_fixed_variants_map_body_forces_and_reset_scope(tmp_path: Path):
 
 
 def test_portable_body_torque_maps_world_frame_and_interval_parity(tmp_path: Path):
+    torch = pytest.importorskip("torch")
     backend = MotrixBackend(_scene(tmp_path), 2, 0.002, base_name="robot/base")
     try:
         capabilities = backend.get_dr_capabilities()
@@ -2316,7 +2317,7 @@ def test_portable_body_torque_maps_world_frame_and_interval_parity(tmp_path: Pat
         direct_torque[0, 0, 0] = 0.2
         backend.apply_body_force(object_body, zero_force, torque=direct_torque)
 
-        interval_torque = np.zeros_like(zero_force)
+        interval_torque = torch.zeros((2, 1, 3))
         interval_torque[1, 0, 0] = 0.2
         backend.apply_interval_randomization(
             IntervalRandomizationPlan(
@@ -2324,7 +2325,7 @@ def test_portable_body_torque_maps_world_frame_and_interval_parity(tmp_path: Pat
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_TORQUE,
                         interval_torque,
-                        body_ids=object_body,
+                        body_ids=torch.as_tensor(object_body),
                     ),
                 )
             )

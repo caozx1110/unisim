@@ -37,6 +37,13 @@ BUILTIN_TERMS = (
 BODY_IDS = np.asarray([1], dtype=np.int32)
 
 
+class _FakeTensor:
+    """Duck-typed Torch tensor stand-in: carries ``ndim`` without importing Torch."""
+
+    def __init__(self, ndim: int) -> None:
+        self.ndim = ndim
+
+
 def test_interval_term_spec_registry_covers_builtin_terms() -> None:
     assert tuple(spec.name for spec in INTERVAL_TERM_SPECS) == BUILTIN_TERMS
     for name in BUILTIN_TERMS:
@@ -47,17 +54,33 @@ def test_interval_term_spec_registry_covers_builtin_terms() -> None:
 
 
 def test_interval_term_op_validation_builtin_contract() -> None:
-    payload = np.zeros((2, 1, 3))
+    payload = _FakeTensor(3)
     validate_interval_op(IntervalTermOp(INTERVAL_TERM_BODY_FORCE, payload, body_ids=BODY_IDS))
     with pytest.raises(ValueError, match="body_force"):
         IntervalTermOp(INTERVAL_TERM_BODY_FORCE, payload).validate()
     with pytest.raises(ValueError, match="push"):
-        IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros(3), body_ids=BODY_IDS).validate()
+        IntervalTermOp(INTERVAL_TERM_PUSH, _FakeTensor(1), body_ids=BODY_IDS).validate()
     with pytest.raises(ValueError, match="body_force"):
-        IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.zeros(3), body_ids=BODY_IDS).validate()
-    validate_interval_op(IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))))
+        IntervalTermOp(INTERVAL_TERM_BODY_FORCE, _FakeTensor(1), body_ids=BODY_IDS).validate()
+    validate_interval_op(IntervalTermOp(INTERVAL_TERM_PUSH, _FakeTensor(2)))
     with pytest.raises(ValueError, match="push"):
-        IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros(3)).validate()
+        IntervalTermOp(INTERVAL_TERM_PUSH, _FakeTensor(1)).validate()
+
+
+def test_interval_term_op_validation_rejects_numpy_payloads() -> None:
+    # The op path is torch-first: NumPy payloads fail closed with TypeError
+    # instead of being silently duck-typed through ``.ndim``.
+    with pytest.raises(TypeError, match="torch-first"):
+        validate_interval_op(IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))))
+    with pytest.raises(TypeError, match="torch-first"):
+        validate_interval_op(
+            IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.zeros((2, 1, 3)), body_ids=BODY_IDS)
+        )
+    # Non-tensor array-likes no longer fall back to np.asarray either.
+    with pytest.raises(TypeError, match="torch-first"):
+        validate_interval_op(IntervalTermOp(INTERVAL_TERM_PUSH, [[0.0, 0.0, 0.0]]))
+    # Custom terms remain backend-owned and pass through untouched.
+    validate_interval_op(IntervalTermOp("custom_spin", np.zeros(3)))
 
 
 def test_tensor_interval_payload_validation_defers_engine_rules() -> None:
@@ -96,10 +119,13 @@ def test_interval_term_op_and_plan_pickle_round_trip() -> None:
 
 
 def test_host_payload_conversion_is_adapter_private() -> None:
+    # NumPy payloads are a torch-first contract violation, not a conversion
+    # leaf: the adapter-private helper fails closed instead of passing through.
     host_op = IntervalTermOp(INTERVAL_TERM_BODY_FORCE, np.ones((2, 1, 3)), body_ids=BODY_IDS)
-    assert interval_payload_to_host(host_op.payload) is host_op.payload
+    with pytest.raises(TypeError, match="torch-first"):
+        interval_payload_to_host(host_op.payload)
     device_op = IntervalTermOp(INTERVAL_TERM_PUSH, TensorIntervalPayload(push_force=object()))
-    with pytest.raises(TypeError, match="torch.Tensor or NumPy array"):
+    with pytest.raises(TypeError, match="torch-first"):
         interval_payload_to_host(device_op.payload)
 
 
@@ -196,7 +222,7 @@ def test_backend_custom_term_handler_dispatch() -> None:
     # A builtin term without a handler still fails closed.
     with pytest.raises(NotImplementedError, match="push"):
         backend.apply_interval_randomization(
-            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, np.zeros((2, 3))),))
+            IntervalRandomizationPlan(ops=(IntervalTermOp(INTERVAL_TERM_PUSH, _FakeTensor(2)),))
         )
 
 
