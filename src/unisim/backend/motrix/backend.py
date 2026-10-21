@@ -1188,6 +1188,7 @@ class MotrixBackend(SimBackend):
         # Run forward kinematics once so initial link poses and sensor data are valid.
         self._link_velocities: np.ndarray | None = None
         self._link_velocity_cache_valid = False
+        self._link_poses_dirty = True
         if portable_mode:
             for runtime in self._portable_runtimes:
                 runtime.model.forward_kinematic(runtime.data)
@@ -2139,11 +2140,12 @@ class MotrixBackend(SimBackend):
         layout = self.get_scene_layout()
         roots = np.zeros((self._num_envs, len(layout.entities), 13), dtype=np.float32)
         velocities = self._ensure_link_velocity_cache()
+        poses = self._ensure_link_pose_cache()
         for entity_index, entity in enumerate(layout.entities):
             root_public_id = entity.body_ids[0]
             native_id = int(self._portable_public_to_native_body[root_public_id])
-            roots[:, entity_index, :3] = self._link_poses[:, native_id, :3]
-            roots[:, entity_index, 3:7] = self._xyzw_to_wxyz(self._link_poses[:, native_id, 3:])
+            roots[:, entity_index, :3] = poses[:, native_id, :3]
+            roots[:, entity_index, 3:7] = self._xyzw_to_wxyz(poses[:, native_id, 3:])
             roots[:, entity_index, 7:10] = velocities[:, native_id, :3]
             roots[:, entity_index, 10:] = velocities[:, native_id, 3:]
         return roots
@@ -2910,7 +2912,7 @@ class MotrixBackend(SimBackend):
             self._portable_step_runtimes(nsteps)
             physics_ms = (time.perf_counter() - t0) * 1000.0
             t0 = time.perf_counter()
-            self._refresh_link_pose_cache()
+            self._invalidate_link_pose_cache()
             self._invalidate_link_velocity_cache()
             refresh_cache_ms = (time.perf_counter() - t0) * 1000.0
             return {
@@ -2938,7 +2940,7 @@ class MotrixBackend(SimBackend):
         physics_ms = (time.perf_counter() - t0) * 1000.0
 
         t0 = time.perf_counter()
-        self._refresh_link_pose_cache()
+        self._invalidate_link_pose_cache()
         self._invalidate_link_velocity_cache()
         refresh_cache_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -2976,7 +2978,7 @@ class MotrixBackend(SimBackend):
             physics_ms += (time.perf_counter() - t0) * 1000.0
 
             t0 = time.perf_counter()
-            self._refresh_link_pose_cache()
+            self._invalidate_link_pose_cache()
             self._invalidate_link_velocity_cache()
             refresh_cache_ms += (time.perf_counter() - t0) * 1000.0
 
@@ -3156,7 +3158,10 @@ class MotrixBackend(SimBackend):
         timing["set_state_forward_kinematic_ms"] = (time.perf_counter() - t0) * 1000.0
 
         t0 = time.perf_counter()
-        self._refresh_link_pose_cache(env_indices, data_slice=data_slice, env_ids_intp=env_ids_intp)
+        if not self._link_poses_dirty:
+            self._refresh_link_pose_cache(
+                env_indices, data_slice=data_slice, env_ids_intp=env_ids_intp
+            )
         timing["set_state_refresh_pose_cache_ms"] = (time.perf_counter() - t0) * 1000.0
 
         t0 = time.perf_counter()
@@ -3251,7 +3256,8 @@ class MotrixBackend(SimBackend):
                     runtime.model.forward_kinematic(runtime.data)
                 else:
                     runtime.model.forward_kinematic(data_slice)
-                self._link_poses[public_rows] = runtime.model.get_link_poses(data_slice)
+                if not self._link_poses_dirty:
+                    self._link_poses[public_rows] = runtime.model.get_link_poses(data_slice)
             self._invalidate_link_velocity_cache()
         except BaseException:
             self._portable_faulted = True
@@ -3927,7 +3933,7 @@ class MotrixBackend(SimBackend):
     def _host_get_base_pos(self) -> np.ndarray:
         if self._portable_mode:
             native_id = int(self._body_link.index)
-            return self._link_poses[:, native_id, :3].copy()
+            return self._ensure_link_pose_cache()[:, native_id, :3].copy()
         if self._body_floatingbase is not None:
             return self._body_floatingbase.get_translation(self._data)  # type: ignore[no-any-return]
         return self._body_link.get_pose(self._data)[:, :3]  # type: ignore[no-any-return]
@@ -3935,7 +3941,7 @@ class MotrixBackend(SimBackend):
     def _host_get_base_quat(self) -> np.ndarray:
         if self._portable_mode:
             native_id = int(self._body_link.index)
-            return self._xyzw_to_wxyz(self._link_poses[:, native_id, 3:]).copy()
+            return self._xyzw_to_wxyz(self._ensure_link_pose_cache()[:, native_id, 3:]).copy()
         if self._body_floatingbase is not None:
             quat = self._body_floatingbase.get_rotation(self._data)
         else:
@@ -4046,7 +4052,7 @@ class MotrixBackend(SimBackend):
         self, env_ids: np.ndarray, body_ids: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         rows = np.asarray(env_ids, dtype=np.intp)
-        poses_w = self._link_poses[rows[:, None], self._as_body_ids(body_ids), :]
+        poses_w = self._ensure_link_pose_cache()[rows[:, None], self._as_body_ids(body_ids), :]
         return poses_w[:, :, :3], self._xyzw_to_wxyz(poses_w[:, :, 3:])
 
     def _host_get_body_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
@@ -4376,7 +4382,7 @@ class MotrixBackend(SimBackend):
 
     def _get_link_poses_w(self, body_ids: np.ndarray) -> np.ndarray:
         ids = self._as_body_ids(body_ids)
-        return np.ascontiguousarray(self._link_poses[:, ids, :])
+        return np.ascontiguousarray(self._ensure_link_pose_cache()[:, ids, :])
 
     def _get_link_lin_vel_w(self, body_ids: np.ndarray) -> np.ndarray:
         ids = self._as_body_ids(body_ids)
@@ -4497,6 +4503,7 @@ class MotrixBackend(SimBackend):
             )
             for runtime in self._portable_runtimes:
                 self._link_poses[runtime.rows] = runtime.model.get_link_poses(runtime.data)
+            self._link_poses_dirty = False
             return
         if env_indices is None:
             self._link_poses = self._model.get_link_poses(self._data)
@@ -4510,6 +4517,15 @@ class MotrixBackend(SimBackend):
             # it down.
             idx = env_indices if env_ids_intp is None else env_ids_intp
             self._link_poses[idx] = self._model.get_link_poses(data_slice)
+        self._link_poses_dirty = False
+
+    def _invalidate_link_pose_cache(self) -> None:
+        self._link_poses_dirty = True
+
+    def _ensure_link_pose_cache(self) -> np.ndarray:
+        if self._link_poses_dirty:
+            self._refresh_link_pose_cache()
+        return self._link_poses
 
     def _refresh_link_velocity_cache(self, env_indices: np.ndarray | None = None) -> None:
         if self._portable_mode:

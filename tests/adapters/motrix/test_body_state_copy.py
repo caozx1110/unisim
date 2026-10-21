@@ -150,3 +150,28 @@ def test_portable_copy_supports_float64_buffers(tmp_path: Path) -> None:
         _assert_copy_parity(backend, ids, dtype=np.float64)
     finally:
         backend.close()
+
+
+def test_pose_getters_fresh_after_step_then_mask_reset(tmp_path: Path) -> None:
+    """Step dirties the pose cache; a mask reset on top must still publish the
+    committed rows through the pose getters (lazily, on first read)."""
+    import torch
+
+    backend = MotrixBackend(_whole_mjcf_scene(tmp_path), num_envs=3, sim_dt=0.01)
+    try:
+        ids = backend.get_body_ids(("base", "link"))
+        _drive(backend)
+        state = backend._host_get_state()
+        qpos = torch.tensor(state["qpos"], dtype=torch.float32)
+        qvel = torch.tensor(state["qvel"], dtype=torch.float32)
+        qpos[1, -1] = 0.5  # distinct hinge angle on the reset row
+        qvel[1] = 0.0
+        mask = torch.tensor([False, True, False])
+        backend.set_state_tensor_mask(mask, qpos, qvel)
+        fused = backend._host_get_body_state_w(ids)
+        pos = backend._host_get_body_pos_w(ids)
+        quat = backend._host_get_body_quat_w(ids)
+        np.testing.assert_allclose(pos, fused[0], atol=1e-5)
+        np.testing.assert_allclose(quat, fused[1], atol=1e-5)
+    finally:
+        backend.close()

@@ -618,6 +618,11 @@ def set_state_tensor_mask(
     target = _normalize_device(source_device, label="direct tensor I/O")
     del target
     selected_rows = torch.nonzero(reset_mask, as_tuple=False).flatten()
+    # Sort once at the transaction boundary and share the host copies with
+    # every bound plan; per-plan re-sorts used to repeat the device gather and
+    # the D2H round trips.
+    order = torch.argsort(selected_rows)
+    rows_device = selected_rows.index_select(0, order)
     selected_randomization: TensorResetRandomizationPayload | None = None
     if randomization is not None:
         if not isinstance(randomization, TensorResetRandomizationPayload):
@@ -635,7 +640,7 @@ def set_state_tensor_mask(
         # happens once at the _host_set_state boundary.
         selected_randomization = TensorResetRandomizationPayload(
             **{
-                field: value.index_select(0, selected_rows)
+                field: value.index_select(0, rows_device)
                 for field in randomization.requested_terms()
                 if (value := getattr(randomization, field)) is not None
             }
@@ -643,13 +648,17 @@ def set_state_tensor_mask(
     if full_refresh:
         raise NotImplementedError("MotrixSim tensor mask reset does not support full refresh")
     _synchronize_device(reset_mask)
-    rows = selected_rows.detach().cpu().numpy()
-    host_qpos = qpos.index_select(0, selected_rows).detach().cpu().numpy()
-    host_qvel = qvel.index_select(0, selected_rows).detach().cpu().numpy()
+    rows = rows_device.detach().cpu().numpy().astype(np.intp, copy=True)
+    host_qpos = np.ascontiguousarray(
+        qpos.index_select(0, rows_device).detach().cpu().numpy(), dtype=np.float32
+    )
+    host_qvel = np.ascontiguousarray(
+        qvel.index_select(0, rows_device).detach().cpu().numpy(), dtype=np.float32
+    )
     result = backend._host_set_state(rows, host_qpos, host_qvel, selected_randomization)
     for plan in backend._host_bridge_plans:
         if isinstance(plan, MotrixHostBridgeTransferPlan):
-            plan._publish_mask_reset_rows(selected_rows, host_qpos, host_qvel)
+            plan._publish_mask_reset_rows(rows_device, rows, host_qpos, host_qvel)
     return {} if result is None else result
 
 
@@ -900,8 +909,13 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         if not self._control_ready:
             raise RuntimeError("write_control() must complete before packed step()")
         self._control_ready = False
-        self._backend._host_step(self._buffers().host_ctrl.numpy(), nsteps)
-        return {"timing": dict(self.last_timing)}
+        result = self._backend._host_step(self._buffers().host_ctrl.numpy(), nsteps)
+        if result is None:
+            result = {}
+        timing = dict(result.get("timing", {}))
+        timing.update(self.last_timing)
+        result["timing"] = timing
+        return result
 
     def read_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()
@@ -1019,28 +1033,27 @@ class MotrixHostBridgeTransferPlan(HostBridgeTransferPlan):
         return {"timing": dict(self.last_timing)}
 
     def _publish_mask_reset_rows(
-        self, selected_rows: Any, qpos: Any | None = None, qvel: Any | None = None
+        self,
+        rows_device: Any,
+        rows_host: np.ndarray,
+        qpos_host: np.ndarray | None = None,
+        qvel_host: np.ndarray | None = None,
     ) -> None:
-        import torch
+        """Record one sorted mask-reset row set shared by the transaction boundary.
 
+        The caller (``set_state_tensor_mask``) sorts once and hands every bound
+        plan the same device rows and host copies; plans must not re-sort or
+        re-download.
+        """
         self._require_open()
-        order = torch.argsort(selected_rows)
-        rows_device = selected_rows.index_select(0, order).detach().clone()
-        rows = rows_device.detach().cpu().numpy().astype(np.intp, copy=True)
-        host_order = order.detach().cpu().numpy()
-
-        def selected_values(values: Any) -> np.ndarray:
-            selected = (
-                values.index_select(0, order)
-                if isinstance(values, torch.Tensor)
-                else np.asarray(values)[host_order]
-            )
-            return np.ascontiguousarray(selected, dtype=np.float32)
-
-        self._last_reset_rows_host = rows
+        self._last_reset_rows_host = np.asarray(rows_host, dtype=np.intp)
         self._last_reset_rows_device = rows_device
-        self._last_reset_qpos_host = selected_values(qpos) if qpos is not None else None
-        self._last_reset_qvel_host = selected_values(qvel) if qvel is not None else None
+        self._last_reset_qpos_host = (
+            None if qpos_host is None else np.ascontiguousarray(qpos_host, dtype=np.float32)
+        )
+        self._last_reset_qvel_host = (
+            None if qvel_host is None else np.ascontiguousarray(qvel_host, dtype=np.float32)
+        )
 
     def read_selected_state_sensors(self) -> Mapping[str, Any]:
         self._require_open()
