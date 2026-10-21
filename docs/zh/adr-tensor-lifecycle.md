@@ -58,4 +58,4 @@ packed host-bridge plan 在后端 materialize 后的冷路径编译。它冻结�
 
 ## 影响
 
-该契约保持既有 NumPy 生命周期兼容，并让 host-device 边界可测量。其 completion surface 刻意保持最小——仅存在事件支撑的异步 step receipt，没有 reset receipt、同步 host-bridge receipt，也没有跨进程 receipt 导出——因此它不是完整的 GPU collector/replay 协议：`uni_rl`、IPC、replay ingress 与 Manager-Based task dispatch 需要后续按版本迁移。后端调用方应在热路径值检查会强制标量设备同步的地方验证生产者 tensor；适配器继续校验元数据，并对不支持的生命周期特性快速失败。
+该契约是 torch-first 的，不含 NumPy 生命周期：NumPy 仅保留在序列化与冷路径 leaf 上，host-device 边界可测量。其 completion surface 刻意保持最小——仅存在事件支撑的异步 step receipt，没有 reset receipt、同步 host-bridge receipt，也没有跨进程 receipt 导出——因此它不是完整的 GPU collector/replay 协议：`uni_rl`、IPC、replay ingress 与 Manager-Based task dispatch 需要后续按版本迁移。后端调用方应在热路径值检查会强制标量设备同步的地方验证生产者 tensor；适配器继续校验元数据，并对不支持的生命周期特性快速失败。

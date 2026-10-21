@@ -75,6 +75,8 @@ Before a change is complete, run `make check` and, when packaging code changed, 
 
 Keep these names and paths stable for UniLab consumers: `unisim.SimBackend`, `unisim.create_backend`, `unisim.ADAPTER_SPECS`, the adapter classes exported by `unisim`, and `unisim.backend.subprocess_ipc`.  `MjcfSubprocessBackend` is the concrete shared-host name; do not restore historical aliases.
 
+Beyond that public boundary, UniLab already consumes the following adapter-internal modules and names, which are likewise stable for UniLab and pinned by `tests/core/test_unilab_integration_surface.py`: the optional-runtime diagnostics modules `unisim.backend.genesis.dependencies`, `unisim.backend.isaacsim.dependencies`, `unisim.backend.isaacgym.dependencies`, and `unisim.backend.superdex.dependencies`; `unisim.backend.drake.backend.ensure_drake_batch_available`; `unisim.backend.mujoco.xml.materialize_scene_visual_override`; the process device binders `unisim.backend.mjwarp.runtime.bind_mjwarp_process_device` and `unisim.backend.newton.runtime.bind_newton_process_device`/`get_bound_newton_process_device`; and the playback helpers `unisim.backend.playback.write_playback_video` and `unisim.backend.mujoco.playback.resolve_render_play_model_files`.  Every listed module stays importable with no engine SDK installed, and each name follows the removal policy for stable public names below.
+
 In scope: backend-neutral contracts, adapter validation/materialization, optional dependency diagnostics, subprocess framing, conformance coverage, and package/release tooling.  Out of scope: engine source/solver changes, task YAML, reward or rollout policy, training orchestration, distributed execution, and private SDK redistribution.
 
 ## Deprecation and removal policy
