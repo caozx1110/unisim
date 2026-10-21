@@ -71,6 +71,21 @@ def test_disallowed_prefix_cannot_return_to_runtime_or_tests() -> None:
         assert forbidden not in source, path
 
 
+def test_source_has_no_unilab_environment_keys() -> None:
+    # The single environment-variable spelling owned by this package is
+    # UNISIM_*; pinning that no UNILAB_-prefixed key string exists in the
+    # source covers os.environ/os.getenv lookups whether the key is written
+    # as a literal or behind a module-level constant.
+    root = Path(__file__).resolve().parents[2] / "src" / "unisim"
+    paths = sorted(root.rglob("*.py"))
+    assert paths
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert not node.value.startswith("UNILAB_"), f"{path}:{node.lineno}"
+
+
 def test_public_subprocess_alias_is_removed() -> None:
     import unisim
 
