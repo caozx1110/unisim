@@ -161,6 +161,30 @@ def _warn_render_unavailable() -> None:
     )
 
 
+def _preflight_render_backend(render_mode: str) -> bool:
+    """Check the resolved GL backend once before spawning render work.
+
+    ``record`` mode fails closed with :class:`RuntimeError` when the backend
+    cannot render on this host: an explicit recording request must never
+    silently produce no video. ``auto`` mode keeps the graceful degradation —
+    one actionable warning and ``False`` so the caller skips video export.
+    """
+    if render_mode not in ("auto", "record"):
+        raise ValueError(f"render_mode must be 'auto' or 'record'; got {render_mode!r}")
+    if render_backend_usable():
+        return True
+    if render_mode == "record":
+        backend = os.environ.get("MUJOCO_GL", "<unset>")
+        raise RuntimeError(
+            "render_mode='record' requires a usable MuJoCo off-screen renderer, but the "
+            f"resolved MUJOCO_GL backend {backend!r} cannot render on this host. Configure "
+            "EGL on a GPU (`MUJOCO_GL=egl`) or install software rendering (e.g. `apt-get "
+            "install libosmesa6` on a headless host), then retry."
+        )
+    _warn_render_unavailable()
+    return False
+
+
 def get_grid_offsets(num_envs, spacing=1.0):
     rows = int(math.ceil(math.sqrt(num_envs)))
     cols = int(math.ceil(num_envs / rows))
@@ -749,6 +773,7 @@ def render_states_get_frames(
     cam_fov=None,
     render_spacing=1.0,
     debug_overlays_list=None,
+    render_mode: str = "auto",
 ):
     """
     Render a list of physics states and return the list of frames.
@@ -768,6 +793,9 @@ def render_states_get_frames(
         render_spacing: Grid spacing used to offset each env in composed video frames.
         debug_overlays_list: Optional list (one entry per state) of per-env
             DebugPrimitive sequences with env-local poses.
+        render_mode: ``"record"`` fails closed with :class:`RuntimeError` when no
+            usable off-screen GL backend exists on this host; ``"auto"`` (default)
+            warns once and returns an empty frame list instead.
     Returns:
         List of numpy arrays (H, W, 3) (RGB)
     """
@@ -775,8 +803,7 @@ def render_states_get_frames(
         print("No states to render.")
         return []
 
-    if not render_backend_usable():
-        _warn_render_unavailable()
+    if not _preflight_render_backend(render_mode):
         return []
 
     num_envs = state_list[0].shape[0]
@@ -968,6 +995,7 @@ def render_states_get_frames_tracking(
     cam_fov=None,
     render_spacing=1.0,
     debug_overlays_list=None,
+    render_mode: str = "auto",
 ):
     """Render with camera tracking on a single primary environment.
 
@@ -986,13 +1014,15 @@ def render_states_get_frames_tracking(
         render_spacing: Grid spacing for env layout.
         debug_overlays_list: Optional list (one entry per state) of per-env
             DebugPrimitive sequences with env-local poses.
+        render_mode: ``"record"`` fails closed with :class:`RuntimeError` when no
+            usable off-screen GL backend exists on this host; ``"auto"`` (default)
+            warns once and returns an empty frame list instead.
     """
     if not state_list:
         print("No states to render.")
         return []
 
-    if not render_backend_usable():
-        _warn_render_unavailable()
+    if not _preflight_render_backend(render_mode):
         return []
 
     num_envs = state_list[0].shape[0]
