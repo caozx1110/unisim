@@ -1426,7 +1426,16 @@ class MjwarpBackend(SimBackend):
         self._tracked_body_host_dirty = False
 
     def _refresh_tracked_body_state_device_only(self) -> None:
-        """Refresh tracked body sensors without a host-cache transfer."""
+        """Refresh tracked body sensors without a host-cache transfer.
+
+        The refresh kernels stay on the backend's (blocking) Warp stream.
+        Tensor consumers are ordered through the legacy default stream or the
+        step completion event, and host consumers pass through
+        ``_refresh_host_cache``, which synchronizes after its downloads — so no
+        device-wide synchronize is needed here.  A host-blocking barrier on the
+        tensor read path would serialize obs assembly behind the physics tail
+        on every step.
+        """
         if not self._tracked_body_names:
             return
         self._mujoco_warp.kinematics(self._device_model, self._device_data)
@@ -1434,7 +1443,6 @@ class MjwarpBackend(SimBackend):
         self._mujoco_warp.com_vel(self._device_model, self._device_data)
         self._mujoco_warp.sensor_pos(self._device_model, self._device_data)
         self._mujoco_warp.sensor_vel(self._device_model, self._device_data)
-        self._synchronize()
         if not self._host_cache_stale:
             self._tracked_body_host_dirty = True
         self._tracked_body_state_dirty = False
@@ -2273,18 +2281,22 @@ class MjwarpBackend(SimBackend):
 
     def _write_mocap_pose(self, mocap_id: int, rows: np.ndarray, poses: np.ndarray) -> None:
         self._require_entity_healthy()
-        self._sync_host_cache()
         with np.errstate(over="ignore", invalid="ignore"):
             poses = np.asarray(poses, dtype=np.float32)
         if not np.isfinite(poses).all():
             raise ValueError("mjwarp mocap poses must be finite float32 values")
+        # The mocap mirrors are maintained synchronously by every state commit,
+        # so this write never needs to read the host state cache.  Uploads and
+        # the forward replay are stream-ordered after any in-flight physics;
+        # publish the refreshed device state to host readers lazily instead of
+        # paying a device-wide synchronize and full download per write.
         self._mocap_pos[rows, mocap_id] = poses[:, :3]
         self._mocap_quat[rows, mocap_id] = poses[:, 3:]
         self._upload(self._device_data.mocap_pos, self._mocap_pos)
         self._upload(self._device_data.mocap_quat, self._mocap_quat)
         self._execute_device_forward()
-        self._synchronize()
-        self._refresh_host_cache()
+        self._tracked_body_state_dirty = False
+        self._host_cache_stale = True
 
     def get_body_subtree_ids(self, root_body_id: int) -> np.ndarray:
         root = int(root_body_id)
@@ -3581,7 +3593,11 @@ class MjwarpBackend(SimBackend):
             raise NotImplementedError(
                 "mixing device-resident and host interval wrenches is unsupported"
             )
-        self._sync_host_cache()
+        # No plan-level host-cache publication: every host handler that reads
+        # state publishes it on entry, and the velocity-delta handler writes
+        # device rows directly.  A device-resident tensor step leaves the cache
+        # stale on every tick, so an unconditional publication here would pay a
+        # full state download for plans that never read host state.
         # A non-empty plan starts from cleared external wrenches, matching the
         # MuJoCo backend: ops within one plan accumulate, while a later plan
         # replaces anything a previous plan staged before it was consumed.
@@ -3703,7 +3719,6 @@ class MjwarpBackend(SimBackend):
         velocity_delta: np.ndarray,
     ) -> None:
         """Apply a row-selective world-frame velocity kick to the configured free root."""
-        self._sync_host_cache()
         qvel_ids = self._interval_root_velocity_qvel_ids
         if qvel_ids is None:
             raise NotImplementedError(
@@ -3756,16 +3771,24 @@ class MjwarpBackend(SimBackend):
         if active_rows.size == 0:
             return
 
-        # Kick the host-cache rows and re-commit them through the existing
-        # upload + forward barrier so sensors/kinematics stay coherent.
+        # Kick the live device rows directly through the stable Torch view.
+        # The delta add and the forward replay are stream-ordered after any
+        # in-flight physics (the same ordering the step_tensor control upload
+        # relies on), so no device-wide synchronize or host state round-trip is
+        # needed; host readers publish the refreshed state lazily.
+        import torch
+
         qvel_columns = np.asarray(qvel_ids, dtype=np.intp)
-        self._qvel_cache[active_rows[:, None], qvel_columns[None, :]] += velocity_delta[
-            active_rows, 0, :
-        ].astype(np.float32)
-        self._upload(self._device_data.qvel, self._qvel_cache)
+        deltas = velocity_delta[active_rows, 0, :].astype(np.float32)
+        qvel_view = self._stable_tensor_field_view("qvel")
+        rows_tensor = torch.as_tensor(active_rows, dtype=torch.long, device=qvel_view.device)
+        columns_tensor = torch.as_tensor(qvel_columns, dtype=torch.long, device=qvel_view.device)
+        qvel_view[rows_tensor[:, None], columns_tensor[None, :]] += torch.as_tensor(
+            deltas, device=qvel_view.device
+        )
         self._execute_device_forward()
-        self._synchronize()
-        self._refresh_host_cache()
+        self._tracked_body_state_dirty = False
+        self._host_cache_stale = True
 
     def materialize(self) -> None:
         self._require_entity_healthy()
