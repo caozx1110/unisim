@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.1 - 2026-10-21
 
 - Removed host round-trips from the MJWarp reset/interval hot paths. `_write_mocap_pose()` no longer publishes the host cache and synchronizes the device on every write; it uploads the mocap mirrors, replays the forward graph, and lets host readers publish lazily. Host-plane interval body velocity kicks now add the delta directly into the live device `qvel` rows through the stable Torch view instead of downloading the full state, re-uploading it, and refreshing the host cache, and `apply_interval_randomization()` no longer forces a plan-level host-cache publication its handlers never required. The tracked-body device-only sensor refresh no longer ends in a device-wide synchronize: refresh kernels are stream-ordered on the backend's blocking Warp stream, tensor consumers are ordered through the legacy default stream or the step completion event, and host consumers still synchronize after their downloads in `_refresh_host_cache()`. Public contracts, validation, and published state semantics are unchanged; these changes remove pipeline stalls measured at roughly half of the per-step host wait in an 8192-world dexterous-manipulation training workload.
 
