@@ -34,14 +34,13 @@ def reset_payload_to_host_dict(
 
 
 def interval_payload_to_host(value: Any) -> np.ndarray:
-    """Return ``value`` as a host NumPy array, converting Torch tensors.
+    """Return ``value`` as a host NumPy array, converting a Torch tensor.
 
-    NumPy inputs pass through unchanged (cold serialization/replay leaves).
-    Torch tensors are detached and copied to host memory. Anything else fails
-    closed with an actionable type error.
+    Torch tensors are detached and copied to host memory. NumPy and other
+    non-Torch inputs fail closed: the torch-first DR contract admits no NumPy
+    payloads on the op or reset execution path, so this helper is the
+    adapter-private torch-to-host conversion boundary, not a NumPy fallback.
     """
-    if isinstance(value, np.ndarray):
-        return value
     try:
         import torch
     except ImportError:
@@ -49,5 +48,6 @@ def interval_payload_to_host(value: Any) -> np.ndarray:
     if torch is not None and isinstance(value, torch.Tensor):
         return value.detach().cpu().numpy()
     raise TypeError(
-        f"interval payload must be a torch.Tensor or NumPy array, got {type(value).__name__}"
+        "interval payload must be a torch.Tensor under the torch-first DR "
+        f"contract, got {type(value).__name__}"
     )
