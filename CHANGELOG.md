@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Made the `drake` factory branch warn-and-ignore explicitly passed MuJoCo-only options (`post_step_forward_sensor`, `iterations`, `chunk_size`, `adaptive_chunk_size`, `cpu_ids`, `bench_nsteps`) instead of silently discarding them, matching the existing `mjwarp`/`newton`/`genesis`/`isaacgym`/`isaacsim` `_warn_ignored_mujoco_options` behavior (UniLab #2474). Construction still proceeds unchanged; only the discarded-option diagnostics are new.
 
 - Removed MotrixSim host-bridge hot-path waste measured in UniLab FlashSAC G1 motion tracking (2048 envs, FlashMimic owner task). The per-step full link-pose cache refresh is now lazy: steps and resets only invalidate the cache, and pose consumers refresh on first read, so packed tensor training — which reads body state through the fused `get_link_states` path — no longer pays a full-batch `get_link_poses` FFI round trip and allocation every step. Mask reset now sorts the selected rows once at the transaction boundary and shares the host copies with every bound host-bridge plan, replacing per-plan device re-sorts and repeated D2H round trips, and the packed plan `step()` now reports the backend `set_ctrl`/`physics`/`refresh_cache` timing breakdown like the MuJoCo plan does. Published state values and reset semantics are unchanged; pose getters return identical post-step/post-reset state through the existing parity coverage plus a new step-then-mask-reset freshness regression test.
 

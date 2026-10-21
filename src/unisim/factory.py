@@ -246,6 +246,15 @@ def _create_backend(
         from .backend.drake.backend import DrakeBackend
 
         kwargs.pop("add_body_sensors", None)
+        _warn_ignored_mujoco_options(
+            "drake",
+            post_step_forward_sensor=post_step_forward_sensor,
+            iterations=iterations,
+            chunk_size=chunk_size,
+            adaptive_chunk_size=adaptive_chunk_size,
+            cpu_ids=cpu_ids,
+            bench_nsteps=bench_nsteps,
+        )
         kwargs["drake_backend_mode"] = drake_backend_mode
         if drake_nthread is not None:
             kwargs["nthread"] = drake_nthread
