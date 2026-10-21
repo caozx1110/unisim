@@ -23,3 +23,12 @@ Use the package-owned distribution and import names in all commands, and never p
 2. Wait for the three cross-platform `ci.yml` test jobs, the `typecheck` job, and the pre-release sdist package job (which now also waits on `typecheck`) to pass for the commit you will tag.
 3. Create and push an annotated tag that exactly matches the package version, for example `git tag -a v0.1.13 -m "release: unisim-core 0.1.13"` followed by `git push origin v0.1.13`. The release workflow verifies the tag and successful CI run, builds and smoke-tests one sdist on `ubuntu-latest`, and publishes that sdist after the checks succeed. The runner only executes the build and does not constrain the source artifact. There is no release-time Python or OS matrix and no wheel publication; manual dispatch runs verification only and cannot publish.
 4. Inspect the workflow, the PyPI artifact metadata, and the created GitHub Release. A failed run may be re-run, but an already published version must never be overwritten. Fix the source and release a new patch version when an artifact is wrong.
+
+## Compatibility and removal policy
+
+Breaking removals are hard cuts at release boundaries: minor releases may cut internal surfaces, while the stable public names pinned for UniLab consumers (`unisim.SimBackend`, `unisim.create_backend`, `unisim.ADAPTER_SPECS`, the exported adapter classes, and `unisim.backend.subprocess_ipc`) are removed only at a major release. A published release is never retroactively edited. Two bounded compatibility windows are allowed:
+
+- Warn-and-ignore shims, such as removed factory options that still parse but warn, live until the next major release; the removal milestone is named in `CHANGELOG.md` when the shim is introduced.
+- Reader compatibility for persisted data, such as legacy pickle state keys that cross process boundaries, is documented in code with the producing version window and a named removal boundary — by default the next major release.
+
+An announced "removed next major" must name the version, and the removal ships no earlier than its named milestone.

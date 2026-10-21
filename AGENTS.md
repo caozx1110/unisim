@@ -77,6 +77,15 @@ Keep these names and paths stable for UniLab consumers: `unisim.SimBackend`, `un
 
 In scope: backend-neutral contracts, adapter validation/materialization, optional dependency diagnostics, subprocess framing, conformance coverage, and package/release tooling.  Out of scope: engine source/solver changes, task YAML, reward or rollout policy, training orchestration, distributed execution, and private SDK redistribution.
 
+## Deprecation and removal policy
+
+Breaking removals are hard cuts at release boundaries: minor releases may cut internal surfaces, while the stable public names listed above are removed only at a major release.  A published release is never retroactively edited.  Two bounded compatibility windows are allowed:
+
+- Warn-and-ignore shims (for example removed factory options that still parse but warn) live until the next major release; the removal milestone is named in `CHANGELOG.md` when the shim is introduced.
+- Reader compatibility for persisted data (for example legacy pickle state keys that cross process boundaries) is documented in code with the producing version window and a named removal boundary — by default the next major release.
+
+An announced "removed next major" must name the version, and the removal ships no earlier than its named milestone.
+
 ## CI and automated release
 
 `.github/workflows/ci.yml` runs Ruff and pytest (including the pinned MuJoCo adapter extra on Unix) on pull requests, pushes to `main`, and manual dispatch. It has exactly three test jobs: Python 3.10 on Ubuntu, macOS, and Windows. Windows runs the core/import-boundary subset because the pinned mjbatch runtime, like the MuJoCoUni runtime before it, skips Windows (mujoco.dll ships no import library); this optional runtime limitation must not block the pure-Python core. A fourth, lint-class `typecheck` job (Ubuntu, Python 3.11, matching unilab-rl) runs mypy and pyright against `src/unisim`; it is not a test job, so the three-test-job description above is unchanged. A separate Ubuntu package job waits for the three test jobs plus the typecheck job, builds one source distribution without selecting a Python version, checks its metadata, and uploads it as a pre-release CI artifact. The runner only executes the build; the sdist has no Python ABI or OS platform tag.

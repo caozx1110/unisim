@@ -23,3 +23,12 @@
 2. 等待三个跨平台 `ci.yml` 测试作业、`typecheck` 类型检查作业，以及预发布 sdist 打包作业（现在也等待 `typecheck`）在将要打标签的提交上通过。
 3. 创建并推送与包版本精确匹配的 annotated tag，例如 `git tag -a v0.1.13 -m "release: unisim-core 0.1.13"`，随后执行 `git push origin v0.1.13`。发布工作流会校验标签和成功 CI 运行，在 `ubuntu-latest` 上构建并对一个 sdist 做冒烟测试，检查成功后发布该 sdist。Runner 只是执行构建的机器，不约束源码产物。发布时没有 Python 或 OS 矩阵，也不发布 wheel；手动 dispatch 只执行验证，不能发布。
 4. 检查工作流、PyPI 产物元数据和已创建的 GitHub Release。失败的运行可以重跑，但已发布版本绝不能覆盖。产物错误时修复源码并发布新的 patch 版本。
+
+## 兼容与移除政策
+
+破坏性移除是发布边界上的硬切：minor 版本可以移除内部接口，而为 UniLab 消费方钉住的稳定公共名称（`unisim.SimBackend`、`unisim.create_backend`、`unisim.ADAPTER_SPECS`、导出的适配器类，以及 `unisim.backend.subprocess_ipc`）只在 major 版本移除。已发布版本绝不回溯修改。允许两类有边界的兼容窗口：
+
+- warn-and-ignore shim（例如仍能解析但会告警的已移除 factory 选项）保留到下一个 major 版本；引入 shim 时在 `CHANGELOG.md` 中写明移除里程碑。
+- 持久化数据的 reader 兼容（例如跨越进程边界的历史 pickle state key）在代码中记录产生该格式的版本窗口和具名移除边界——默认为下一个 major 版本。
+
+凡宣布"下一个 major 移除"必须写明版本号，且移除不得早于其具名里程碑发布。

@@ -45,6 +45,65 @@ def test_fixed_variant_plan_is_validated_and_pickle_safe() -> None:
         restored.assignment[0] = 1
 
 
+def _restore_from_state(cls, state):
+    obj = cls.__new__(cls)
+    obj.__setstate__(state)
+    return obj
+
+
+class _LegacyStatePickle:
+    """Emit the historical state-dict pickle form: ``__new__`` plus ``__setstate__``."""
+
+    def __init__(self, cls, state):
+        self._cls = cls
+        self._state = state
+
+    def __reduce__(self):
+        return (_restore_from_state, (self._cls, self._state))
+
+
+def test_fixed_variant_plan_fresh_pickle_carries_only_public_assignment() -> None:
+    original = _plan()
+    payload = pickle.dumps(original)
+
+    # Fresh pickles use the __reduce__ constructor form; the private reader-compat
+    # key documented on __setstate__ must never be written by a current version.
+    assert b"_assignment" not in payload
+    cls, args = original.__reduce__()
+    assert cls is FixedVariantPlan
+    assignment, variants, layout = args
+    np.testing.assert_array_equal(assignment, original.assignment)
+    assert variants == original.variants
+    assert layout is original.layout
+
+    assert pickle.loads(payload) == original
+
+
+def test_fixed_variant_plan_reads_historical_assignment_state_dicts() -> None:
+    variants = (
+        ModelSourceDescriptor("/cache/tools/tool-0.xml"),
+        ModelSourceDescriptor("/cache/tools/tool-1.xml"),
+    )
+    for key in ("_assignment", "assignment"):
+        legacy_array = np.array([1, 0, 1], dtype=np.int64)
+        legacy_state = {
+            key: legacy_array,
+            "variants": variants,
+            "layout": FixedVariantLayout.SAME_LAYOUT,
+        }
+        restored = pickle.loads(pickle.dumps(_LegacyStatePickle(FixedVariantPlan, legacy_state)))
+
+        assert isinstance(restored, FixedVariantPlan)
+        np.testing.assert_array_equal(restored.assignment, [1, 0, 1])
+        assert not restored.assignment.flags.writeable
+        assert restored.variants == variants
+        assert restored.layout is FixedVariantLayout.SAME_LAYOUT
+
+        # The legacy array storage is untrusted: restoring must copy it.
+        legacy_array[0] = 0
+        np.testing.assert_array_equal(restored.assignment, [1, 0, 1])
+
+
 def test_fixed_variant_plan_rejects_mutable_and_out_of_range_inputs() -> None:
     with pytest.raises(TypeError, match="variants must be a tuple"):
         FixedVariantPlan(
