@@ -357,6 +357,9 @@ class NewtonBackend(SimBackend):
         self._tensor_control_q_indices: Any = None
         self._tensor_control_qd_indices: Any = None
         self._tensor_portable_indices: dict[str, dict[str, Any]] | None = None
+        self._tensor_body_f_perm: Any = None
+        self._tensor_body_f_inject: Any = None
+        self._tensor_body_f_armed = False
         self._shape_world: np.ndarray | None = None
         self._contact_sensor_pairs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._playback_model_validated = False
@@ -510,6 +513,14 @@ class NewtonBackend(SimBackend):
         self._state = self._model.state()
         self._state_out = self._model.state()
         self._control = self._model.control()
+        # Persistent generalized-force injection buffer. CUDA graphs capture a
+        # per-substep copy from this fixed address, so it must exist before
+        # capture and must never be replaced (only assigned into).
+        self._tensor_body_f_inject = self._deps.warp.zeros(
+            int(self._model.body_count),
+            dtype=self._deps.warp.spatial_vector,
+            device=self._device,
+        )
         self._contacts = newton.Contacts(
             self._solver.get_max_contact_count(), 0, device=self._device
         )
@@ -636,6 +647,7 @@ class NewtonBackend(SimBackend):
                 with self._deps.warp.ScopedDevice(device):
                     with self._deps.warp.ScopedCapture() as capture_ab:
                         state_a.clear_forces()
+                        self._deps.warp.copy(state_a.body_f, self._tensor_body_f_inject)
                         self._solver.step(
                             state_a,
                             state_b,
@@ -645,6 +657,7 @@ class NewtonBackend(SimBackend):
                         )
                     with self._deps.warp.ScopedCapture() as capture_ba:
                         state_b.clear_forces()
+                        self._deps.warp.copy(state_b.body_f, self._tensor_body_f_inject)
                         self._solver.step(
                             state_b,
                             state_a,
@@ -740,6 +753,8 @@ class NewtonBackend(SimBackend):
 
     def _physics_substep_current_control(self) -> None:
         self._state.clear_forces()
+        if self._tensor_body_f_armed:
+            self._deps.warp.copy(self._state.body_f, self._tensor_body_f_inject)
         self._solver.step(self._state, self._state_out, self._control, self._contacts, self._sim_dt)
         self._state, self._state_out = self._state_out, self._state
 
@@ -1459,6 +1474,7 @@ class NewtonBackend(SimBackend):
             state_fields=frozenset({"qpos", "qvel"}),
             sensor_views=True,
             stepping=True,
+            generalized_force_injection=True,
             selected_reset=True,
             # Device-resident reset randomization and packed reset stay closed for
             # portable scenes; the training-scale follow-up owns that family.
@@ -1812,6 +1828,126 @@ class NewtonBackend(SimBackend):
         self._tensor_refresh_state()
         physics_ms = (time.perf_counter() - started) * 1000.0
         return {"timing": {"tensor_physics_ms": physics_ms, "tensor_host_cache_refresh_ms": 0.0}}
+
+    def _validate_generalized_force_tensor(
+        self, values: Any, expected: tuple[int, ...], name: str
+    ) -> None:
+        import torch
+
+        if not isinstance(values, torch.Tensor):
+            raise TypeError(f"Newton tensor {name} must be a torch.Tensor")
+        if tuple(values.shape) != expected:
+            raise ValueError(
+                f"Newton tensor {name} must have shape {expected}, got {tuple(values.shape)}"
+            )
+        if values.dtype != torch.float32 or not bool(values.is_contiguous()):
+            raise TypeError(f"Newton tensor {name} must be contiguous float32")
+        self._tensor_device(values.device)
+
+    def set_generalized_force_tensor(
+        self,
+        *,
+        joint_f: Any | None = None,
+        body_f: Any | None = None,
+    ) -> None:
+        """Inject persistent generalized forces consumed at every physics substep.
+
+        ``joint_f`` is a contiguous float32 Torch tensor with shape
+        ``(num_envs, nv)`` in public qvel column order. It is uploaded into
+        Newton's ``Control.joint_f`` once and the solver consumes it at every
+        substep until overwritten; ``state.clear_forces()`` never touches
+        control arrays, and tensor/host resets do not clear it either.
+
+        ``body_f`` is a contiguous float32 Torch tensor with shape
+        ``(num_envs, num_bodies, 6)`` in public body order; each row is the
+        world-frame spatial wrench ``(f_x, f_y, f_z, t_x, t_y, t_z)`` with the
+        linear force applied at the body center of mass, matching
+        ``State.body_f``. The adapter clears ``state.body_f`` through
+        ``state.clear_forces()`` at the start of every substep and then
+        re-applies this adapter-owned persistent buffer, so one write is
+        consumed by every substep of ``step_tensor(nsteps=k)`` and by later
+        eager or CUDA-graph steps until overwritten.
+
+        A ``None`` channel is left unchanged; write all-zeros to clear a
+        channel. Both channels compose with actuator controls uploaded by
+        ``step_tensor``.
+        """
+        self._require_state("generalized force injection")
+        if joint_f is None and body_f is None:
+            raise ValueError("Newton generalized-force injection requires joint_f or body_f")
+        if joint_f is not None:
+            self._validate_generalized_force_tensor(
+                joint_f, (self._num_envs, self._metadata.nv), "joint_f"
+            )
+            if self._portable_mode:
+                self._inject_portable_joint_f(joint_f)
+            else:
+                self._assign_warp_tensor(self._control.joint_f, joint_f)
+        if body_f is not None:
+            body_count = len(self._body_names)
+            if int(self._model.body_count) != self._num_envs * body_count:
+                raise RuntimeError(
+                    "newton model body layout differs from the public body table: "
+                    f"{int(self._model.body_count)} bodies for {self._num_envs} worlds of "
+                    f"{body_count}"
+                )
+            self._validate_generalized_force_tensor(
+                body_f, (self._num_envs, body_count, 6), "body_f"
+            )
+            flat = body_f.reshape(self._num_envs * body_count, 6)
+            if self._portable_mode:
+                flat = flat.index_select(0, self._portable_body_f_permutation())
+            self._tensor_body_f_inject.assign(
+                self._deps.warp.from_torch(flat, dtype=self._deps.warp.spatial_vector)
+            )
+            self._tensor_body_f_armed = True
+
+    def _inject_portable_joint_f(self, joint_f: Any) -> None:
+        """Scatter public-qvel-layout joint_f through the per-entity control views."""
+
+        indices = self._portable_tensor_layout()
+        for entity_name, runtime in self._entity_runtimes.items():
+            v_columns = indices[entity_name]["v"]
+            # Zero-DoF static entities own no generalized-force columns.
+            if not v_columns.numel():
+                continue
+            block = joint_f[:, v_columns]
+            runtime.view.set_dof_forces(
+                self._control,
+                self._deps.warp.from_torch(block.unsqueeze(1).contiguous()),
+            )
+
+    def _portable_body_f_permutation(self) -> Any:
+        """Build the cached public-body-order to native flat-body row permutation."""
+
+        import torch
+
+        if self._tensor_body_f_perm is not None:
+            return self._tensor_body_f_perm
+        assert self._entity_layout is not None
+        body_count = len(self._body_names)
+        # World 0 holds one copy of every public body; entity view labels are
+        # the same global template labels the composed model publishes.
+        world_labels = list(self._model.body_label)[:body_count]
+        local_native = [0] * body_count
+        for entity in self._entity_layout.entities:
+            runtime = self._entity_runtimes[entity.name]
+            view_labels = list(runtime.view.body_labels)
+            for position, slot in enumerate(runtime.view_body_indices):
+                public_row = entity.body_ids[position] - 1
+                local_native[public_row] = world_labels.index(view_labels[int(slot)])
+        inverse = [0] * body_count
+        for public_row, native_slot in enumerate(local_native):
+            inverse[native_slot] = public_row
+        permutation = [
+            world * body_count + inverse[native_slot]
+            for world in range(self._num_envs)
+            for native_slot in range(body_count)
+        ]
+        self._tensor_body_f_perm = torch.tensor(
+            permutation, dtype=torch.int64, device=self._tensor_device()
+        )
+        return self._tensor_body_f_perm
 
     def _validate_tensor_reset_payload(
         self,

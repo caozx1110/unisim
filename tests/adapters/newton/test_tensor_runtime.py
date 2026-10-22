@@ -88,6 +88,7 @@ def test_newton_declares_partial_device_resident_tensor_lifecycle(
         assert capabilities.torch_devices == ("cuda",)
         assert capabilities.state_fields == frozenset({"qpos", "qvel"})
         assert capabilities.stepping
+        assert capabilities.generalized_force_injection
         assert capabilities.selected_reset
         assert capabilities.sensor_views
         assert capabilities.reset_randomization
@@ -142,6 +143,7 @@ def test_newton_portable_multi_entity_declares_tensor_lifecycle() -> None:
     assert capabilities.execution.value == "device_resident"
     assert capabilities.state_views
     assert capabilities.stepping
+    assert capabilities.generalized_force_injection
     assert capabilities.selected_reset
     assert capabilities.mask_selected_reset
     # Device reset randomization and packed reset stay closed on portable
@@ -161,6 +163,7 @@ def test_newton_portable_single_entity_declares_narrow_tensor_lifecycle() -> Non
     assert capabilities.stepping
     # One articulation covers the whole model, so the whole-model tensor paths
     # serve single-entity portable scenes unchanged.
+    assert capabilities.generalized_force_injection
     assert capabilities.selected_reset
     assert capabilities.mask_selected_reset
     assert not capabilities.reset_randomization
