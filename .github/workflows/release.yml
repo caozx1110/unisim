@@ -10,8 +10,8 @@ permissions:
   actions: read
 
 jobs:
-  build-sdist:
-    name: Build and verify source distribution
+  build-dists:
+    name: Build and verify release distributions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -49,9 +49,38 @@ jobs:
           uv venv .release-venv
           uv pip install --python .release-venv/bin/python \
             "uv_build>=0.12.1,<0.13" numpy
-      - name: Build source distribution
-        run: uv build --sdist --out-dir dist
-      - name: Check source distribution metadata
+      - name: Build source distribution and universal wheel
+        run: uv build --sdist --wheel --out-dir dist
+      - name: Verify the wheel is a pure-Python universal wheel
+        shell: bash
+        run: |
+          wheel="$(ls dist/*.whl)"
+          case "$(basename "$wheel")" in
+            unisim_core-*-py3-none-any.whl) ;;
+            *) echo "Expected a py3-none-any wheel, got: $wheel" >&2; exit 1 ;;
+          esac
+          python3 - "$wheel" <<'EOF'
+          import re
+          import sys
+          import zipfile
+
+          wheel = sys.argv[1]
+          names = zipfile.ZipFile(wheel).namelist()
+          banned_suffix = re.compile(r"\.(so|pyd|dylib|dll)$")
+          banned = [n for n in names if banned_suffix.search(n)]
+          banned += [n for n in names if n.startswith(("tests/", ".github/"))]
+          assert not banned, f"wheel contains non-runtime content: {banned}"
+          metadata = next(n for n in names if n.endswith(".dist-info/METADATA"))
+          text = zipfile.ZipFile(wheel).read(metadata).decode()
+          assert re.search(r"^Requires-Python: >=3\.10, ?<3\.14$", text, re.M), text
+          requires = [
+              line
+              for line in text.splitlines()
+              if line.startswith("Requires-Dist:") and "extra ==" not in line
+          ]
+          assert requires == ["Requires-Dist: numpy"], requires
+          EOF
+      - name: Check distribution metadata
         run: uvx --from twine twine check dist/*
       - name: Install the freshly built source distribution
         run: >-
@@ -63,13 +92,25 @@ jobs:
           backend = unisim.create_backend('fake', num_envs=2, num_actuators=1);
           assert backend.get_keyframe_qpos('home').shape == (1,);
           assert not hasattr(backend, 'step')"
+      - name: Install the freshly built wheel only (no sdist fallback)
+        run: >-
+          uv pip install --python .release-venv/bin/python --reinstall --no-deps
+          --only-binary :all: --no-cache --find-links dist --no-index unisim-core
+      - name: Smoke test installed wheel
+        run: >-
+          .release-venv/bin/python -c "import unisim;
+          backend = unisim.create_backend('fake', num_envs=2, num_actuators=1);
+          assert backend.get_keyframe_qpos('home').shape == (1,);
+          assert not hasattr(backend, 'step')"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-sdist
-          path: dist/*.tar.gz
+          name: release-dists
+          path: |
+            dist/*.tar.gz
+            dist/*.whl
 
   publish:
-    needs: build-sdist
+    needs: build-dists
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -79,9 +120,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-sdist
+          name: release-dists
           path: dist
-      - name: Publish source distribution to PyPI with trusted publishing
+      - name: Publish source distribution and wheel to PyPI with trusted publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist
@@ -100,7 +141,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-sdist
+          name: release-dists
           path: dist
       - name: Extract changelog notes
         shell: bash
@@ -114,6 +155,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.whl
           --title "unisim-core ${GITHUB_REF_NAME#v}"
           --notes-file release-notes.md
