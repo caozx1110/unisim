@@ -332,7 +332,147 @@ def _scan_sensors(mujoco: Any, model: Any) -> tuple[NewtonSensorPlan, ...]:
     return tuple(plans)
 
 
-def _reject_silent_geometry_gaps(mujoco: Any, model: Any) -> None:
+# Newton's MJCF importer forwards ``Mesh.MAX_HULL_VERTICES`` (64) to the MuJoCo
+# compiler whenever the MJCF mesh asset does not author its own ``maxhullvert``,
+# while a reference MuJoCo compile leaves the full hull intact. Colliding meshes
+# whose hull exceeds that fallback are rejected below so the compiled collision
+# geometry cannot silently diverge from the reference hull.
+_NEWTON_FALLBACK_MAXHULLVERT = 64
+
+# Relative volume deviation tolerated between a closed collision mesh and its
+# compiled convex hull before the mesh is declared non-convex.
+_MESH_CONVEXITY_RTOL = 1e-4
+
+
+def _mesh_name(mujoco: Any, model: Any, mesh_id: int) -> str:
+    name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id)
+    return str(name) if name else str(mesh_id)
+
+
+def _mesh_surface_closed(faces: np.ndarray) -> bool:
+    """Return True when every undirected triangle edge is shared by two faces."""
+    if not faces.size:
+        return False
+    edges = np.sort(
+        np.concatenate((faces[:, :2], faces[:, 1:3], faces[:, ::2]), axis=0), axis=1
+    )
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    return bool(np.all(counts == 2))
+
+
+def _mesh_signed_volume(vertices: np.ndarray, triangles: np.ndarray) -> float:
+    """Sum the signed tetrahedron volumes of outward-oriented triangle fans."""
+    corners = vertices[triangles]
+    return (
+        float(
+            np.einsum("ij,ij->i", corners[:, 0], np.cross(corners[:, 1], corners[:, 2])).sum()
+        )
+        / 6.0
+    )
+
+
+def _compiled_mesh_hull(model: Any, mesh_id: int) -> tuple[np.ndarray, float]:
+    """Read the compiled convex hull polygons of one mesh.
+
+    Returns the distinct authored vertex ids on the hull and the hull volume.
+    MuJoCo stores the collision hull as outward-oriented polygons in
+    ``mesh_poly*``; fan-triangulation around each polygon's first vertex sums
+    the hull's signed volume.
+    """
+    vertices = np.asarray(model.mesh_vert, dtype=np.float64)
+    polyvert = np.asarray(model.mesh_polyvert, dtype=np.int64)
+    poly_start = int(model.mesh_polyadr[mesh_id])
+    poly_count = int(model.mesh_polynum[mesh_id])
+    hull_vertex_ids: set[int] = set()
+    volume = 0.0
+    for poly_id in range(poly_start, poly_start + poly_count):
+        adr = int(model.mesh_polyvertadr[poly_id])
+        num = int(model.mesh_polyvertnum[poly_id])
+        ids = polyvert[adr : adr + num]
+        hull_vertex_ids.update(int(value) for value in ids)
+        corners = vertices[ids]
+        volume += float(
+            np.sum(corners[0] * np.cross(corners[1:-1], corners[2:]))
+        )
+    vertex_adr = int(model.mesh_vertadr[mesh_id])
+    local_ids = np.asarray(
+        sorted(vertex_id - vertex_adr for vertex_id in hull_vertex_ids), dtype=np.int64
+    )
+    return local_ids, abs(volume) / 6.0
+
+
+def _audit_mesh_convexity(mujoco: Any, model: Any, mesh_id: int) -> str | None:
+    """Audit one compiled collision mesh for closedness and convexity.
+
+    MuJoCo-family solvers collide the convex hull of a mesh geom, so a mesh
+    that is open or non-convex would silently collide a different shape than
+    authored. A closed mesh is convex exactly when its surface volume equals
+    its convex-hull volume.
+    """
+    name = _mesh_name(mujoco, model, mesh_id)
+    vertex_adr = int(model.mesh_vertadr[mesh_id])
+    vertex_num = int(model.mesh_vertnum[mesh_id])
+    face_adr = int(model.mesh_faceadr[mesh_id])
+    face_num = int(model.mesh_facenum[mesh_id])
+    vertices = np.asarray(
+        model.mesh_vert[vertex_adr : vertex_adr + vertex_num], dtype=np.float64
+    )
+    faces = np.asarray(model.mesh_face[face_adr : face_adr + face_num], dtype=np.int64)
+    if not _mesh_surface_closed(faces):
+        return (
+            f"collision mesh {name!r} is not closed: every triangle edge must be shared by "
+            "exactly two faces, otherwise the compiled convex hull would silently add "
+            "surface area"
+        )
+    hull_vertex_ids, hull_volume = _compiled_mesh_hull(model, mesh_id)
+    authored_volume = abs(_mesh_signed_volume(vertices, faces))
+    if not hull_vertex_ids.size or hull_volume <= 0.0:
+        return (
+            f"collision mesh {name!r} produced no compiled convex hull; its convexity "
+            "cannot be audited"
+        )
+    deviation = abs(hull_volume - authored_volume) / max(hull_volume, authored_volume)
+    if deviation > _MESH_CONVEXITY_RTOL:
+        return (
+            f"collision mesh {name!r} is not convex: the compiled convex-hull volume "
+            f"deviates {deviation:.2%} from the authored surface volume, so the mesh would "
+            "silently collide a different shape; split the mesh into convex pieces (for "
+            "example with CoACD or V-HACD) or mark it visual-only with contype=0 "
+            "conaffinity=0"
+        )
+    return None
+
+
+def _audit_mesh_hull_budget(
+    mujoco: Any, model: Any, source_model_file: str, mesh_id: int
+) -> str | None:
+    """Reject hulls that newton would decimate differently from a reference compile.
+
+    Newton's importer defaults ``maxhullvert`` to 64 while MuJoCo leaves the
+    full hull intact unless the MJCF mesh asset authors a limit. The authored
+    value is read from an ``MjSpec`` re-parse of the source file (default
+    classes resolved); it is absent from the compiled model.
+    """
+    hull_vertex_ids, _ = _compiled_mesh_hull(model, mesh_id)
+    if hull_vertex_ids.size <= _NEWTON_FALLBACK_MAXHULLVERT:
+        return None
+    spec_meshes = mujoco.MjSpec.from_file(source_model_file).meshes
+    authored = int(spec_meshes[mesh_id].maxhullvert) if mesh_id < len(spec_meshes) else -1
+    effective = authored if authored >= 4 else _NEWTON_FALLBACK_MAXHULLVERT
+    if hull_vertex_ids.size <= effective:
+        return None
+    name = _mesh_name(mujoco, model, mesh_id)
+    return (
+        f"collision mesh {name!r} has a {hull_vertex_ids.size}-vertex convex hull, which "
+        f"exceeds the effective maxhullvert of {effective}; newton applies a fallback of "
+        f"{_NEWTON_FALLBACK_MAXHULLVERT} while a reference MuJoCo compile keeps the full "
+        f"hull, so the compiled collision geometry would silently diverge. Author "
+        f"maxhullvert={hull_vertex_ids.size} on the MJCF mesh asset so both engines "
+        "compile the identical hull"
+    )
+
+
+def _reject_silent_geometry_gaps(mujoco: Any, model: Any, source_model_file: str) -> None:
     geom_types = np.asarray(model.geom_type, dtype=np.int32)
     cone_value = getattr(mujoco.mjtGeom, "mjGEOM_CONE", None)
     if cone_value is not None and np.any(geom_types == int(cone_value)):
@@ -345,14 +485,26 @@ def _reject_silent_geometry_gaps(mujoco: Any, model: Any) -> None:
         model.geom_conaffinity, dtype=np.int64
     )
     colliding_mesh_ids = np.flatnonzero((geom_types == mesh) & (masks != 0))
-    if colliding_mesh_ids.size:
-        names = [
-            str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(geom_id)) or geom_id)
-            for geom_id in colliding_mesh_ids
-        ]
+    mesh_reasons: dict[int, str | None] = {}
+    for geom_id in colliding_mesh_ids:
+        mesh_id = int(model.geom_dataid[int(geom_id)])
+        if mesh_id not in mesh_reasons:
+            reason = _audit_mesh_convexity(mujoco, model, mesh_id)
+            if reason is None:
+                reason = _audit_mesh_hull_budget(mujoco, model, source_model_file, mesh_id)
+            mesh_reasons[mesh_id] = reason
+    failures: list[str] = []
+    for geom_id in colliding_mesh_ids:
+        reason = mesh_reasons[int(model.geom_dataid[int(geom_id)])]
+        if reason is None:
+            continue
+        geom_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(geom_id))
+        failures.append(f"geom {str(geom_name) if geom_name else int(geom_id)!r}: {reason}")
+    if failures:
         raise NotImplementedError(
-            "newton SolverMuJoCo convexifies triangle-mesh collision geometry; "
-            f"colliding mesh geoms are rejected: {', '.join(names)}"
+            "newton backend audits colliding mesh geoms for convexity so the compiled "
+            "convex hull matches the authored geometry; unsupported meshes were found: "
+            + "; ".join(failures)
         )
 
 
@@ -374,7 +526,7 @@ def scan_newton_model_metadata(mujoco: Any, scene: SceneCfg) -> NewtonModelMetad
         )
         temp_paths.append(source_model_file)
     model = mujoco.MjModel.from_xml_path(source_model_file)
-    _reject_silent_geometry_gaps(mujoco, model)
+    _reject_silent_geometry_gaps(mujoco, model, source_model_file)
 
     free = int(mujoco.mjtJoint.mjJNT_FREE)
     single_dof = {int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE)}

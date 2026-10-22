@@ -160,3 +160,118 @@ def test_metadata_rejects_contact_sensor_non_geom_pairs(tmp_path: Path, sensor: 
 def test_newton_warp_path_has_no_mj_data_access() -> None:
     for path in Path(__file__).parents[1].joinpath("src/unisim/backend/newton").glob("*.py"):
         assert "mj_data" not in path.read_text(encoding="utf-8")
+
+
+_WEDGE_VERTICES = "0 0 0  0.1 0 0  0 0.1 0  0 0 0.1"
+_WEDGE_FACES = "0 2 1  0 1 3  0 3 2  1 2 3"
+# The wedge with one hull-face centroid pushed halfway toward the opposite
+# vertex: a closed but non-convex surface.
+_DENTED_VERTICES = "0 0 0  0.1 0 0  0 0.1 0  0 0 0.1  0.0167 0.0167 0.0167"
+_DENTED_FACES = "0 2 1  0 1 3  0 3 2  1 2 4  2 3 4  3 1 4"
+# The wedge missing its (1, 2, 3) hull face: an open surface.
+_OPEN_FACES = "0 2 1  0 1 3  0 3 2"
+
+
+def _sphere_mesh(rings: int = 8, sectors: int = 12) -> tuple[str, str, int]:
+    """Build a closed UV-sphere whose vertices all lie on its convex hull."""
+    vertices = [(0.0, 0.0, 0.1)]
+    for ring in range(1, rings):
+        phi = np.pi * ring / rings
+        for sector in range(sectors):
+            theta = 2.0 * np.pi * sector / sectors
+            vertices.append(
+                (
+                    0.1 * np.sin(phi) * np.cos(theta),
+                    0.1 * np.sin(phi) * np.sin(theta),
+                    0.1 * np.cos(phi),
+                )
+            )
+    vertices.append((0.0, 0.0, -0.1))
+    bottom = len(vertices) - 1
+    faces: list[tuple[int, int, int]] = []
+    for sector in range(sectors):
+        faces.append((0, 1 + sector % sectors, 1 + (sector + 1) % sectors))
+    for ring in range(rings - 2):
+        upper = 1 + ring * sectors
+        lower = upper + sectors
+        for sector in range(sectors):
+            a, b = upper + sector % sectors, upper + (sector + 1) % sectors
+            c, d = lower + sector % sectors, lower + (sector + 1) % sectors
+            faces.append((a, c, d))
+            faces.append((a, d, b))
+    last = 1 + (rings - 2) * sectors
+    for sector in range(sectors):
+        faces.append((last + sector % sectors, bottom, last + (sector + 1) % sectors))
+    vertex_text = "  ".join(f"{x:.6f} {y:.6f} {z:.6f}" for x, y, z in vertices)
+    face_text = "  ".join(f"{a} {b} {c}" for a, b, c in faces)
+    return vertex_text, face_text, len(vertices)
+
+
+def _mesh_scene(mesh_asset: str, geom_attributes: str = "") -> str:
+    return (
+        "<mujoco model='mesh-audit-test'>"
+        f"<asset>{mesh_asset}</asset>"
+        "<worldbody><geom name='floor' type='plane' size='1 1 0.1'/>"
+        "<body name='mesh_body' pos='0 0 0.5'><joint name='root' type='free'/>"
+        f"<geom name='mesh_geom' type='mesh' mesh='piece' mass='0.5' {geom_attributes}/>"
+        "</body></worldbody></mujoco>"
+    )
+
+
+def _scan_mesh_scene(
+    tmp_path: Path,
+    vertices: str,
+    faces: str,
+    *,
+    asset_attributes: str = "",
+    geom_attributes: str = "",
+):
+    path = _write_model(tmp_path, "")
+    path.write_text(
+        _mesh_scene(
+            f"<mesh name='piece' {asset_attributes} vertex='{vertices}' face='{faces}'/>",
+            geom_attributes,
+        ),
+        encoding="utf-8",
+    )
+    return scan_newton_model_metadata(mujoco, SceneCfg(model_file=str(path)))
+
+
+def test_metadata_accepts_convex_collision_mesh_geom(tmp_path: Path) -> None:
+    metadata = _scan_mesh_scene(tmp_path, _WEDGE_VERTICES, _WEDGE_FACES)
+    assert metadata.nq == 7
+    assert metadata.geom_contype.tolist() == [1, 1]
+
+
+def test_metadata_rejects_nonconvex_collision_mesh_geom(tmp_path: Path) -> None:
+    with pytest.raises(NotImplementedError, match="not convex"):
+        _scan_mesh_scene(tmp_path, _DENTED_VERTICES, _DENTED_FACES)
+
+
+def test_metadata_rejects_open_collision_mesh_geom(tmp_path: Path) -> None:
+    with pytest.raises(NotImplementedError, match="not closed"):
+        _scan_mesh_scene(tmp_path, _WEDGE_VERTICES, _OPEN_FACES)
+
+
+def test_metadata_rejects_mesh_hull_above_default_maxhullvert(tmp_path: Path) -> None:
+    vertices, faces, count = _sphere_mesh()
+    assert count > 64
+    with pytest.raises(NotImplementedError, match="maxhullvert"):
+        _scan_mesh_scene(tmp_path, vertices, faces)
+
+
+def test_metadata_accepts_mesh_hull_with_authored_maxhullvert(tmp_path: Path) -> None:
+    vertices, faces, count = _sphere_mesh()
+    metadata = _scan_mesh_scene(tmp_path, vertices, faces, asset_attributes='maxhullvert="128"')
+    assert metadata.nq == 7
+    assert count > 64
+
+
+def test_metadata_skips_visual_only_mesh_geoms(tmp_path: Path) -> None:
+    metadata = _scan_mesh_scene(
+        tmp_path,
+        _DENTED_VERTICES,
+        _DENTED_FACES,
+        geom_attributes='contype="0" conaffinity="0"',
+    )
+    assert metadata.geom_contype.tolist() == [1, 0]
