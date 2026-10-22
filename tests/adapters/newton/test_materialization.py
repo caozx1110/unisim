@@ -160,3 +160,68 @@ def test_metadata_rejects_contact_sensor_non_geom_pairs(tmp_path: Path, sensor: 
 def test_newton_warp_path_has_no_mj_data_access() -> None:
     for path in Path(__file__).parents[1].joinpath("src/unisim/backend/newton").glob("*.py"):
         assert "mj_data" not in path.read_text(encoding="utf-8")
+
+
+_BALL_SCENE = """
+<mujoco model="ball-scan-test">
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="hand" pos="0 0 0.5">
+      <joint name="root" type="free"/>
+      <geom name="palm" type="sphere" size="0.03" mass="0.5"/>
+      <body name="finger" pos="0 0 0.05">
+        {ball_joint}
+        <geom name="tip" type="sphere" size="0.02" mass="0.1"/>
+        <body name="nail" pos="0 0 0.03">
+          <joint name="flex" type="hinge" axis="0 1 0" range="-1.5 1.5"/>
+          <geom name="nail_geom" type="sphere" size="0.01" mass="0.05"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>{actuator}</actuator>
+</mujoco>
+"""
+
+
+def _scan_ball_scene(
+    tmp_path: Path,
+    *,
+    ball_joint: str = '<joint name="wrist_ball" type="ball"/>',
+    actuator: str = '<motor name="flex_motor" joint="flex" ctrlrange="-1 1"/>',
+):
+    path = _write_model(tmp_path, "")
+    path.write_text(
+        _BALL_SCENE.format(ball_joint=ball_joint, actuator=actuator), encoding="utf-8"
+    )
+    return scan_newton_model_metadata(mujoco, SceneCfg(model_file=str(path)))
+
+
+def test_metadata_accepts_ball_joints(tmp_path: Path) -> None:
+    metadata = _scan_ball_scene(tmp_path)
+    assert metadata.nq == 12
+    assert metadata.nv == 10
+    assert metadata.ball_joint_names == ("wrist_ball",)
+    assert metadata.ball_joint_qpos_adrs == (7,)
+    assert metadata.ball_joint_qvel_adrs == (6,)
+    assert metadata.ball_joint_addresses == ((7, 6),)
+    # Ball joints stay passive multi-DoF joints: the name-addressable
+    # single-DoF joint API and its aligned joint-range rows are unchanged.
+    assert metadata.joint_names == ("flex",)
+    assert metadata.joint_qpos_adrs == (11,)
+    assert metadata.joint_dof_adrs == (9,)
+    assert metadata.joint_range is not None
+    np.testing.assert_allclose(metadata.joint_range, [[-1.5, 1.5]])
+    np.testing.assert_allclose(metadata.default_qpos[7:11], [1.0, 0.0, 0.0, 0.0])
+
+
+def test_metadata_rejects_actuators_targeting_ball_joints(tmp_path: Path) -> None:
+    with pytest.raises(NotImplementedError, match="single-DoF"):
+        _scan_ball_scene(
+            tmp_path, actuator='<motor name="wrist_motor" joint="wrist_ball"/>'
+        )
+
+
+def test_metadata_rejects_unnamed_ball_joints(tmp_path: Path) -> None:
+    with pytest.raises(NotImplementedError, match="named ball joints"):
+        _scan_ball_scene(tmp_path, ball_joint='<joint type="ball"/>')
