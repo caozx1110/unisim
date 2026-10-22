@@ -75,7 +75,7 @@ jobs:
         run: uv run pyright
 
   package:
-    name: Build source distribution (pre-release)
+    name: Build release distributions (pre-release)
     needs: [check, typecheck]
     runs-on: ubuntu-latest
     steps:
@@ -85,9 +85,9 @@ jobs:
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: false
-      - name: Build source distribution
-        run: uv build --sdist --out-dir dist
-      - name: Check source distribution metadata
+      - name: Build source distribution and universal wheel
+        run: uv build --sdist --wheel --out-dir dist
+      - name: Check distribution metadata
         run: uvx --from twine twine check dist/*
       - name: Install the freshly built source distribution
         run: |
@@ -101,8 +101,20 @@ jobs:
           backend = unisim.create_backend('fake', num_envs=1, num_actuators=1);
           assert backend.get_keyframe_qpos('home').shape == (1,);
           assert not hasattr(backend, 'step')"
+      - name: Install the freshly built wheel only (no sdist fallback)
+        run: >-
+          uv pip install --python .package-venv/bin/python --reinstall --no-deps
+          --only-binary :all: --no-cache --find-links dist --no-index unisim-core
+      - name: Smoke test installed wheel
+        run: >-
+          .package-venv/bin/python -c "import unisim;
+          backend = unisim.create_backend('fake', num_envs=1, num_actuators=1);
+          assert backend.get_keyframe_qpos('home').shape == (1,);
+          assert not hasattr(backend, 'step')"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ci-sdist
-          path: dist/*.tar.gz
+          name: ci-dists
+          path: |
+            dist/*.tar.gz
+            dist/*.whl
           if-no-files-found: error
