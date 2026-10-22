@@ -134,27 +134,22 @@ def test_newton_dr_planes_split_and_host_payload_fails_closed(tmp_path: Path) ->
         backend.close()
 
 
-def test_newton_portable_multi_entity_tensor_lifecycle_fails_closed() -> None:
-    torch = pytest.importorskip("torch")
+def test_newton_portable_multi_entity_declares_tensor_lifecycle() -> None:
     backend = _portable_fake(2)
 
-    assert backend.get_tensor_execution().value == "unsupported"
+    assert backend.get_tensor_execution().value == "device_resident"
     capabilities = backend.get_tensor_capabilities()
-    assert capabilities.execution.value == "unsupported"
-    assert not capabilities.state_views
-    assert not capabilities.stepping
-    assert not capabilities.selected_reset
-
-    with pytest.raises(NotImplementedError, match="one physical articulation.*2"):
-        backend.get_state_views(device=torch.device("cuda:0"))
-    with pytest.raises(NotImplementedError, match="one physical articulation.*2"):
-        backend.step_tensor(torch.zeros((1, 1), device="cpu"))
-    with pytest.raises(NotImplementedError, match="one physical articulation.*2"):
-        backend.set_state_tensor(
-            torch.zeros(1, dtype=torch.int64),
-            torch.zeros((1, 1)),
-            torch.zeros((1, 1)),
-        )
+    assert capabilities.execution.value == "device_resident"
+    assert capabilities.state_views
+    assert capabilities.stepping
+    assert capabilities.selected_reset
+    assert capabilities.mask_selected_reset
+    # Device reset randomization and packed reset stay closed on portable
+    # scenes; the training-scale follow-up owns that family.
+    assert not capabilities.reset_randomization
+    assert not capabilities.device_reset_randomization
+    assert not capabilities.packed_reset
+    assert capabilities.packed_reset_fields == frozenset()
 
 
 def test_newton_portable_single_entity_declares_narrow_tensor_lifecycle() -> None:
@@ -164,8 +159,14 @@ def test_newton_portable_single_entity_declares_narrow_tensor_lifecycle() -> Non
     assert capabilities.execution.value == "device_resident"
     assert capabilities.state_views
     assert capabilities.stepping
-    assert not capabilities.selected_reset
+    # One articulation covers the whole model, so the whole-model tensor paths
+    # serve single-entity portable scenes unchanged.
+    assert capabilities.selected_reset
+    assert capabilities.mask_selected_reset
+    assert not capabilities.reset_randomization
+    assert not capabilities.device_reset_randomization
     assert not capabilities.packed_reset
+    assert capabilities.packed_reset_fields == frozenset()
 
 
 def test_newton_tensor_sensor_routing_is_device_only_without_sdk() -> None:
@@ -261,7 +262,6 @@ def test_newton_tensor_sensor_routing_is_device_only_without_sdk() -> None:
     backend._tensor_body_ang_vel[:, 1] = torch.tensor((0.1, 0.2, 0.3))
     backend._tensor_sensor_views = {}
     backend._tensor_sensor_constants = {}
-    backend._require_tensor_lifecycle = lambda operation: None
     backend._tensor_device = lambda requested=None: torch.device("cpu")
     backend._tensor_ensure_state = lambda: None
 
