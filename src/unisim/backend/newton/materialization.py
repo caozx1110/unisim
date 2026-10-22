@@ -61,6 +61,9 @@ class NewtonModelMetadata:
     joint_names: tuple[str, ...]
     joint_qpos_adrs: tuple[int, ...]
     joint_dof_adrs: tuple[int, ...]
+    ball_joint_names: tuple[str, ...]
+    ball_joint_qpos_adrs: tuple[int, ...]
+    ball_joint_qvel_adrs: tuple[int, ...]
     actuator_names: tuple[str, ...]
     actuator_joint_names: tuple[str, ...]
     actuator_target_kinds: tuple[str, ...]
@@ -75,6 +78,13 @@ class NewtonModelMetadata:
     dof_armature: np.ndarray
     gravity: np.ndarray
     sensor_plans: tuple[NewtonSensorPlan, ...]
+
+    @property
+    def ball_joint_addresses(self) -> tuple[tuple[int, int], ...]:
+        """Return one ``(qpos address, qvel address)`` pair per authored ball joint."""
+        return tuple(
+            zip(self.ball_joint_qpos_adrs, self.ball_joint_qvel_adrs, strict=True)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +166,11 @@ def validate_newton_portable_metadata(
         if any(entity.root_mode == "kinematic" for entity in layout.entities):
             raise NotImplementedError(
                 "Newton portable entity composition does not support kinematic mirrors"
+            )
+        if item.ball_joint_names:
+            raise NotImplementedError(
+                "Newton portable entity composition does not yet support ball joints; "
+                "compose the scene as a single MJCF model file instead"
             )
 
 
@@ -529,8 +544,9 @@ def scan_newton_model_metadata(mujoco: Any, scene: SceneCfg) -> NewtonModelMetad
     _reject_silent_geometry_gaps(mujoco, model, source_model_file)
 
     free = int(mujoco.mjtJoint.mjJNT_FREE)
+    ball = int(mujoco.mjtJoint.mjJNT_BALL)
     single_dof = {int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE)}
-    supported_joints = single_dof | {free}
+    supported_joints = single_dof | {free, ball}
     unsupported_joints = [
         joint_id
         for joint_id in range(int(model.njnt))
@@ -538,8 +554,8 @@ def scan_newton_model_metadata(mujoco: Any, scene: SceneCfg) -> NewtonModelMetad
     ]
     if unsupported_joints:
         raise NotImplementedError(
-            "newton backend supports only free, hinge, and slide joints; unsupported "
-            f"MJCF joint ids: {unsupported_joints}"
+            "newton backend supports only free, ball, hinge, and slide joints; "
+            f"unsupported MJCF joint ids: {unsupported_joints}"
         )
     root_qpos_dim, root_qvel_dim = (
         (7, 6) if int(model.njnt) and int(model.jnt_type[0]) == free else (0, 0)
@@ -558,6 +574,28 @@ def scan_newton_model_metadata(mujoco: Any, scene: SceneCfg) -> NewtonModelMetad
         joint_names.append(str(name))
         joint_qpos_adrs.append(int(model.jnt_qposadr[joint_id]))
         joint_dof_adrs.append(int(model.jnt_dofadr[joint_id]))
+
+    # Ball joints are passive multi-DoF joints: like the free root they are
+    # not name-addressable through the single-DoF joint API, and the actuator
+    # gate below keeps rejecting actuators that target them. MJCF joints have
+    # no orientation attribute, so the child anchor rotation is structurally
+    # identity and Newton's parent-anchor state layout differs from the
+    # public MJCF layout only by the quaternion order and the body-frame
+    # angular velocity, which the backend translates exactly.
+    ball_joint_names: list[str] = []
+    ball_joint_qpos_adrs: list[int] = []
+    ball_joint_qvel_adrs: list[int] = []
+    for joint_id in range(int(model.njnt)):
+        if int(model.jnt_type[joint_id]) != ball:
+            continue
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+        if not name:
+            raise NotImplementedError(
+                f"newton backend requires named ball joints; joint id {joint_id} is unnamed"
+            )
+        ball_joint_names.append(str(name))
+        ball_joint_qpos_adrs.append(int(model.jnt_qposadr[joint_id]))
+        ball_joint_qvel_adrs.append(int(model.jnt_dofadr[joint_id]))
 
     actuator_names: list[str] = []
     actuator_joint_names: list[str] = []
@@ -600,8 +638,10 @@ def scan_newton_model_metadata(mujoco: Any, scene: SceneCfg) -> NewtonModelMetad
         for key_id in range(int(model.nkey))
         if mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_KEY, key_id)
     )
-    non_free = np.asarray(model.jnt_type, dtype=np.int32) != free
-    joint_range = np.asarray(model.jnt_range, dtype=np.float32)[non_free]
+    single_dof_rows = np.isin(
+        np.asarray(model.jnt_type, dtype=np.int32), np.asarray(sorted(single_dof), dtype=np.int32)
+    )
+    joint_range = np.asarray(model.jnt_range, dtype=np.float32)[single_dof_rows]
     body_names = tuple(
         str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id) or "")
         for body_id in range(int(model.nbody))
@@ -636,6 +676,9 @@ def scan_newton_model_metadata(mujoco: Any, scene: SceneCfg) -> NewtonModelMetad
         joint_names=tuple(joint_names),
         joint_qpos_adrs=tuple(joint_qpos_adrs),
         joint_dof_adrs=tuple(joint_dof_adrs),
+        ball_joint_names=tuple(ball_joint_names),
+        ball_joint_qpos_adrs=tuple(ball_joint_qpos_adrs),
+        ball_joint_qvel_adrs=tuple(ball_joint_qvel_adrs),
         actuator_names=tuple(actuator_names),
         actuator_joint_names=tuple(actuator_joint_names),
         actuator_target_kinds=tuple(actuator_target_kinds),
