@@ -356,6 +356,7 @@ class NewtonBackend(SimBackend):
         self._tensor_raw_quat_indices: Any = None
         self._tensor_control_q_indices: Any = None
         self._tensor_control_qd_indices: Any = None
+        self._tensor_portable_indices: dict[str, dict[str, Any]] | None = None
         self._shape_world: np.ndarray | None = None
         self._contact_sensor_pairs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._playback_model_validated = False
@@ -769,6 +770,9 @@ class NewtonBackend(SimBackend):
                 dtype=torch.float32,
                 device=self._tensor_qpos.device,
             )
+        if self._portable_multi_entity:
+            self._tensor_refresh_portable_state()
+            return
         self._tensor_refresh_body_state()
         qpos_raw = self._deps.warp.to_torch(self._view.get_dof_positions(self._state)).squeeze(1)
         qvel_raw = self._deps.warp.to_torch(self._view.get_dof_velocities(self._state)).squeeze(1)
@@ -824,6 +828,9 @@ class NewtonBackend(SimBackend):
             self._tensor_body_ipos = torch.from_numpy(
                 np.ascontiguousarray(self._metadata.body_ipos[1:], dtype=np.float32)
             ).to(device)
+        if self._portable_multi_entity:
+            self._tensor_refresh_portable_body_state()
+            return
 
         self._deps.warp.synchronize_device(self._device)
         link_q = self._deps.warp.to_torch(self._view.get_link_transforms(self._state)).squeeze(1)
@@ -840,6 +847,126 @@ class NewtonBackend(SimBackend):
         self._tensor_body_quat.copy_(public_quat)
         self._tensor_body_ang_vel.copy_(omega_w)
         self._tensor_body_lin_vel.copy_(link_qd[..., :3] - torch_cross(torch, omega_w, offset_w))
+        self._tensor_body_state_stale = False
+
+    def _portable_tensor_layout(self) -> dict[str, dict[str, Any]]:
+        """Build the device-resident per-entity column map for tensor paths."""
+        import torch
+
+        if self._tensor_portable_indices is not None:
+            return self._tensor_portable_indices
+        assert self._entity_layout is not None
+        device = self._tensor_device()
+        layout: dict[str, dict[str, Any]] = {}
+        for entity in self._entity_layout.entities:
+            entry: dict[str, Any] = {
+                "q": torch.tensor(entity.qpos_indices, dtype=torch.int64, device=device),
+                "v": torch.tensor(entity.qvel_indices, dtype=torch.int64, device=device),
+                "body_rows": torch.tensor(
+                    [body_id - 1 for body_id in entity.body_ids],
+                    dtype=torch.int64,
+                    device=device,
+                ),
+                "native_rows": torch.tensor(
+                    self._entity_runtimes[entity.name].view_body_indices,
+                    dtype=torch.int64,
+                    device=device,
+                ),
+                "root_quat": None,
+                "root_v": None,
+                "root_row": -1,
+            }
+            if entity.root_mode == "floating":
+                entry["root_quat"] = torch.tensor(
+                    entity.root_qpos_indices[3:7], dtype=torch.int64, device=device
+                )
+                entry["root_v"] = torch.tensor(
+                    entity.root_qvel_indices, dtype=torch.int64, device=device
+                )
+                entry["root_row"] = entity.body_ids[0] - 1
+            layout[entity.name] = entry
+        self._tensor_portable_indices = layout
+        return layout
+
+    def _tensor_refresh_portable_body_state(self) -> None:
+        """Gather per-entity link arrays into full-scene Torch body state."""
+        import torch
+
+        assert self._entity_layout is not None
+        indices = self._portable_tensor_layout()
+        self._deps.warp.synchronize_device(self._device)
+        for entity_name, runtime in self._entity_runtimes.items():
+            entry = indices[entity_name]
+            body_rows = entry["body_rows"]
+            native_rows = entry["native_rows"]
+            link_q = (
+                self._deps.warp.to_torch(runtime.view.get_link_transforms(self._state))
+                .squeeze(1)
+                .index_select(1, native_rows)
+            )
+            link_qd = (
+                self._deps.warp.to_torch(runtime.view.get_link_velocities(self._state))
+                .squeeze(1)
+                .index_select(1, native_rows)
+            )
+            raw_quat = link_q[..., 3:7]
+            public_quat = torch.cat((raw_quat[..., 3:4], raw_quat[..., 0:3]), dim=-1)
+            omega_w = link_qd[..., 3:6]
+            offset_w = torch_quat_rotate(torch, public_quat, self._tensor_body_ipos[body_rows])
+            self._tensor_body_pos[:, body_rows] = link_q[..., :3]
+            self._tensor_body_quat[:, body_rows] = public_quat
+            self._tensor_body_ang_vel[:, body_rows] = omega_w
+            self._tensor_body_lin_vel[:, body_rows] = link_qd[..., :3] - torch_cross(
+                torch, omega_w, offset_w
+            )
+        self._tensor_body_state_stale = False
+
+    def _tensor_refresh_portable_state(self) -> None:
+        """Gather per-entity dof arrays into full-scene public-layout state."""
+        import torch
+
+        assert self._entity_layout is not None
+        self._tensor_refresh_body_state()
+        indices = self._portable_tensor_layout()
+        self._tensor_qpos.zero_()
+        self._tensor_qvel.zero_()
+        for entity_name, runtime in self._entity_runtimes.items():
+            entry = indices[entity_name]
+            if entry["q"].numel():
+                qpos_raw = self._deps.warp.to_torch(
+                    runtime.view.get_dof_positions(self._state)
+                ).squeeze(1)
+                self._tensor_qpos[:, entry["q"]] = qpos_raw
+                if entry["root_quat"] is not None:
+                    xyzw = self._tensor_qpos[:, entry["root_quat"]]
+                    self._tensor_qpos[:, entry["root_quat"]] = torch.cat(
+                        (xyzw[:, 3:4], xyzw[:, 0:3]), dim=1
+                    )
+            if entry["v"].numel():
+                qvel_raw = self._deps.warp.to_torch(
+                    runtime.view.get_dof_velocities(self._state)
+                ).squeeze(1)
+                self._tensor_qvel[:, entry["v"]] = qvel_raw
+        # Root velocities convert exactly like the portable host cache: each
+        # floating entity's public qvel carries link-origin linear velocity and
+        # body-frame angular velocity, while Newton exposes world-frame
+        # quantities at the COM.
+        for entity_name in self._entity_runtimes:
+            entry = indices[entity_name]
+            if entry["root_v"] is None:
+                continue
+            root_row = entry["root_row"]
+            root_quat = self._tensor_body_quat[:, root_row]
+            root_omega = self._tensor_body_ang_vel[:, root_row]
+            root_offset = torch_quat_rotate(torch, root_quat, self._tensor_body_ipos[root_row])
+            root_v = entry["root_v"]
+            self._tensor_qvel[:, root_v[0:3]] = self._tensor_qvel[:, root_v[0:3]] - torch_cross(
+                torch, root_omega, root_offset
+            )
+            self._tensor_qvel[:, root_v[3:6]] = torch_quat_rotate_inverse(
+                torch, root_quat, root_omega
+            )
+        self._tensor_state_stale = False
         self._tensor_body_state_stale = False
 
     def _tensor_ensure_state(self) -> None:
@@ -1323,20 +1450,18 @@ class NewtonBackend(SimBackend):
         return self._metadata.actuator_kp.copy(), self._metadata.actuator_kd.copy()
 
     def get_tensor_execution(self) -> TensorExecution:
-        if not self._tensor_lifecycle_supported:
-            return TensorExecution.UNSUPPORTED
         return TensorExecution.DEVICE_RESIDENT
 
     def get_tensor_capabilities(self) -> TensorLifecycleCapabilities:
-        if not self._tensor_lifecycle_supported:
-            return TensorLifecycleCapabilities(execution=TensorExecution.UNSUPPORTED)
         return TensorLifecycleCapabilities(
             execution=TensorExecution.DEVICE_RESIDENT,
             state_views=True,
             state_fields=frozenset({"qpos", "qvel"}),
             sensor_views=True,
             stepping=True,
-            selected_reset=not self._portable_mode,
+            selected_reset=True,
+            # Device-resident reset randomization and packed reset stay closed for
+            # portable scenes; the training-scale follow-up owns that family.
             reset_randomization=not self._portable_mode,
             device_reset_randomization=not self._portable_mode,
             packed_reset=not self._portable_mode,
@@ -1345,7 +1470,7 @@ class NewtonBackend(SimBackend):
                 if not self._portable_mode
                 else frozenset()
             ),
-            mask_selected_reset=not self._portable_mode,
+            mask_selected_reset=True,
             process_topology=TensorProcessTopology.IN_PROCESS,
             data_plane=TensorDataPlane.DIRECT,
             stream_event_ownership=(
@@ -1355,9 +1480,7 @@ class NewtonBackend(SimBackend):
             # Declare the Torch family; ``_tensor_device`` validates the exact
             # backend-bound CUDA index at the tensor-method boundary.
             torch_devices=(self._device.split(":", 1)[0],),
-            selected_reset_publication=(
-                SelectedResetPublication.AUTHORITATIVE_VIEWS if not self._portable_mode else None
-            ),
+            selected_reset_publication=SelectedResetPublication.AUTHORITATIVE_VIEWS,
         )
 
     def get_tensor_runtime_diagnostics(self) -> dict[str, TensorRuntimeDiagnostic]:
@@ -1373,29 +1496,21 @@ class NewtonBackend(SimBackend):
         return PublicStateWidths(nq=self._metadata.nq, nv=self._metadata.nv)
 
     @property
-    def _tensor_lifecycle_supported(self) -> bool:
-        # Portable multi-entity views need a public-layout gather/scatter. Until
-        # that mapping is implemented, do not advertise any tensor lifecycle.
-        return not self._portable_mode or self._portable_entity_count == 1
-
-    @property
     def _portable_entity_count(self) -> int:
         if self._entity_layout is not None:
             return len(self._entity_layout.entities)
         return len(self._entity_runtimes)
 
-    def _require_tensor_lifecycle(self, operation: str) -> None:
-        if not self._tensor_lifecycle_supported:
-            count = self._portable_entity_count
-            raise NotImplementedError(
-                f"Newton tensor {operation} supports at most one physical articulation; "
-                f"portable scene declares {count}"
-            )
+    @property
+    def _portable_multi_entity(self) -> bool:
+        # Single-entity portable scenes keep the whole-model tensor paths: their
+        # one articulation view covers the model, so the per-entity
+        # gather/scatter below only engages for genuinely multi-entity scenes.
+        return self._portable_mode and self._portable_entity_count > 1
 
     def get_state_views(
         self, fields: tuple[str, ...] | str | None = None, device: Any | None = None
     ) -> Mapping[str, Any]:
-        self._require_tensor_lifecycle("state views")
         requested = (fields,) if isinstance(fields, str) else fields
         supported = {"qpos", "qvel"}
         selected = supported if requested is None else set(requested)
@@ -1421,7 +1536,6 @@ class NewtonBackend(SimBackend):
     def get_sensor_view(self, name: str, device: Any | None = None) -> Any:
         """Return a live device view for the negotiated G1 sensor subset."""
 
-        self._require_tensor_lifecycle("sensor views")
         resolved_device = self._tensor_device(device)
         self._resolve_tensor_sensor_request(name)
         self._tensor_ensure_state()
@@ -1665,7 +1779,6 @@ class NewtonBackend(SimBackend):
     def step_tensor(self, ctrl: Any, nsteps: int = 1) -> dict | None:
         import torch
 
-        self._require_tensor_lifecycle("step")
         self._require_state("tensor step")
         if self._pre_step_control_fn is not None:
             raise NotImplementedError(
@@ -1779,12 +1892,7 @@ class NewtonBackend(SimBackend):
     ) -> dict | None:
         import torch
 
-        self._require_tensor_lifecycle("selected reset")
         self._require_state("tensor reset")
-        if self._portable_mode:
-            raise NotImplementedError(
-                "Newton tensor selected reset supports the single-articulation profile only"
-            )
         values = {"env_indices": env_indices, "qpos": qpos, "qvel": qvel}
         for name, value in values.items():
             if not isinstance(value, torch.Tensor):
@@ -1818,24 +1926,27 @@ class NewtonBackend(SimBackend):
         started = time.perf_counter()
         if tensor_randomization is not None:
             self._apply_tensor_reset_randomization(env_indices, tensor_randomization)
-        full_qpos, full_qvel, raw_qpos, raw_qvel, mask, solver_mask = self._prepare_tensor_reset(
-            env_indices, qpos, qvel
-        )
-        self._view.set_dof_positions(
-            self._state,
-            self._deps.warp.from_torch(raw_qpos.unsqueeze(1).contiguous()),
-            mask=mask,
-        )
-        self._view.set_dof_velocities(
-            self._state,
-            self._deps.warp.from_torch(raw_qvel.unsqueeze(1).contiguous()),
-            mask=mask,
-        )
-        self._deps.newton.eval_fk(
-            self._model, self._state.joint_q, self._state.joint_qd, self._state
-        )
-        self._solver.reset(self._state, self._deps.warp.from_torch(solver_mask), flags=0)
-        self._publish_tensor_reset(full_qpos, full_qvel)
+        if self._portable_multi_entity:
+            self._commit_portable_tensor_reset(env_indices, qpos, qvel)
+        else:
+            full_qpos, full_qvel, raw_qpos, raw_qvel, mask, solver_mask = (
+                self._prepare_tensor_reset(env_indices, qpos, qvel)
+            )
+            self._view.set_dof_positions(
+                self._state,
+                self._deps.warp.from_torch(raw_qpos.unsqueeze(1).contiguous()),
+                mask=mask,
+            )
+            self._view.set_dof_velocities(
+                self._state,
+                self._deps.warp.from_torch(raw_qvel.unsqueeze(1).contiguous()),
+                mask=mask,
+            )
+            self._deps.newton.eval_fk(
+                self._model, self._state.joint_q, self._state.joint_qd, self._state
+            )
+            self._solver.reset(self._state, self._deps.warp.from_torch(solver_mask), flags=0)
+            self._publish_tensor_reset(full_qpos, full_qvel)
         return {
             "timing": {
                 "tensor_reset_ms": (time.perf_counter() - started) * 1000.0,
@@ -1858,12 +1969,7 @@ class NewtonBackend(SimBackend):
 
         if full_refresh:
             raise NotImplementedError("newton tensor mask reset is a selected-row boundary")
-        self._require_tensor_lifecycle("mask reset")
         self._require_state("tensor mask reset")
-        if self._portable_mode:
-            raise NotImplementedError(
-                "newton tensor mask reset supports the single-articulation profile only"
-            )
         values = {"reset_mask": reset_mask, "qpos": qpos, "qvel": qvel}
         for name, value in values.items():
             if not isinstance(value, torch.Tensor):
@@ -2100,6 +2206,88 @@ class NewtonBackend(SimBackend):
         )
         self._solver.reset(self._state, warp_mask, flags=0)
         self._upload_control_state()
+
+    def _commit_portable_tensor_reset(self, env_indices: Any, qpos: Any, qvel: Any) -> None:
+        """Commit a selected-row tensor reset through per-entity articulation views."""
+
+        import torch
+
+        assert self._tensor_qpos is not None
+        assert self._tensor_qvel is not None
+        full_qpos = self._tensor_qpos.clone()
+        full_qvel = self._tensor_qvel.clone()
+        full_qpos[env_indices] = qpos
+        full_qvel[env_indices] = qvel
+        # Same device-resident mask construction as ``_prepare_tensor_reset``;
+        # per-entity views select one articulation per world with it.
+        mask = torch.zeros((self._num_envs,), dtype=torch.bool, device=env_indices.device)
+        mask.scatter_(
+            0,
+            env_indices,
+            torch.ones_like(env_indices, dtype=torch.bool),
+        )
+        solver_mask = torch.zeros(
+            (self._num_envs + 1,), dtype=torch.bool, device=env_indices.device
+        )
+        solver_mask[: self._num_envs].copy_(mask)
+        warp = self._deps.warp
+        warp_mask = warp.from_torch(mask)
+        indices = self._portable_tensor_layout()
+        for entity_name, runtime in self._entity_runtimes.items():
+            entry = indices[entity_name]
+            q_columns = entry["q"]
+            v_columns = entry["v"]
+            # Zero-DoF static entities own no state; skip their views exactly
+            # like the host-path ``_commit_portable_state``.
+            if q_columns.numel():
+                block_q = full_qpos[:, q_columns]
+                if entry["root_quat"] is not None:
+                    # Public wxyz root quat to Newton's native xyzw, matching
+                    # ``_wxyz_to_xyzw`` on the host path.
+                    block_q = torch.cat(
+                        (
+                            block_q[:, :3],
+                            block_q[:, 4:7],
+                            block_q[:, 3:4],
+                            block_q[:, 7:],
+                        ),
+                        dim=1,
+                    )
+                runtime.view.set_dof_positions(
+                    self._state,
+                    warp.from_torch(block_q.unsqueeze(1).contiguous()),
+                    mask=warp_mask,
+                )
+            if v_columns.numel():
+                block_v = full_qvel[:, v_columns]
+                if entry["root_v"] is not None:
+                    # Public root velocity is link-origin linear plus body-frame
+                    # angular; Newton stores world-frame angular and COM-origin
+                    # linear (mirror of ``_raw_state_from_public``).
+                    quat = full_qpos[:, entry["root_quat"]]
+                    omega_world = torch_quat_rotate(torch, quat, block_v[:, 3:6])
+                    offset_w = torch_quat_rotate(
+                        torch, quat, self._tensor_body_ipos[entry["root_row"]]
+                    )
+                    block_v = torch.cat(
+                        (
+                            block_v[:, :3] + torch_cross(torch, omega_world, offset_w),
+                            omega_world,
+                            block_v[:, 6:],
+                        ),
+                        dim=1,
+                    )
+                runtime.view.set_dof_velocities(
+                    self._state,
+                    warp.from_torch(block_v.unsqueeze(1).contiguous()),
+                    mask=warp_mask,
+                )
+            if q_columns.numel() or v_columns.numel():
+                runtime.view.eval_fk(self._state, mask=warp_mask)
+        self._solver.reset(self._state, warp.from_torch(solver_mask), flags=0)
+        # Tensor resets preserve the device control state, matching the
+        # single-articulation tensor path, so no control upload happens here.
+        self._publish_tensor_reset(full_qpos, full_qvel)
 
     def _host_set_state(
         self,

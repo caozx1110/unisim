@@ -829,3 +829,235 @@ def test_mixed_shape_variants_fail_before_solver_construction(tmp_path: Path):
         assert backend._solver is None
     finally:
         backend.close()
+
+
+def _floating_actuated_scene(tmp_path: Path) -> SceneCfg:
+    """Two floating actuated entities under gravity for tensor acceptance."""
+    gravity = "0 0 -9.81"
+    return SceneCfg(
+        entity_assets=(
+            SceneEntitySpec(
+                "obj_a",
+                _object(
+                    tmp_path,
+                    "obj_a",
+                    radius=0.1,
+                    mass=0.5,
+                    com=(0.01, 0.0, 0.0),
+                    gravity=gravity,
+                    actuated=True,
+                ),
+                initial_state=EntityInitialState((0.0, 0.0, 2.0)),
+            ),
+            SceneEntitySpec(
+                "obj_b",
+                _object(
+                    tmp_path,
+                    "obj_b",
+                    radius=0.15,
+                    mass=1.5,
+                    com=(0.03, 0.0, 0.0),
+                    gravity=gravity,
+                    actuated=True,
+                    diaginertia=0.2,
+                ),
+                initial_state=EntityInitialState((1.0, 0.0, 3.0)),
+            ),
+        ),
+    )
+
+
+def _quat_wxyz(axis: tuple[float, float, float], angle: float) -> np.ndarray:
+    axis_array = np.asarray(axis, dtype=np.float64)
+    axis_array /= np.linalg.norm(axis_array)
+    scalar = np.cos(angle / 2.0)
+    vector = np.sin(angle / 2.0) * axis_array
+    return np.concatenate(([scalar], vector)).astype(np.float32)
+
+
+def test_portable_multi_entity_tensor_lifecycle_matches_per_entity_references(tmp_path: Path):
+    torch = pytest.importorskip("torch")
+    from unisim.dr.types import TensorResetRandomizationPayload
+
+    scene = _floating_actuated_scene(tmp_path)
+    backend = _backend(scene)
+    ref_a = _backend(SceneCfg(model_file=str(tmp_path / "obj_a.xml")))
+    ref_b = _backend(SceneCfg(model_file=str(tmp_path / "obj_b.xml")))
+    try:
+        device = torch.device(backend._device)
+        capabilities = backend.get_tensor_capabilities()
+        assert capabilities.execution.value == "device_resident"
+        assert capabilities.state_views and capabilities.stepping
+        assert capabilities.selected_reset and capabilities.mask_selected_reset
+        # Device reset randomization and packed reset stay closed on portable
+        # scenes; the training-scale follow-up owns that family.
+        assert not capabilities.reset_randomization
+        assert not capabilities.device_reset_randomization
+        assert not capabilities.packed_reset
+        assert capabilities.packed_reset_fields == frozenset()
+
+        layout = backend.get_scene_layout()
+        assert backend.num_actuators == 2
+        entities = {name: layout.get_entity(name) for name in ("obj_a", "obj_b")}
+        qcols = {name: list(entity.qpos_indices) for name, entity in entities.items()}
+        vcols = {name: list(entity.qvel_indices) for name, entity in entities.items()}
+        acols = {name: list(entity.actuator_indices) for name, entity in entities.items()}
+        nq, nv = layout.nq, layout.nv
+
+        views0 = backend.get_state_views()
+        qpos0 = views0["qpos"].clone()
+        qvel0 = views0["qvel"].clone()
+        assert qpos0.shape == (5, nq) and qvel0.shape == (5, nv)
+        np.testing.assert_allclose(
+            qpos0[:, qcols["obj_a"][:3]].cpu().numpy(),
+            np.tile((0.0, 0.0, 2.0), (5, 1)),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            qpos0[:, qcols["obj_b"][:3]].cpu().numpy(),
+            np.tile((1.0, 0.0, 3.0), (5, 1)),
+            atol=1e-6,
+        )
+
+        rows = torch.tensor([1, 3], dtype=torch.int64, device=device)
+        per_entity_qpos = {
+            "obj_a": np.array(
+                [
+                    [0.5, 0.2, 1.5, *_quat_wxyz((0, 1, 0), np.pi / 2), 0.3],
+                    [-0.3, 0.7, 2.5, *_quat_wxyz((1, 0, 0), np.pi / 4), -0.5],
+                ],
+                dtype=np.float32,
+            ),
+            "obj_b": np.array(
+                [
+                    [1.5, -0.4, 3.5, *_quat_wxyz((0, 0, 1), np.pi / 3), 0.2],
+                    [0.8, 0.9, 2.8, *_quat_wxyz((1, 1, 0), np.pi / 6), 0.6],
+                ],
+                dtype=np.float32,
+            ),
+        }
+        per_entity_qvel = {
+            "obj_a": np.array(
+                [
+                    [0.10, -0.20, 0.30, 0.50, -0.30, 0.20, 0.70],
+                    [-0.40, 0.10, 0.20, 0.10, 0.40, -0.60, -0.80],
+                ],
+                dtype=np.float32,
+            ),
+            "obj_b": np.array(
+                [
+                    [0.05, 0.25, -0.15, -0.20, 0.35, 0.45, -0.30],
+                    [0.30, -0.05, 0.40, 0.60, 0.15, -0.25, 0.50],
+                ],
+                dtype=np.float32,
+            ),
+        }
+        payload_qpos = np.zeros((2, nq), dtype=np.float32)
+        payload_qvel = np.zeros((2, nv), dtype=np.float32)
+        for name in ("obj_a", "obj_b"):
+            payload_qpos[:, qcols[name]] = per_entity_qpos[name]
+            payload_qvel[:, vcols[name]] = per_entity_qvel[name]
+
+        # A randomization payload fails closed on the portable device plane.
+        with pytest.raises(NotImplementedError, match="device terms: kp"):
+            backend.set_state_tensor(
+                rows,
+                torch.as_tensor(payload_qpos, device=device),
+                torch.as_tensor(payload_qvel, device=device),
+                TensorResetRandomizationPayload(
+                    kp=torch.ones((2, backend.num_actuators), dtype=torch.float32, device=device)
+                ),
+            )
+
+        result = backend.set_state_tensor(
+            rows,
+            torch.as_tensor(payload_qpos, device=device),
+            torch.as_tensor(payload_qvel, device=device),
+        )
+        assert result is not None and "tensor_reset_ms" in result["timing"]
+        views1 = backend.get_state_views()
+        untouched = [0, 2, 4]
+        torch.testing.assert_close(
+            views1["qpos"][rows], torch.as_tensor(payload_qpos, device=device)
+        )
+        torch.testing.assert_close(
+            views1["qvel"][rows], torch.as_tensor(payload_qvel, device=device)
+        )
+        torch.testing.assert_close(views1["qpos"][untouched], qpos0[untouched])
+        torch.testing.assert_close(views1["qvel"][untouched], qvel0[untouched])
+
+        # The single-entity reference backends start at the MJCF default root
+        # pose, so align every row with the portable scene's authored initial
+        # state before mirroring the selected reset; otherwise untouched rows
+        # legitimately diverge.
+        all_rows = np.arange(5, dtype=np.intp)
+        for name, ref in (("obj_a", ref_a), ("obj_b", ref_b)):
+            ref._host_set_state(
+                all_rows,
+                qpos0[:, qcols[name]].cpu().numpy(),
+                qvel0[:, vcols[name]].cpu().numpy(),
+            )
+        host_rows = np.array([1, 3], dtype=np.intp)
+        ref_a._host_set_state(host_rows, per_entity_qpos["obj_a"], per_entity_qvel["obj_a"])
+        ref_b._host_set_state(host_rows, per_entity_qpos["obj_b"], per_entity_qvel["obj_b"])
+
+        ctrl = np.zeros((5, backend.num_actuators), dtype=np.float32)
+        ctrl[:, acols["obj_a"]] = 0.6
+        ctrl[:, acols["obj_b"]] = -0.4
+        backend.step_tensor(torch.as_tensor(ctrl, device=device), nsteps=3)
+        ref_a._host_step(ctrl[:, acols["obj_a"]], nsteps=3)
+        ref_b._host_step(ctrl[:, acols["obj_b"]], nsteps=3)
+
+        views2 = backend.get_state_views()
+        for name, ref in (("obj_a", ref_a), ("obj_b", ref_b)):
+            # References read through their host plane on purpose: the legacy
+            # single-articulation tensor refresh carries the known #427 root
+            # angular-velocity bug, which is out of scope here.
+            np.testing.assert_allclose(
+                views2["qpos"][:, qcols[name]].cpu().numpy(),
+                ref._qpos_cache,
+                rtol=2e-5,
+                atol=2e-5,
+            )
+            np.testing.assert_allclose(
+                views2["qvel"][:, vcols[name]].cpu().numpy(),
+                ref._qvel_cache,
+                rtol=2e-4,
+                atol=2e-4,
+            )
+
+        # Tensor views and the portable host cache agree after a host refresh.
+        backend._refresh_host_cache(sensor_dt=None)
+        np.testing.assert_allclose(
+            backend._qpos_cache, views2["qpos"].cpu().numpy(), rtol=1e-5, atol=1e-6
+        )
+        np.testing.assert_allclose(
+            backend._qvel_cache, views2["qvel"].cpu().numpy(), rtol=1e-5, atol=1e-6
+        )
+
+        # Mask variant: return rows {0, 4} to the initial state, preserve the
+        # stepped rows, and keep the empty-mask boundary a no-op.
+        reset_mask = torch.zeros(5, dtype=torch.bool, device=device)
+        reset_mask[[0, 4]] = True
+        backend.set_state_tensor_mask(reset_mask, qpos0.contiguous(), qvel0.contiguous())
+        views3 = backend.get_state_views()
+        torch.testing.assert_close(views3["qpos"][[0, 4]], qpos0[[0, 4]])
+        torch.testing.assert_close(views3["qvel"][[0, 4]], qvel0[[0, 4]])
+        torch.testing.assert_close(views3["qpos"][[1, 2, 3]], views2["qpos"][[1, 2, 3]])
+        torch.testing.assert_close(views3["qvel"][[1, 2, 3]], views2["qvel"][[1, 2, 3]])
+        empty = backend.set_state_tensor_mask(
+            torch.zeros(5, dtype=torch.bool, device=device),
+            views3["qpos"].contiguous(),
+            views3["qvel"].contiguous(),
+        )
+        assert empty == {"timing": {"set_state_tensor_mask_ms": 0.0}}
+
+        # Stepping after mask resets still works (eval_fk mask interop held).
+        backend.step_tensor(torch.as_tensor(ctrl, device=device), nsteps=2)
+        views4 = backend.get_state_views()
+        assert torch.isfinite(views4["qpos"]).all()
+        assert torch.isfinite(views4["qvel"]).all()
+    finally:
+        backend.close()
+        ref_a.close()
+        ref_b.close()

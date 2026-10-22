@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Opened the Newton device-resident tensor lifecycle to portable multi-entity scenes (#432). `get_state_views()`, `step_tensor()`, `set_state_tensor()`, and `set_state_tensor_mask()` now serve portable scenes with more than one physical entity instead of failing closed on the single-articulation gate: full-scene public-layout `qpos`/`qvel` views are gathered from — and selected-row resets scattered through — the per-entity `ArticulationView` bindings, with floating-root quaternion (wxyz↔xyzw) and root-velocity (link-origin/body-frame ↔ COM/world-frame) conversions mirroring the portable host cache. Single-entity portable scenes keep the whole-model tensor paths unchanged, tensor resets preserve the device control state exactly like the single-articulation tensor path, and portable reset randomization plus packed reset remain closed for the training-scale follow-up. Acceptance steps selected rows on a two-floating-entity scene against per-entity single-model reference backends.
 - Fixed Motrix packed `geom_friction` resets for MJCF scenes containing visual-only geoms. The adapter now retains visual-only rows from the complete public baseline, so unchanged rows round-trip while selected collision rows are applied through both direct tensor/mask resets and packed-reset transactions. An explicit request to change a visual-only friction row still fails closed (#428).
 
 ## 2.1.1 - 2026-10-22

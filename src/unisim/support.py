@@ -426,7 +426,8 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         declare(
             "tensor.execution",
             exact,
-            "DEVICE_RESIDENT, in-process direct storage for a single articulation",
+            "DEVICE_RESIDENT, in-process direct storage for single-articulation and "
+            "portable multi-entity scenes",
             newton_tensor,
         )
         declare(
@@ -456,23 +457,24 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
         declare(
             "tensor.selected_reset",
             exact,
-            "Non-portable single-articulation selected-row tensor reset",
+            "Selected-row tensor reset for single-articulation and portable "
+            "multi-entity scenes",
             newton_tensor,
         )
         declare(
             "tensor.reset_randomization",
             exact,
-            "Selected-row kp/kd reset randomization",
+            "Non-portable selected-row kp/kd reset randomization",
         )
         declare(
             "tensor.device_reset_randomization",
             exact,
-            "Device-resident kp/kd scatter into MuJoCo-family actuator arrays",
+            "Non-portable device-resident kp/kd scatter into MuJoCo-family actuator arrays",
         )
         declare(
             "tensor.packed_reset",
             exact,
-            "Packed reset transaction with qpos/qvel and selected-row kp/kd",
+            "Non-portable packed reset transaction with qpos/qvel and selected-row kp/kd",
         )
         declare(
             "tensor.packed_reset_mocap",
