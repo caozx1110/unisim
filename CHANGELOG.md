@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed Motrix packed `geom_friction` resets for MJCF scenes containing visual-only geoms. The adapter now retains visual-only rows from the complete public baseline, so unchanged rows round-trip while selected collision rows are applied through both direct tensor/mask resets and packed-reset transactions. An explicit request to change a visual-only friction row still fails closed (#428).
+
 ## 2.1.1 - 2026-10-22
 
 - The release distribution now ships a universal pure-Python wheel alongside the source distribution (#425). The base package is pure Python and depends only on NumPy, so each release publishes exactly one `unisim_core-<version>-py3-none-any.whl` (no OS/ABI variants) plus the unchanged `unisim-core-<version>.tar.gz`; the wheel lets downstream resolvers read package metadata without entering the sdist unpack/build path, which an experimental variant-aware uv extractor could not handle for the `2.1.0` sdist (UniLab #2500). The base wheel contains no native binaries (`.so`/`.pyd`/`.dylib`/`.dll`), tests, caches, or CI configuration; optional engine SDKs remain extras and keep their own per-platform support matrices — the universal base wheel does not imply every optional backend is available on every platform, and the sdist continues to be published. `release.yml` now builds both distributions, verifies the wheel tag and the pure-Python content/metadata boundary, Twine-checks both, installs and fake-backend smoke-tests the sdist and the wheel (the wheel via `uv pip install --only-binary :all:`), and uploads both to PyPI through trusted publishing and to the GitHub Release; the pre-release `ci.yml` package job mirrors the same build, Twine check, and wheel-only install smoke. The tag/version verification logic is unchanged, and the already-published `2.1.0` artifacts are not modified.

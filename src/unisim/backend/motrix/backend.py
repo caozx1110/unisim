@@ -1132,11 +1132,13 @@ class MotrixBackend(SimBackend):
                 or int(getattr(geom, "collision_affinity", 0)) != 0
             )
         )
-        self._supports_geom_friction_override = all(
+        self._supports_geom_friction_override = bool(self._geom_friction_override_ids) and all(
             callable(getattr(geom, "get_friction_override", None))
-            and callable(getattr(geom, "set_friction_override", None))
+            and (
+                geom_id not in self._geom_friction_override_ids
+                or callable(getattr(geom, "set_friction_override", None))
+            )
             for geom_id, geom in self._geoms_by_id.items()
-            if geom_id in self._geom_friction_override_ids
         )
         self._supports_gravity_override = callable(
             getattr(self._model, "get_gravity_override", None)
@@ -1166,8 +1168,10 @@ class MotrixBackend(SimBackend):
                 (int(self._model.num_geoms), 3), dtype=np.float32
             )
             if self._supports_geom_friction_override:
-                for geom_id in self._geom_friction_override_ids:
-                    geom = self._geoms_by_id[geom_id]
+                # Visual-only geoms cannot be randomized by Motrix, but their
+                # initial values still participate in complete public tables.
+                # Retain them so unchanged visual rows compare equal during reset.
+                for geom_id, geom in self._geoms_by_id.items():
                     self._default_geom_friction[geom_id] = np.asarray(
                         geom.get_friction_override(self._data),
                         dtype=np.float32,
