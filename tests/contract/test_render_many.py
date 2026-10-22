@@ -216,3 +216,50 @@ class TestGridFitDistance:
         offsets = self.render_many.get_grid_offsets(4, spacing=1.0)
         fit = self.render_many._grid_fit_distance(offsets, self.model, (1280, 720))
         assert fit == pytest.approx(1.0 / math.tan(math.radians(45.0)), rel=1e-6)
+
+
+class TestRenderModeFailClosed:
+    """record mode fails closed when the GL backend is unusable; auto degrades."""
+
+    @pytest.fixture(autouse=True)
+    def _unusable_backend(self, monkeypatch: pytest.MonkeyPatch):
+        pytest.importorskip("mujoco")
+        from unisim.visualization import render_many
+
+        monkeypatch.setattr(render_many, "render_backend_usable", lambda: False)
+        self.render_many = render_many
+        self.states = [np.zeros((1, 2), dtype=np.float32)]
+
+    def test_record_mode_raises_when_backend_unusable(self) -> None:
+        with pytest.raises(RuntimeError, match="render_mode='record'"):
+            self.render_many.render_states_get_frames(
+                self.states, "model.xml", render_mode="record"
+            )
+
+    def test_record_mode_raises_when_backend_unusable_tracking(self) -> None:
+        with pytest.raises(RuntimeError, match="render_mode='record'"):
+            self.render_many.render_states_get_frames_tracking(
+                self.states, "model.xml", render_mode="record"
+            )
+
+    def test_auto_mode_warns_and_returns_empty(self, capsys: pytest.CaptureFixture) -> None:
+        assert self.render_many.render_states_get_frames(
+            self.states, "model.xml", render_mode="auto"
+        ) == []
+        assert "off-screen rendering is unavailable" in capsys.readouterr().err
+
+    def test_auto_mode_warns_and_returns_empty_tracking(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        assert self.render_many.render_states_get_frames_tracking(
+            self.states, "model.xml", render_mode="auto"
+        ) == []
+        assert "off-screen rendering is unavailable" in capsys.readouterr().err
+
+    def test_invalid_render_mode_fails_closed(self) -> None:
+        for render in (
+            self.render_many.render_states_get_frames,
+            self.render_many.render_states_get_frames_tracking,
+        ):
+            with pytest.raises(ValueError, match="render_mode"):
+                render(self.states, "model.xml", render_mode="interactive")

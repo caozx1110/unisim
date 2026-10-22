@@ -150,9 +150,11 @@ def validate_interval_op(op: IntervalTermOp) -> None:
     """Validate ``op`` against its builtin spec, ignoring custom terms.
 
     Builtin terms must carry ``body_ids`` exactly when their spec requires
-    them, and their payload must have the declared ndim (checked by
-    duck-typed ``.ndim`` so Torch tensors validate without importing Torch;
-    array-likes fall back to ``np.asarray``).  A
+    them, and their payload must have the declared ndim. Payloads are
+    torch-first: Torch tensors validate by duck-typed ``.ndim`` without
+    importing Torch, while NumPy arrays and other non-tensor array-likes
+    fail closed with ``TypeError`` (host adapters convert Torch payloads at
+    their private :mod:`unisim.dr._host` boundary instead).  A
     :class:`TensorIntervalPayload` defers structural checks to its
     device-resident adapter, which owns the accepted engine type, dtype,
     device, contiguity, and value rules. Unknown (custom) terms are
@@ -173,9 +175,19 @@ def validate_interval_op(op: IntervalTermOp) -> None:
                 f"TensorIntervalPayload does not carry exactly the interval term {op.term!r}"
             )
         return
+    if isinstance(payload, np.ndarray):
+        raise TypeError(
+            f"interval term '{op.term}' payload must be a torch.Tensor or "
+            "TensorIntervalPayload under the torch-first DR contract, got "
+            "numpy.ndarray; host adapters convert through unisim.dr._host"
+        )
     payload_ndim = getattr(payload, "ndim", None)
     if payload_ndim is None:
-        payload_ndim = np.asarray(payload).ndim
+        raise TypeError(
+            f"interval term '{op.term}' payload must be a torch.Tensor or "
+            "TensorIntervalPayload under the torch-first DR contract, got "
+            f"{type(payload).__name__}"
+        )
     if payload_ndim != spec.payload_ndim:
         raise ValueError(
             f"interval term '{op.term}' payload must have ndim "

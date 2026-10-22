@@ -1481,10 +1481,8 @@ class SuperDexBackend(SimBackend):
             supports_debug_overlay=True,
             # The native Polyscope viewer reads the scene on the calling
             # thread, so interactive rendering only exists when serial mode
-            # keeps stepping on that same thread. getattr keeps capability
-            # queries working on skeleton instances that never ran __init__.
-            supports_native_interactive_renderer=getattr(self, "_execution_mode", "batch")
-            == "serial",
+            # keeps stepping on that same thread.
+            supports_native_interactive_renderer=self._execution_mode == "serial",
         )
 
     # Static so the plan resolves without a backend instance (class-level

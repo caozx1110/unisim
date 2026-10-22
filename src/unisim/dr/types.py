@@ -187,7 +187,17 @@ class FixedVariantPlan:
         return hash((self.layout, self.variants, tuple(int(i) for i in self.assignment)))
 
     def __setstate__(self, state: Mapping[str, Any]) -> None:
-        """Read earlier pickles without trusting their mutable array storage."""
+        """Read historical state-dict pickles without trusting their array storage.
+
+        Pickle compatibility window: releases 1.3.0-1.4.3 (which introduced this
+        class) serialized the dataclass state dict keyed by the public field name
+        ``assignment``. The 1.5.0 immutable-storage rework switched fresh pickles
+        to the constructor form in ``__reduce__`` — new pickles only ever carry
+        the public ``assignment`` value, never a state-dict key — and added the
+        private ``_assignment`` key here as a reader fallback for state dicts
+        written during that rework's window; no released writer ever emitted it.
+        The ``_assignment`` fallback is retained until the next major release.
+        """
         FixedVariantPlan.__init__(
             self,
             state["_assignment"] if "_assignment" in state else state["assignment"],

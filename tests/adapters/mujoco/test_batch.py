@@ -1252,13 +1252,16 @@ def test_partial_update_preserves_unread_final_body_state(tmp_path: Path, operat
     if operation == "reset":
         backend._host_set_state(np.array([0], dtype=np.int32), qpos[:1], qvel[:1])
     else:
-        delta = np.zeros((3, 1, 3))
+        torch = pytest.importorskip("torch")
+        delta = torch.zeros((3, 1, 3))
         delta[0, 0, 0] = 0.5
         backend.apply_interval_randomization(
             IntervalRandomizationPlan(
                 ops=(
                     IntervalTermOp(
-                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA, delta, body_ids=bodies
+                        INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                        delta,
+                        body_ids=torch.as_tensor(bodies),
                     ),
                 )
             )

@@ -328,13 +328,14 @@ def test_interval_body_wrench_stages_into_step_payload_and_clears() -> None:
 
 
 def test_interval_ops_accumulate_and_new_plan_replaces_staging() -> None:
+    torch = pytest.importorskip("torch")
     backend = _mapped_backend()
     plan = IntervalRandomizationPlan(
         ops=(
             IntervalTermOp(
                 INTERVAL_TERM_BODY_TORQUE,
-                np.full((_NUM_ENVS, 1, 3), 2.0, dtype=np.float32),
-                body_ids=np.asarray([1]),
+                torch.full((_NUM_ENVS, 1, 3), 2.0),
+                body_ids=torch.as_tensor([1]),
             ),
         )
     )
@@ -345,8 +346,8 @@ def test_interval_ops_accumulate_and_new_plan_replaces_staging() -> None:
             ops=(
                 IntervalTermOp(
                     INTERVAL_TERM_BODY_FORCE,
-                    np.full((_NUM_ENVS, 1, 3), 3.0, dtype=np.float32),
-                    body_ids=np.asarray([0]),
+                    torch.full((_NUM_ENVS, 1, 3), 3.0),
+                    body_ids=torch.as_tensor([0]),
                 ),
             )
         )
@@ -381,6 +382,7 @@ def test_interval_body_force_validates_targets_and_values() -> None:
 
 
 def test_model_file_interval_wrench_fails_closed() -> None:
+    torch = pytest.importorskip("torch")
     backend = _mapped_backend()
     backend._entity_scene = None
     backend._staged_body_wrench = None
@@ -390,8 +392,8 @@ def test_model_file_interval_wrench_fails_closed() -> None:
         ops=(
             IntervalTermOp(
                 INTERVAL_TERM_BODY_FORCE,
-                np.zeros((_NUM_ENVS, 1, 3), dtype=np.float32),
-                body_ids=np.asarray([0]),
+                torch.zeros((_NUM_ENVS, 1, 3)),
+                body_ids=torch.as_tensor([0]),
             ),
         )
     )
@@ -427,6 +429,7 @@ def _mock_scene(root: Path):
 def test_mock_worker_roundtrip_applies_reset_randomization(tmp_path: Path) -> None:
     from unisim.factory import create_backend
 
+    torch = pytest.importorskip("torch")
     num_envs = 4
     backend = create_backend(
         "isaacgym",
@@ -467,8 +470,8 @@ def test_mock_worker_roundtrip_applies_reset_randomization(tmp_path: Path) -> No
                 ops=(
                     IntervalTermOp(
                         INTERVAL_TERM_BODY_FORCE,
-                        np.ones((num_envs, 1, 3), dtype=np.float32),
-                        body_ids=np.asarray([0]),
+                        torch.ones((num_envs, 1, 3)),
+                        body_ids=torch.as_tensor([0]),
                     ),
                 )
             )
