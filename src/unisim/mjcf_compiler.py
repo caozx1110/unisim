@@ -201,6 +201,76 @@ def _options(model: mujoco.MjModel) -> dict[str, np.ndarray]:
     }
 
 
+_COMPOSITE_BASE_AXES = (
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (0.0, 0.0, 1.0),
+)
+_COMPOSITE_BASE_RULE = (
+    "a composite floating base of exactly three slide joints with canonical "
+    "x/y/z unit axes on a single zero/identity-frame body chain, followed by "
+    "one ball joint on the terminal zero/identity-frame body"
+)
+_IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
+
+
+def _composite_floating_base_joints(
+    model: mujoco.MjModel, root_body: int
+) -> tuple[int, ...] | str:
+    """Return the ordered composite-base joint ids below ``root_body``.
+
+    A composite floating base is a single chain of exactly three slide joints
+    with canonical x/y/z unit axes, each the sole joint of its body, followed
+    by one ball joint as the sole joint of the terminal body; every chain body
+    uses a zero/identity frame. The base qpos ``[x, y, z, qw, qx, qy, qz]``
+    and qvel ``[vx, vy, vz, wx, wy, wz]`` layouts then match a free joint
+    exactly. Any deviation returns a human-readable failure reason.
+    """
+    slide = int(mujoco.mjtJoint.mjJNT_SLIDE)
+    ball = int(mujoco.mjtJoint.mjJNT_BALL)
+    joint_ids: list[int] = []
+    body = int(root_body)
+    while True:
+        name = str(model.body(body).name)
+        if np.any(model.body_pos[body] != 0.0) or np.any(
+            model.body_quat[body] != np.array(_IDENTITY_QUAT)
+        ):
+            return f"{_COMPOSITE_BASE_RULE}; chain body {name!r} has a non-identity frame"
+        count = int(model.body_jntnum[body])
+        start = int(model.body_jntadr[body])
+        joints = tuple(range(start, start + count)) if count else ()
+        if len(joint_ids) < 3:
+            if len(joints) != 1 or int(model.jnt_type[joints[0]]) != slide:
+                return (
+                    f"{_COMPOSITE_BASE_RULE}; chain body {name!r} must own exactly one "
+                    "slide joint"
+                )
+            axis = tuple(float(value) for value in model.jnt_axis[joints[0]])
+            if axis != _COMPOSITE_BASE_AXES[len(joint_ids)]:
+                return (
+                    f"{_COMPOSITE_BASE_RULE}; slide joint on chain body {name!r} has a "
+                    "non-canonical axis"
+                )
+            joint_ids.append(joints[0])
+        else:
+            if len(joints) != 1 or int(model.jnt_type[joints[0]]) != ball:
+                return (
+                    f"{_COMPOSITE_BASE_RULE}; terminal chain body {name!r} must own "
+                    "exactly one ball joint"
+                )
+            joint_ids.append(joints[0])
+            return tuple(joint_ids)
+        children = tuple(
+            index for index in range(1, int(model.nbody)) if int(model.body_parentid[index]) == body
+        )
+        if len(children) != 1:
+            return (
+                f"{_COMPOSITE_BASE_RULE}; chain body {name!r} must have exactly one "
+                "child body"
+            )
+        body = children[0]
+
+
 def load_entity_source(
     entity: SceneEntitySpec, path: str, *, mirror: bool
 ) -> tuple[mujoco.MjSpec, mujoco.MjModel, SceneSourceProvenance]:
@@ -290,11 +360,26 @@ def load_entity_source(
         raise ValueError(f"entity {entity.name!r} requires named non-root joints")
     if free and (len(free) != 1 or free[0] not in list(root.joints)):
         raise ValueError(f"entity {entity.name!r} has a non-root or multiple free joints")
+    composite_base = False
     if not mirror:
         if entity.kind == "rigid" and other:
             raise ValueError(f"rigid entity {entity.name!r} contains non-root joints")
-        if entity.root_mode == "floating" and (len(free) != 1 or root.mocap):
-            raise ValueError(f"floating entity {entity.name!r} requires one root free joint")
+        if entity.root_mode == "floating":
+            if root.mocap:
+                raise ValueError(f"floating entity {entity.name!r} requires one root free joint")
+            # A root without a free joint may still float on a composite
+            # 3-slide+ball base chain, validated on the compiled model below.
+            composite_base = not free
+            if composite_base and not np.array_equal(
+                np.asarray(entity.initial_state.quaternion), np.array(_IDENTITY_QUAT)
+            ):
+                # A ball joint's reference orientation is always identity, so
+                # the chain can only spawn unrotated.
+                raise ValueError(
+                    f"floating entity {entity.name!r}: a composite floating base always "
+                    "spawns at identity orientation; write a rotated root pose through "
+                    "the entity reset contract"
+                )
         if entity.root_mode == "fixed" and (free or list(root.joints) or root.mocap):
             raise ValueError(f"fixed entity {entity.name!r} requires a fixed root body")
         if entity.root_mode == "kinematic" and other:
@@ -302,6 +387,14 @@ def load_entity_source(
     # Compile before changing root/actuation topology. This resolves source
     # angular units, defaults and keyframe widths independently of the scene.
     original_model = spec.compile()
+    base_joint_ids: tuple[int, ...] = ()
+    if composite_base:
+        resolved = _composite_floating_base_joints(original_model, 1)
+        if isinstance(resolved, str):
+            raise ValueError(
+                f"floating entity {entity.name!r} requires one root free joint or {resolved}"
+            )
+        base_joint_ids = resolved
     if any(not original_model.key(i).name for i in range(original_model.nkey)):
         raise ValueError(f"entity {entity.name!r}: composition requires named source keyframes")
     for key in list(spec.keys):
@@ -332,8 +425,16 @@ def load_entity_source(
             geom.conaffinity = 0
         for pair in list(spec.pairs):
             spec.delete(pair)
-    root.pos = entity.initial_state.position
-    root.quat = entity.initial_state.quaternion
+    if composite_base:
+        # The declared initial position is baked into the slide joint
+        # references instead of the root frame, keeping base qpos equal to
+        # the world root pose like a free joint.
+        spec_joints = {joint.name: joint for joint in spec.joints}
+        for joint_id, component in zip(base_joint_ids[:3], entity.initial_state.position):
+            spec_joints[str(original_model.joint(joint_id).name)].ref = component
+    else:
+        root.pos = entity.initial_state.position
+        root.quat = entity.initial_state.quaternion
     # MjSpec attachment preserves authored references, but the generated XML
     # lives elsewhere. Resolve external resources before serialization.
     for mesh in spec.meshes:
@@ -372,8 +473,21 @@ def compile_scene_layout(
         root = roots[0]
         local = lambda name: name[len(prefix) :]  # noqa: E731
         joints = []
+        root_joints: list[JointLayout] = []
         root_q: tuple[int, ...] = ()
         root_v: tuple[int, ...] = ()
+        composite_base: tuple[int, ...] = ()
+        if entity.root_mode == "floating" and not any(
+            model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_FREE
+            and int(model.jnt_bodyid[jid]) in bodies
+            for jid in range(model.njnt)
+        ):
+            resolved = _composite_floating_base_joints(model, root)
+            if isinstance(resolved, str):
+                raise ValueError(
+                    f"floating entity {entity.name!r} requires one root free joint or {resolved}"
+                )
+            composite_base = resolved
         for jid in range(model.njnt):
             body = int(model.jnt_bodyid[jid])
             if body not in bodies:
@@ -383,15 +497,20 @@ def compile_scene_layout(
                 root_q, root_v = tuple(range(qa, qa + 7)), tuple(range(va, va + 6))
                 continue
             kind, nq, nv = kinds[int(model.jnt_type[jid])]
-            joints.append(
-                JointLayout(
-                    local(model.joint(jid).name),
-                    kind,
-                    tuple(range(qa, qa + nq)),
-                    tuple(range(va, va + nv)),
-                    local(model.body(body).name),
-                )
+            joint = JointLayout(
+                local(model.joint(jid).name),
+                kind,
+                tuple(range(qa, qa + nq)),
+                tuple(range(va, va + nv)),
+                local(model.body(body).name),
             )
+            if jid in composite_base:
+                root_joints.append(joint)
+            else:
+                joints.append(joint)
+        if composite_base:
+            root_q = tuple(i for joint in root_joints for i in joint.qpos_indices)
+            root_v = tuple(i for joint in root_joints for i in joint.qvel_indices)
         actuator_ids, actuator_names, actuator_joints = [], [], []
         for aid in range(model.nu):
             name = model.actuator(aid).name
@@ -436,6 +555,7 @@ def compile_scene_layout(
                 actuator_names=tuple(actuator_names),
                 actuator_joint_names=tuple(actuator_joints),
                 actuator_indices=tuple(actuator_ids),
+                root_joints=tuple(root_joints),
                 root_qpos_indices=root_q,
                 root_qvel_indices=root_v,
                 geoms=tuple(geoms),
