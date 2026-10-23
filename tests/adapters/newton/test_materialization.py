@@ -277,6 +277,44 @@ def test_metadata_skips_visual_only_mesh_geoms(tmp_path: Path) -> None:
     assert metadata.geom_contype.tolist() == [1, 0]
 
 
+_CUBE_VERTICES = "0 0 0  1 0 0  0 1 0  0 0 1  1 1 0  1 0 1  0 1 1  1 1 1"
+_CUBE_FACES = (
+    "0 2 1  1 2 4  0 1 5  0 5 3  1 4 7  1 7 5  2 6 4  4 6 7  3 5 7"
+    "  3 7 6  0 3 6  0 6 2"
+)
+
+
+def _scan_two_mesh_scene(tmp_path: Path, second_vertices: str, second_faces: str):
+    path = _write_model(tmp_path, "")
+    path.write_text(
+        "<mujoco model='two-mesh-audit-test'>"
+        "<asset>"
+        f"<mesh name='piece_a' vertex='{_WEDGE_VERTICES}' face='{_WEDGE_FACES}'/>"
+        f"<mesh name='piece_b' vertex='{second_vertices}' face='{second_faces}'/>"
+        "</asset>"
+        "<worldbody>"
+        "<body name='body_a' pos='0 0 0.5'><joint name='root_a' type='free'/>"
+        "<geom name='geom_a' type='mesh' mesh='piece_a' mass='0.5'/></body>"
+        "<body name='body_b' pos='0 0 2'><joint name='root_b' type='free'/>"
+        "<geom name='geom_b' type='mesh' mesh='piece_b' mass='0.5'/></body>"
+        "</worldbody></mujoco>",
+        encoding="utf-8",
+    )
+    return scan_newton_model_metadata(mujoco, SceneCfg(model_file=str(path)))
+
+
+def test_metadata_audits_mesh_at_nonzero_vertex_offset(tmp_path: Path) -> None:
+    # mesh_polyvert indexes the mesh's own vertex block: the cube's compiled
+    # hull must be read at its mesh_vertadr, not at the model vertex origin.
+    metadata = _scan_two_mesh_scene(tmp_path, _CUBE_VERTICES, _CUBE_FACES)
+    assert metadata.nq == 14
+
+
+def test_metadata_rejects_nonconvex_mesh_at_nonzero_vertex_offset(tmp_path: Path) -> None:
+    with pytest.raises(NotImplementedError, match="piece_b"):
+        _scan_two_mesh_scene(tmp_path, _DENTED_VERTICES, _DENTED_FACES)
+
+
 _BALL_SCENE = """
 <mujoco model="ball-scan-test">
   <compiler angle="radian"/>

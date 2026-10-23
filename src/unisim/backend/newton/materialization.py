@@ -358,6 +358,14 @@ _NEWTON_FALLBACK_MAXHULLVERT = 64
 # compiled convex hull before the mesh is declared non-convex.
 _MESH_CONVEXITY_RTOL = 1e-4
 
+# Absolute deviation floor, scaled by the mesh bounding-box scale cubed. Mesh
+# assets are commonly float32-quantized (binary STL), and fan-triangulating
+# slightly non-planar hull n-gons adds absolute noise; both grow with scale³
+# and dominate the relative deviation of small hulls. The 22 sharpa hand hulls
+# (1e-6..2e-4 m³) measure ≤9e-6 × scale³; genuine non-convexity is orders of
+# magnitude larger, so the floor cannot mask it.
+_MESH_CONVEXITY_ABS_SCALE = 1e-4
+
 
 def _mesh_name(mujoco: Any, model: Any, mesh_id: int) -> str:
     name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id)
@@ -389,12 +397,19 @@ def _mesh_signed_volume(vertices: np.ndarray, triangles: np.ndarray) -> float:
 def _compiled_mesh_hull(model: Any, mesh_id: int) -> tuple[np.ndarray, float]:
     """Read the compiled convex hull polygons of one mesh.
 
-    Returns the distinct authored vertex ids on the hull and the hull volume.
+    Returns the distinct mesh-local vertex ids on the hull and the hull volume.
     MuJoCo stores the collision hull as outward-oriented polygons in
-    ``mesh_poly*``; fan-triangulation around each polygon's first vertex sums
-    the hull's signed volume.
+    ``mesh_poly*``; ``mesh_polyvert`` indexes the mesh's own vertex block
+    (zero-based within the mesh, the same convention as ``mesh_face``), so
+    vertex lookups must slice ``mesh_vert`` at ``mesh_vertadr[mesh_id]``.
+    Fan-triangulation around each polygon's first vertex sums the hull's
+    signed volume.
     """
-    vertices = np.asarray(model.mesh_vert, dtype=np.float64)
+    vertex_adr = int(model.mesh_vertadr[mesh_id])
+    vertex_num = int(model.mesh_vertnum[mesh_id])
+    vertices = np.asarray(
+        model.mesh_vert[vertex_adr : vertex_adr + vertex_num], dtype=np.float64
+    )
     polyvert = np.asarray(model.mesh_polyvert, dtype=np.int64)
     poly_start = int(model.mesh_polyadr[mesh_id])
     poly_count = int(model.mesh_polynum[mesh_id])
@@ -409,10 +424,7 @@ def _compiled_mesh_hull(model: Any, mesh_id: int) -> tuple[np.ndarray, float]:
         volume += float(
             np.sum(corners[0] * np.cross(corners[1:-1], corners[2:]))
         )
-    vertex_adr = int(model.mesh_vertadr[mesh_id])
-    local_ids = np.asarray(
-        sorted(vertex_id - vertex_adr for vertex_id in hull_vertex_ids), dtype=np.int64
-    )
+    local_ids = np.asarray(sorted(hull_vertex_ids), dtype=np.int64)
     return local_ids, abs(volume) / 6.0
 
 
@@ -446,11 +458,15 @@ def _audit_mesh_convexity(mujoco: Any, model: Any, mesh_id: int) -> str | None:
             f"collision mesh {name!r} produced no compiled convex hull; its convexity "
             "cannot be audited"
         )
-    deviation = abs(hull_volume - authored_volume) / max(hull_volume, authored_volume)
-    if deviation > _MESH_CONVEXITY_RTOL:
+    deviation = abs(hull_volume - authored_volume)
+    relative = deviation / max(hull_volume, authored_volume)
+    scale = float(np.ptp(vertices, axis=0).max())
+    if relative > _MESH_CONVEXITY_RTOL and (
+        deviation > _MESH_CONVEXITY_ABS_SCALE * scale**3
+    ):
         return (
             f"collision mesh {name!r} is not convex: the compiled convex-hull volume "
-            f"deviates {deviation:.2%} from the authored surface volume, so the mesh would "
+            f"deviates {relative:.2%} from the authored surface volume, so the mesh would "
             "silently collide a different shape; split the mesh into convex pieces (for "
             "example with CoACD or V-HACD) or mark it visual-only with contype=0 "
             "conaffinity=0"
