@@ -226,12 +226,22 @@ class EntityLayout:
             len(self.actuator_names) == len(self.actuator_joint_names) == len(self.actuator_indices)
         ):
             raise ValueError("actuator names, targets and indices must have equal lengths")
-        nq, nv = (7, 6) if self.root_mode == "floating" else (0, 0)
+        # A physical kinematic root retains its source free joint and therefore
+        # the same public root columns as a floating root. A kinematic mirror,
+        # by contrast, has no public generalized state and contributes no
+        # columns. Both forms are valid wire layouts; the source declaration
+        # and compiler choose between them.
+        if self.root_mode == "floating":
+            expected_nq, expected_nv = 7, 6
+        elif self.root_mode == "kinematic" and self.root_qpos_indices:
+            expected_nq, expected_nv = 7, 6
+        else:
+            expected_nq, expected_nv = 0, 0
         object.__setattr__(
-            self, "root_qpos_indices", _indices(self.root_qpos_indices, "root qpos", nq)
+            self, "root_qpos_indices", _indices(self.root_qpos_indices, "root qpos", expected_nq)
         )
         object.__setattr__(
-            self, "root_qvel_indices", _indices(self.root_qvel_indices, "root qvel", nv)
+            self, "root_qvel_indices", _indices(self.root_qvel_indices, "root qvel", expected_nv)
         )
         if self.root_joints:
             root_q = tuple(i for joint in self.root_joints for i in joint.qpos_indices)
@@ -240,6 +250,18 @@ class EntityLayout:
                 raise ValueError("root_joints columns must equal the root state indices")
         _indices(self.qpos_indices, "entity qpos")
         _indices(self.qvel_indices, "entity qvel")
+
+    @property
+    def has_public_root_state(self) -> bool:
+        """Whether generalized root columns publish this entity's root state.
+
+        Floating roots and physical kinematic roots both retain a free-root
+        layout. Kinematic mirrors expose a native root pose but no generalized
+        root columns.
+        """
+        return self.root_mode == "floating" or (
+            self.root_mode == "kinematic" and bool(self.root_qpos_indices)
+        )
 
     @property
     def qpos_indices(self) -> tuple[int, ...]:

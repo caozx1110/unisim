@@ -288,7 +288,7 @@ class NewtonBackend(SimBackend):
                 (
                     index
                     for index, entity in enumerate(composed.layout.entities)
-                    if entity.root_mode == "floating"
+                    if entity.has_public_root_state
                 ),
                 0,
             )
@@ -433,7 +433,13 @@ class NewtonBackend(SimBackend):
                 assert self._variant_metadata is not None
                 assert self._variant_assignment is not None
                 source_builders = tuple(
-                    build_source_builder(newton, item.source_model_file, item.gravity)
+                    build_source_builder(
+                        newton,
+                        item.source_model_file,
+                        item.gravity,
+                        metadata=item,
+                        layout=self._entity_layout,
+                    )
                     for item in self._variant_metadata
                 )
                 validate_newton_variant_sources(source_builders, self._variant_metadata)
@@ -450,6 +456,8 @@ class NewtonBackend(SimBackend):
             else:
                 template = newton.ModelBuilder()
                 newton.solvers.SolverMuJoCo.register_custom_attributes(template)
+                # Same gap fallback pin as build_source_builder (MuJoCo semantics).
+                template.rigid_gap = 0.0
                 template.add_mjcf(self._metadata.source_model_file, ctrl_direct=False)
                 has_authored_floor = _prepare_newton_render_floor(template, newton)
                 builder = newton.ModelBuilder()
@@ -604,7 +612,7 @@ class NewtonBackend(SimBackend):
             if columns.size == 0:
                 continue
             values = np.ascontiguousarray(selected_defaults[:, columns])
-            if entity.root_mode == "floating" and not entity.root_joints:
+            if entity.has_public_root_state and not entity.root_joints:
                 values[:, 3:7] = self._wxyz_to_xyzw(values[:, 3:7])
             raw_qpos[:, columns] = values
             # A composite floating base carries its terminal ball (the root
@@ -932,7 +940,7 @@ class NewtonBackend(SimBackend):
                 "root_v": None,
                 "root_row": -1,
             }
-            if entity.root_mode == "floating" and not entity.root_joints:
+            if entity.has_public_root_state and not entity.root_joints:
                 entry["root_quat"] = torch.tensor(
                     entity.root_qpos_indices[3:7], dtype=torch.int64, device=device
                 )
@@ -1237,7 +1245,7 @@ class NewtonBackend(SimBackend):
             self._body_lin_vel_cache[:, body_rows] = link_qd[:, native_rows, :3] - np.cross(
                 self._body_ang_vel_cache[:, body_rows], offset_w[:, body_rows]
             )
-            if entity.root_mode != "floating" or entity.root_joints:
+            if not entity.has_public_root_state or entity.root_joints:
                 # A composite base needs no root-velocity correction: its slide
                 # qvel is already the world-frame mount-origin velocity, and the
                 # ball loop above already brought the terminal ball's angular
@@ -1435,7 +1443,7 @@ class NewtonBackend(SimBackend):
             root_body_id = entity.body_ids[0] - 1
             roots[:, index, :3] = self._body_pos_cache[:, root_body_id]
             roots[:, index, 3:7] = self._body_quat_cache[:, root_body_id]
-            if entity.root_mode == "floating":
+            if entity.has_public_root_state:
                 state = entity_state_snapshot(entity, self._qpos_cache, self._qvel_cache)
                 roots[:, index, 7:] = state["root_velocity"]
         return roots
@@ -1443,7 +1451,7 @@ class NewtonBackend(SimBackend):
     def get_entity_state(self, entity: str) -> Mapping[str, np.ndarray]:
         layout = self.get_scene_layout()
         owner = layout.get_entity(entity)
-        if owner.root_mode == "floating":
+        if owner.has_public_root_state:
             return entity_state_snapshot(owner, self._qpos_cache, self._qvel_cache)
         root = np.zeros((self._num_envs, 13), dtype=np.float32)
         root_body_id = owner.body_ids[0] - 1
@@ -1477,7 +1485,7 @@ class NewtonBackend(SimBackend):
                 raise ValueError(
                     f"root {root_body_name!r} is not entity {entity.name!r}'s root body"
                 )
-            if entity.root_mode != "floating":
+            if not entity.has_public_root_state:
                 raise NotImplementedError(
                     f"portable Newton entity {entity.name!r} has no floating root state"
                 )
@@ -2468,7 +2476,7 @@ class NewtonBackend(SimBackend):
                 raw_qvel[:, qvel_adr : qvel_adr + 3] = np_quat_apply_batched(
                     ball_quat, qvel[:, qvel_adr : qvel_adr + 3]
                 )
-            if entity.root_mode != "floating" or entity.root_joints:
+            if not entity.has_public_root_state or entity.root_joints:
                 # Composite bases pass slide positions/velocities straight
                 # through (world-frame mount-origin state, no COM correction)
                 # and the ball loop above owns the root quaternion and angular
@@ -3125,7 +3133,7 @@ class NewtonBackend(SimBackend):
         if self._portable_mode:
             assert self._entity_layout is not None
             entity = self._entity_layout.get_entity(self._primary_entity_name)
-            if entity.root_mode != "floating":
+            if not entity.has_public_root_state:
                 raise NotImplementedError("newton fixed-root scenes use entity state APIs")
             return self._qpos_cache[:, entity.root_qpos_indices[:3]]
         return self._qpos_cache[:, :3]
@@ -3135,7 +3143,7 @@ class NewtonBackend(SimBackend):
         if self._portable_mode:
             assert self._entity_layout is not None
             entity = self._entity_layout.get_entity(self._primary_entity_name)
-            if entity.root_mode != "floating":
+            if not entity.has_public_root_state:
                 raise NotImplementedError("newton fixed-root scenes use entity state APIs")
             return self._qpos_cache[:, entity.root_qpos_indices[3:7]]
         return self._qpos_cache[:, 3:7]
@@ -3145,7 +3153,7 @@ class NewtonBackend(SimBackend):
         if self._portable_mode:
             assert self._entity_layout is not None
             entity = self._entity_layout.get_entity(self._primary_entity_name)
-            if entity.root_mode != "floating":
+            if not entity.has_public_root_state:
                 raise NotImplementedError("newton fixed-root scenes use entity state APIs")
             return self._qvel_cache[:, entity.root_qvel_indices[:3]]
         return self._qvel_cache[:, :3]
@@ -3155,7 +3163,7 @@ class NewtonBackend(SimBackend):
         if self._portable_mode:
             assert self._entity_layout is not None
             entity = self._entity_layout.get_entity(self._primary_entity_name)
-            if entity.root_mode != "floating":
+            if not entity.has_public_root_state:
                 raise NotImplementedError("newton fixed-root scenes use entity state APIs")
             return np_quat_apply_batched(
                 self._qpos_cache[:, entity.root_qpos_indices[3:7]],

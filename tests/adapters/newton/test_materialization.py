@@ -7,10 +7,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from unisim.backend.newton.materialization import scan_newton_model_metadata
+from unisim.backend.newton.materialization import (
+    build_source_builder,
+    scan_newton_model_metadata,
+)
 from unisim.scene import SceneCfg
 
 mujoco = pytest.importorskip("mujoco")
+newton = pytest.importorskip("newton")
 
 
 def _write_model(tmp_path: Path, body: str) -> Path:
@@ -101,6 +105,76 @@ def test_metadata_preserves_nonleading_passive_and_actuator_addresses(
     assert metadata.nu == 1
     assert metadata.actuator_target_qpos_adrs == (8,)
     assert metadata.actuator_target_qvel_adrs == (7,)
+
+
+def test_source_builder_preserves_authored_free_joint_armature(
+    tmp_path: Path,
+) -> None:
+    """A direct-MJCF free-root armature must survive Newton import (#445)."""
+    path = _write_model(
+        tmp_path,
+        "<body name='base'>"
+        "<inertial pos='0 0 0' mass='1' diaginertia='.1 .1 .1'/>"
+        "<joint name='root' type='free' armature='2'/>"
+        "<geom type='sphere' size='.1'/>"
+        "</body>",
+    )
+    metadata = scan_newton_model_metadata(mujoco, SceneCfg(model_file=str(path)))
+    expected = np.full((6,), 2.0, dtype=np.float32)
+    np.testing.assert_array_equal(metadata.dof_armature, expected)
+
+    builder = build_source_builder(newton, str(path), metadata=metadata)
+    np.testing.assert_array_equal(
+        np.asarray(builder.joint_armature, dtype=np.float32)[:6], expected
+    )
+    model = builder.finalize(device="cpu")
+    np.testing.assert_array_equal(
+        np.asarray(model.joint_armature.numpy(), dtype=np.float32)[:6], expected
+    )
+    solver = newton.solvers.SolverMuJoCo(model, nconmax=4, njmax=4)
+    np.testing.assert_array_equal(
+        np.asarray(solver.mjw_model.dof_armature.numpy(), dtype=np.float32).reshape(-1)[
+            :6
+        ],
+        expected,
+    )
+
+
+def test_source_builder_keeps_mujoco_default_rigid_gap(tmp_path: Path) -> None:
+    """MuJoCo's implicit ``gap=0`` must not become Newton's 0.1 fallback."""
+    # The spheres are 0.15 m apart and have combined radius 0.10 m. MuJoCo
+    # therefore reports no contact, while Newton's legacy ``rigid_gap=0.1``
+    # fallback would widen each candidate into a false contact.
+    path = _write_model(
+        tmp_path,
+        "<body name='a' pos='0 0 0'>"
+        "<inertial pos='0 0 0' mass='1' diaginertia='.1 .1 .1'/>"
+        "<freejoint name='a_root'/>"
+        "<geom type='sphere' size='.05'/>"
+        "</body>"
+        "<body name='b' pos='0 0 .15'>"
+        "<inertial pos='0 0 0' mass='1' diaginertia='.1 .1 .1'/>"
+        "<freejoint name='b_root'/>"
+        "<geom type='sphere' size='.05'/>"
+        "</body>",
+    )
+    metadata = scan_newton_model_metadata(mujoco, SceneCfg(model_file=str(path)))
+    builder = build_source_builder(newton, str(path), metadata=metadata)
+    assert builder.rigid_gap == 0.0
+
+    model = builder.finalize(device="cpu")
+    solver = newton.solvers.SolverMuJoCo(model, nconmax=4, njmax=4)
+    contacts = newton.Contacts(
+        rigid_contact_max=solver.get_max_contact_count(),
+        soft_contact_max=0,
+        device="cpu",
+    )
+    state_a = model.state()
+    state_b = model.state()
+    control = model.control()
+    state_a.clear_forces()
+    solver.step(state_a, state_b, control, contacts, 0.01)
+    assert int(np.asarray(solver.mjw_data.nacon.numpy()).reshape(-1)[0]) == 0
 
 
 def test_metadata_rejects_cone_geometry(tmp_path: Path) -> None:

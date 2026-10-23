@@ -99,15 +99,71 @@ class NewtonModelAudit:
 
 
 def build_source_builder(
-    newton: Any, model_file: str, gravity: np.ndarray | None = None
+    newton: Any,
+    model_file: str,
+    gravity: np.ndarray | None = None,
+    metadata: NewtonModelMetadata | None = None,
+    layout: CompiledSceneLayout | None = None,
 ) -> Any:
-    """Import one independently compiled portable full-scene source."""
+    """Import one independently compiled portable full-scene source.
+
+    Newton's current MJCF importer drops two authored facts on free roots: the
+    free-joint armature and physical body mode used by kinematic roots (#444,
+    #445). The adapter restores both from the direct MuJoCo compile and frozen
+    public layout so its diagnostic and native models cannot silently diverge.
+    """
     builder = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    # MjSpec round-trips drop geom gap="0" (it equals the built-in default);
+    # pin Newton's gap fallback to MuJoCo semantics instead of its 0.1 default.
+    builder.rigid_gap = 0.0
     builder.add_mjcf(model_file, ctrl_direct=False)
+    if metadata is not None:
+        _restore_free_joint_armature(newton, builder, metadata)
+    if layout is not None:
+        _apply_physical_kinematic_body_modes(newton, builder, layout)
     if gravity is not None:
         builder.gravity = tuple(float(value) for value in gravity)
     return builder
+
+
+def _restore_free_joint_armature(newton: Any, builder: Any, metadata: NewtonModelMetadata) -> None:
+    """Restore authored free-root armature dropped by Newton's importer (#445)."""
+    free_type = int(newton.JointType.FREE)
+    labels = tuple(str(label) for label in builder.joint_label)
+    joint_types = tuple(int(value) for value in builder.joint_type)
+    qd_starts = tuple(int(value) for value in builder.joint_qd_start)
+    if len(labels) != len(joint_types) or len(labels) != len(qd_starts):
+        raise RuntimeError("Newton importer exposed inconsistent joint layouts")
+    restored = False
+    for joint_type, qd_start in zip(joint_types, qd_starts, strict=True):
+        if joint_type != free_type:
+            continue
+        if qd_start + 6 > len(builder.joint_armature) or qd_start + 6 > metadata.nv:
+            raise RuntimeError("Newton importer exposed an invalid free-joint DOF layout")
+        authored = np.asarray(metadata.dof_armature[qd_start : qd_start + 6], dtype=np.float32)
+        builder.joint_armature[qd_start : qd_start + 6] = authored.tolist()
+        restored = True
+    if not restored and metadata.root_qvel_dim:
+        raise RuntimeError(
+            "Newton importer changed the free-joint layout before armature restoration"
+        )
+
+
+def _apply_physical_kinematic_body_modes(
+    newton: Any, builder: Any, layout: CompiledSceneLayout
+) -> None:
+    """Mark physical kinematic roots after Newton MJCF import (#444)."""
+    kinematic_flag = int(newton.BodyFlags.KINEMATIC)
+    for entity in layout.entities:
+        if entity.root_mode != "kinematic" or not entity.root_qpos_indices:
+            continue
+        root_body = int(entity.body_ids[0]) - 1
+        if root_body < 0 or root_body >= len(builder.body_flags):
+            raise RuntimeError(
+                f"physical kinematic entity {entity.name!r} has an invalid native root body"
+            )
+        builder.body_flags[root_body] = kinematic_flag
 
 
 def validate_newton_variant_sources(
@@ -164,7 +220,10 @@ def validate_newton_portable_metadata(
             raise ValueError("Newton public layout does not assign every compiled body")
         if item.body_names[1:] != tuple(public_bodies):
             raise ValueError(f"Newton variant {variant} body order differs from the public layout")
-        if any(entity.root_mode == "kinematic" for entity in layout.entities):
+        if any(
+            entity.root_mode == "kinematic" and not entity.root_qpos_indices
+            for entity in layout.entities
+        ):
             raise NotImplementedError(
                 "Newton portable entity composition does not support kinematic mirrors"
             )
