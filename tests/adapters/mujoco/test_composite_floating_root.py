@@ -133,9 +133,13 @@ def test_composite_base_composes_and_preserves_source_joint_fields(tmp_path):
         assert tuple(joint.name for joint in layout.joints) == ("finger_hinge",)
         assert layout.root_qpos_indices == tuple(range(7))
         assert layout.root_qvel_indices == tuple(range(6))
+        # Composite slide references stay source-owned: qpos0 carries the
+        # source reference configuration, and the declared initial position
+        # locates only the mount chain origin frame.
         np.testing.assert_allclose(
-            model.qpos0[list(layout.root_qpos_indices)], [1, 2, 3, 1, 0, 0, 0]
+            model.qpos0[list(layout.root_qpos_indices)], [0, 0, 0, 1, 0, 0, 0]
         )
+        np.testing.assert_allclose(model.body_pos[model.body("hand/mount_x").id], [1, 2, 3])
         # The three slide position actuators still drive the base joints.
         assert layout.actuator_joint_names == ("px", "py", "pz", "finger_hinge")
         driven = {
@@ -311,8 +315,15 @@ def test_backend_root_state_round_trip_matches_free_joint(tmp_path):
         root_layout = composite.get_root_state_layout("hand/mount_x")
         assert root_layout.qpos_indices == tuple(range(7))
         assert root_layout.qvel_indices == tuple(range(6))
-        default_pose = np.tile([1, 2, 3, 1, 0, 0, 0], (2, 1))
-        np.testing.assert_allclose(composite.get_entity_state("hand")["root_pose"], default_pose)
+        # The composite default root state is source-owned (the slide
+        # references), with the declared position locating only the mount
+        # chain origin; the free-joint default keeps the declared pose.
+        composite_default = np.tile([0, 0, 0, 1, 0, 0, 0], (2, 1))
+        free_default = np.tile([1, 2, 3, 1, 0, 0, 0], (2, 1))
+        np.testing.assert_allclose(
+            composite.get_entity_state("hand")["root_pose"], composite_default
+        )
+        np.testing.assert_allclose(free.get_entity_state("hand")["root_pose"], free_default)
         # Rotated poses and world-frame velocities round-trip through the
         # slide+ball columns exactly like a free joint.
         pose = np.array(
@@ -352,9 +363,13 @@ def test_backend_root_state_round_trip_matches_free_joint(tmp_path):
         mujoco.mj_objectVelocity(model, data, mujoco.mjtObj.mjOBJ_XBODY, palm, native, 0)
         np.testing.assert_allclose(native[:3], velocity[0, 3:], atol=1e-12)
         np.testing.assert_allclose(native[3:], velocity[0, :3], atol=1e-12)
-        # The captured defaults carry the declared identity-orientation pose.
+        # The captured defaults carry the source-owned composite columns and
+        # the declared free-joint pose.
         np.testing.assert_allclose(
-            composite.get_entity_default_state("hand")["root_pose"], default_pose
+            composite.get_entity_default_state("hand")["root_pose"], composite_default
+        )
+        np.testing.assert_allclose(
+            free.get_entity_default_state("hand")["root_pose"], free_default
         )
         # The import report treats the base chain as root state: requested and
         # effective articulation joint defaults contain only the finger hinge.
@@ -370,3 +385,124 @@ def test_backend_root_state_round_trip_matches_free_joint(tmp_path):
     finally:
         for backend in backends:
             backend.close()
+
+
+def _keyed_chain_file(tmp_path, key_qpos, key_qvel, *, root="chain", name="hand"):
+    """Write a minimal composite-base source with one ``home`` keyframe."""
+    path = tmp_path / f"{name}.xml"
+    if root == "chain":
+        body = (
+            '<body name="mount_x">'
+            '<inertial mass="1e-4" pos="0 0 0" diaginertia="1e-6 1e-6 1e-6"/>'
+            '<joint name="px" type="slide" axis="1 0 0"/>'
+            '<body name="mount_y">'
+            '<inertial mass="1e-4" pos="0 0 0" diaginertia="1e-6 1e-6 1e-6"/>'
+            '<joint name="py" type="slide" axis="0 1 0"/>'
+            '<body name="mount_z">'
+            '<inertial mass="1e-4" pos="0 0 0" diaginertia="1e-6 1e-6 1e-6"/>'
+            '<joint name="pz" type="slide" axis="0 0 1"/>'
+            '<body name="palm">'
+            '<inertial mass=".3" pos="0 0 0" diaginertia="1e-4 1e-4 1e-4"/>'
+            '<joint name="palm_ball" type="ball"/>'
+            '<geom type="sphere" size=".05" mass=".3"/>'
+            "</body></body></body></body>"
+        )
+    else:
+        body = (
+            '<body name="palm">'
+            '<inertial mass=".3" pos="0 0 0" diaginertia="1e-4 1e-4 1e-4"/>'
+            '<freejoint name="free"/>'
+            '<geom type="sphere" size=".05" mass=".3"/>'
+            "</body>"
+        )
+    path.write_text(
+        f"<mujoco><worldbody>{body}</worldbody>"
+        "<keyframe>"
+        f'<key name="home" qpos="{key_qpos}" qvel="{key_qvel}"/>'
+        "</keyframe></mujoco>"
+    )
+    return ModelSourceDescriptor(str(path))
+
+
+def test_merge_keys_carries_composite_root_columns(tmp_path):
+    """Merged keys carry composite root columns bit-exactly; FK keeps source semantics."""
+    # Every value is a dyadic fraction so the serialized XML round trip is exact.
+    source = _keyed_chain_file(
+        tmp_path,
+        "-0.25 0.25 0.5 0.5 0.5 0.5 0.5",
+        "0.5 -0.25 0.75 0.25 -0.5 1",
+    )
+    source_model = mujoco.MjModel.from_xml_path(source.model_file)
+    scene = SceneCfg(
+        entity_assets=(
+            SceneEntitySpec(
+                "hand", source, initial_state=EntityInitialState(position=(1.0, 2.0, 3.0))
+            ),
+        ),
+        default_keyframe_name="home",
+    )
+    with compose_scene(scene, 1, 0.002) as composed:
+        model = mujoco.MjModel.from_xml_path(composed.model_file)
+        layout = composed.layout.get_entity("hand")
+        assert tuple(joint.name for joint in layout.root_joints) == ("px", "py", "pz", "palm_ball")
+        key = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        assert key >= 0
+        # Root qpos/qvel columns equal the source key values bit-for-bit.
+        np.testing.assert_array_equal(
+            model.key_qpos[key][list(layout.root_qpos_indices)], source_model.key_qpos[0]
+        )
+        np.testing.assert_array_equal(
+            model.key_qvel[key][list(layout.root_qvel_indices)], source_model.key_qvel[0]
+        )
+        # No slide-reference bake: qpos0 stays the source reference
+        # configuration and the declared position locates the mount origin.
+        np.testing.assert_array_equal(
+            model.qpos0[list(layout.root_qpos_indices)], source_model.qpos0
+        )
+        np.testing.assert_array_equal(model.body_pos[model.body("hand/mount_x").id], [1, 2, 3])
+        # FK at the merged keyframe equals the source FK translated by the
+        # mount origin, with no residual reference offset.
+        source_data = mujoco.MjData(source_model)
+        mujoco.mj_resetDataKeyframe(source_model, source_data, 0)
+        mujoco.mj_forward(source_model, source_data)
+        data = mujoco.MjData(model)
+        mujoco.mj_resetDataKeyframe(model, data, key)
+        mujoco.mj_forward(model, data)
+        palm = model.body("hand/palm").id
+        expected = source_data.xpos[source_model.body("palm").id] + [1.0, 2.0, 3.0]
+        np.testing.assert_array_equal(data.xpos[palm], expected)
+        np.testing.assert_array_equal(data.xpos[palm], [0.75, 2.25, 3.5])
+        np.testing.assert_array_equal(
+            data.xquat[palm], source_data.xquat[source_model.body("palm").id]
+        )
+
+
+def test_merge_keys_keeps_free_root_columns_on_the_declared_pose(tmp_path):
+    """Free-joint roots keep the EntityInitialState keyframe override, bit-identically."""
+    source = _keyed_chain_file(
+        tmp_path, "9 9 9 0.5 0.5 0.5 0.5", "1 1 1 1 1 1", root="free"
+    )
+    scene = SceneCfg(
+        entity_assets=(
+            SceneEntitySpec(
+                "hand", source, initial_state=EntityInitialState(position=(1.0, 2.0, 3.0))
+            ),
+        ),
+        default_keyframe_name="home",
+    )
+    with compose_scene(scene, 1, 0.002) as composed:
+        model = mujoco.MjModel.from_xml_path(composed.model_file)
+        layout = composed.layout.get_entity("hand")
+        assert not layout.root_joints
+        key = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        assert key >= 0
+        # The source key root pose/velocity stay overridden by the declared
+        # pose and zero velocity.
+        np.testing.assert_array_equal(
+            model.key_qpos[key][list(layout.root_qpos_indices)], [1, 2, 3, 1, 0, 0, 0]
+        )
+        np.testing.assert_array_equal(model.key_qvel[key][list(layout.root_qvel_indices)], 0)
+        data = mujoco.MjData(model)
+        mujoco.mj_resetDataKeyframe(model, data, key)
+        mujoco.mj_forward(model, data)
+        np.testing.assert_array_equal(data.xpos[model.body("hand/palm").id], [1, 2, 3])
