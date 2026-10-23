@@ -2,10 +2,12 @@
 
 Covers the public ``set_generalized_force_tensor`` contract: per-substep
 ``body_f`` gravity compensation on a free body (the VOC smoke case), a
-hinge-only ``joint_f`` PD servo, per-substep semantic parity with native
-Newton, the clearing/ownership contract, validation boundaries, and CUDA
-graph replay. Scenes use primitive geoms and hinge/free joints only; the
-ball-joint servo case lands after ball-joint support (PR #430) merges.
+hinge-only ``joint_f`` PD servo, ball-joint torque frame conversion (public
+body-frame columns rotate into Newton's parent anchor frame with the ball's
+current orientation at injection time), per-substep semantic parity with
+native Newton, the clearing/ownership contract, validation boundaries, and
+CUDA graph replay. Scenes use primitive geoms and ball/hinge/free joints
+only.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from unisim.backend.newton.dependencies import (
     load_newton_dependencies,
 )
 from unisim.scene import SceneCfg
+from unisim.utils.rotation import np_quat_apply_batched
 
 _FREE_BODY_MODEL = """
 <mujoco model="unisim-newton-voc">
@@ -59,6 +62,50 @@ _SIM_DT = 0.005
 _HINGE_QD_INDEX = 6
 _HINGE_QPOS_INDEX = 7
 _BODY_MASSES = (1.0, 0.2)
+
+_BALL_MODEL = """
+<mujoco model="unisim-newton-ball-force">
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+  <worldbody>
+    <geom name="ground" type="plane" size="2 2 0.1"/>
+    <body name="hand" pos="0 0 0.5">
+      <joint name="root" type="free"/>
+      <geom name="palm" type="sphere" size="0.03" mass="0.5"/>
+      <body name="finger" pos="0 0 0.05">
+        <joint name="wrist_ball" type="ball"/>
+        <geom name="tip" type="sphere" size="0.02" mass="0.1"/>
+        <body name="nail" pos="0 0 0.03">
+          <joint name="flex" type="hinge" axis="0 1 0"/>
+          <geom name="nail_geom" type="sphere" size="0.01" mass="0.05"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator><motor name="flex_motor" joint="flex" ctrlrange="-1 1"/></actuator>
+</mujoco>
+"""
+
+_BALL_QD_SLICE = slice(6, 9)
+_BALL_QPOS_SLICE = slice(7, 11)
+_BALL_HINGE_QD_INDEX = 9
+
+
+def _axis_angle_wxyz(axis: tuple[float, float, float], angle: float) -> np.ndarray:
+    unit = np.asarray(axis, dtype=np.float64)
+    unit /= np.linalg.norm(unit)
+    return np.concatenate(([np.cos(angle / 2.0)], np.sin(angle / 2.0) * unit))
+
+
+# One non-identity ball orientation per env (public wxyz layout).
+_BALL_QUATS = np.stack(
+    (
+        _axis_angle_wxyz((1.0, 2.0, 3.0), 0.4),
+        _axis_angle_wxyz((0.0, 1.0, 0.0), -0.7),
+    )
+)
+_BALL_TORQUES_BODY = np.array(
+    [[0.3, -0.2, 0.5], [-0.4, 0.15, -0.35]], dtype=np.float32
+)
 
 
 def _cuda_backend(
@@ -410,3 +457,131 @@ def test_joint_f_injection_matches_eager_under_cuda_graph_replay(tmp_path: Path)
     finally:
         graph.close()
         eager.close()
+
+
+def _posed_ball_backend(tmp_path: Path) -> NewtonBackend:
+    """Materialize the ball model at a non-identity wrist pose on every env."""
+    backend = _cuda_backend(tmp_path, _BALL_MODEL)
+    nv = backend.get_public_state_widths().nv
+    qpos = np.tile(backend.get_default_qpos(), (_NUM_ENVS, 1))
+    qpos[:, _BALL_QPOS_SLICE] = _BALL_QUATS.astype(np.float32)
+    backend._host_set_state(
+        np.arange(_NUM_ENVS, dtype=np.intp),
+        qpos,
+        np.zeros((_NUM_ENVS, nv), dtype=np.float32),
+    )
+    return backend
+
+
+def test_joint_f_ball_torque_injection_converts_body_to_anchor_frame(tmp_path: Path) -> None:
+    """Public body-frame ball torques land in native joint_f in the anchor frame."""
+    torch = pytest.importorskip("torch")
+    backend = _posed_ball_backend(tmp_path)
+    try:
+        nv = backend.get_public_state_widths().nv
+        views = backend.get_state_views()
+        device = views["qpos"].device
+        joint_f = torch.zeros((_NUM_ENVS, nv), dtype=torch.float32, device=device)
+        joint_f[:, _BALL_QD_SLICE] = torch.as_tensor(
+            _BALL_TORQUES_BODY, dtype=torch.float32, device=device
+        )
+        joint_f[:, _BALL_HINGE_QD_INDEX] = torch.tensor([0.7, -0.6], device=device)
+        snapshot = joint_f.clone()
+        backend.set_generalized_force_tensor(joint_f=joint_f)
+        native = np.asarray(backend._control.joint_f.numpy(), dtype=np.float32).reshape(
+            _NUM_ENVS, nv
+        )
+        expected = np_quat_apply_batched(_BALL_QUATS, _BALL_TORQUES_BODY)
+        np.testing.assert_allclose(native[:, _BALL_QD_SLICE], expected, rtol=1e-6, atol=1e-7)
+        # Hinge and root columns pass through unconverted.
+        np.testing.assert_allclose(native[:, _BALL_HINGE_QD_INDEX], [0.7, -0.6], atol=1e-7)
+        np.testing.assert_allclose(native[:, :6], 0.0, atol=1e-7)
+        # The conversion never mutates the caller's tensor.
+        assert torch.equal(joint_f, snapshot)
+    finally:
+        backend.close()
+
+
+def test_joint_f_ball_torque_injection_matches_native_newton(tmp_path: Path) -> None:
+    """A resident ball torque drives the adapter exactly like native Newton."""
+    torch = pytest.importorskip("torch")
+    backend = _posed_ball_backend(tmp_path)
+    substeps = 16
+    try:
+        nv = backend.get_public_state_widths().nv
+        views = backend.get_state_views()
+        device = views["qpos"].device
+        device_name = backend._device
+        joint_f = torch.zeros((_NUM_ENVS, nv), dtype=torch.float32, device=device)
+        joint_f[:, _BALL_QD_SLICE] = torch.as_tensor(
+            _BALL_TORQUES_BODY, dtype=torch.float32, device=device
+        )
+        backend.set_generalized_force_tensor(joint_f=joint_f)
+        # The resident torque is converted once, at injection time; snapshot
+        # the raw engine state the conversion consumed for the native side.
+        raw_q = np.asarray(backend._state.joint_q.numpy(), dtype=np.float32).copy()
+        raw_qd = np.asarray(backend._state.joint_qd.numpy(), dtype=np.float32).copy()
+        ctrl = torch.zeros(
+            (_NUM_ENVS, backend.num_actuators), dtype=torch.float32, device=device
+        )
+        backend.step_tensor(ctrl, nsteps=substeps)
+        final_q = np.asarray(backend._state.joint_q.numpy(), dtype=np.float32).copy()
+        final_qd = np.asarray(backend._state.joint_qd.numpy(), dtype=np.float32).copy()
+    finally:
+        backend.close()
+
+    deps = load_newton_dependencies()
+    warp, newton = deps.warp, deps.newton
+    model_file = tmp_path / "newton_force.xml"
+    previous_layout = bool(newton.use_coord_layout_targets)
+    newton.use_coord_layout_targets = True
+    try:
+        template = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(template)
+        template.add_mjcf(str(model_file), ctrl_direct=False)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, _NUM_ENVS)
+        model = builder.finalize(device=device_name)
+    finally:
+        newton.use_coord_layout_targets = previous_layout
+    solver = newton.solvers.SolverMuJoCo(
+        model,
+        separate_worlds=True,
+        nconmax=512,
+        njmax=512,
+        solver="newton",
+        integrator="implicitfast",
+        use_mujoco_cpu=False,
+        use_mujoco_contacts=True,
+        update_data_interval=1,
+    )
+    state = model.state()
+    state_out = model.state()
+    control = model.control()
+    contacts = newton.Contacts(solver.get_max_contact_count(), 0, device=device_name)
+    state.joint_q.assign(raw_q)
+    state.joint_qd.assign(raw_qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    mask = warp.array(
+        np.concatenate((np.ones(_NUM_ENVS, dtype=np.bool_), (False,))),
+        dtype=warp.bool,
+        device=device_name,
+    )
+    solver.reset(state, mask, flags=0)
+    # Native joint_f consumes parent-anchor-frame torques: rotate the public
+    # body-frame payload once with the injection-time pose (native xyzw
+    # becomes wxyz first), then leave the resident torque untouched.
+    ball_wxyz = raw_q.reshape(_NUM_ENVS, -1)[:, _BALL_QPOS_SLICE][:, [3, 0, 1, 2]]
+    native_joint_f = np.zeros((_NUM_ENVS, nv), dtype=np.float32)
+    native_joint_f[:, _BALL_QD_SLICE] = np_quat_apply_batched(ball_wxyz, _BALL_TORQUES_BODY)
+    control.joint_f.assign(native_joint_f.reshape(-1))
+    for _ in range(substeps):
+        state.clear_forces()
+        solver.step(state, state_out, control, contacts, _SIM_DT)
+        state, state_out = state_out, state
+    np.testing.assert_allclose(
+        np.asarray(state.joint_q.numpy(), dtype=np.float32), final_q, rtol=1e-5, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.asarray(state.joint_qd.numpy(), dtype=np.float32), final_qd, rtol=1e-5, atol=1e-6
+    )

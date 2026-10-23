@@ -24,6 +24,7 @@ from unisim.entities import (
 )
 from unisim.entity_state import inverse_rotate_vector, rotate_vector
 from unisim.scene import SceneCfg
+from unisim.utils.rotation import np_quat_apply_batched
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -1195,6 +1196,85 @@ def test_portable_ball_joint_single_step_matches_native_newton(tmp_path: Path):
             rtol=1e-5,
             atol=1e-6,
         )
+    finally:
+        backend.close()
+
+
+def test_portable_joint_f_ball_torque_injection_converts_body_to_anchor_frame(tmp_path: Path):
+    """Portable injection rotates public body-frame ball torques into the anchor frame."""
+    torch = pytest.importorskip("torch")
+    backend = _backend(_ball_scene(tmp_path))
+    try:
+        backend.model
+        layout = backend.get_scene_layout()
+        num_envs = backend.num_envs
+        nv = layout.nv
+        assert backend._metadata.ball_joint_addresses == ((7, 6), (19, 16))
+
+        # Alternate the two non-identity wrist poses across envs.
+        quats = np.stack(
+            [_BALL_QUAT_A if env % 2 == 0 else _BALL_QUAT_B for env in range(num_envs)]
+        )
+        qpos = np.tile(backend.get_default_qpos(), (num_envs, 1))
+        qvel = np.zeros((num_envs, nv), dtype=np.float32)
+        for qpos_adr, _ in backend._metadata.ball_joint_addresses:
+            qpos[:, qpos_adr : qpos_adr + 4] = quats
+        backend._host_set_state(np.arange(num_envs, dtype=np.intp), qpos, qvel)
+
+        device = torch.device(backend._device)
+        joint_f = torch.zeros((num_envs, nv), dtype=torch.float32, device=device)
+        variation = np.arange(num_envs, dtype=np.float32)[:, None] * 0.05
+        torques_body = {
+            6: np.tile(np.array([0.3, -0.2, 0.5], dtype=np.float32), (num_envs, 1)) + variation,
+            16: np.tile(np.array([-0.4, 0.15, -0.35], dtype=np.float32), (num_envs, 1))
+            - variation,
+        }
+        hinge_values = {9: np.linspace(0.7, -0.6, num_envs, dtype=np.float32), 19: 0.25}
+        object_wrench = np.linspace(-0.4, 0.4, 6, dtype=np.float32)
+        for qvel_adr, torque in torques_body.items():
+            joint_f[:, qvel_adr : qvel_adr + 3] = torch.as_tensor(torque, device=device)
+        for qvel_adr, value in hinge_values.items():
+            joint_f[:, qvel_adr] = torch.as_tensor(value, device=device)
+        joint_f[:, 20:26] = torch.as_tensor(
+            np.tile(object_wrench, (num_envs, 1)), device=device
+        )
+        snapshot = joint_f.clone()
+        backend.set_generalized_force_tensor(joint_f=joint_f)
+
+        # Per-entity control views expose the native joint_f: ball columns at
+        # local 6:9 carry the anchor-frame torque, everything else passes
+        # through unconverted.
+        for name, qvel_adr in (("left_hand", 6), ("right_hand", 16)):
+            native = (
+                backend._deps.warp.to_torch(
+                    backend._entity_runtimes[name].view.get_dof_forces(backend._control)
+                )
+                .squeeze(1)
+                .cpu()
+                .numpy()
+            )
+            assert native.shape == (num_envs, 10)
+            expected = np_quat_apply_batched(quats, torques_body[qvel_adr])
+            np.testing.assert_allclose(native[:, 6:9], expected, rtol=1e-6, atol=1e-7)
+            np.testing.assert_allclose(
+                native[:, 9], hinge_values[9 if name == "left_hand" else 19], atol=1e-7
+            )
+            np.testing.assert_allclose(native[:, :6], 0.0, atol=1e-7)
+        # The free-root object entity owns no ball columns: its world-frame
+        # root wrench passes through verbatim.
+        object_native = (
+            backend._deps.warp.to_torch(
+                backend._entity_runtimes["object"].view.get_dof_forces(backend._control)
+            )
+            .squeeze(1)
+            .cpu()
+            .numpy()
+        )
+        np.testing.assert_allclose(
+            object_native, np.tile(object_wrench, (num_envs, 1)), rtol=1e-6, atol=1e-7
+        )
+        # The conversion never mutates the caller's tensor.
+        assert torch.equal(joint_f, snapshot)
     finally:
         backend.close()
 

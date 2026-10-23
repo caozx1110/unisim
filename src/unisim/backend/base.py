@@ -1432,7 +1432,9 @@ class SimBackend(abc.ABC):
         semantics: the solver consumes the value at every substep until it is
         overwritten. For free or distance roots, the six root columns are the
         world-frame wrench ``(f_x, f_y, f_z, t_x, t_y, t_z)`` applied at the
-        child body's center of mass.
+        child body's center of mass. For ball joints, the three torque columns
+        are the body-frame torque, dual to the public body-frame angular
+        velocity qvel layout.
 
         ``body_f`` has shape ``(num_envs, num_bodies, 6)`` and carries one
         world-frame spatial wrench per body in public body order, matching the

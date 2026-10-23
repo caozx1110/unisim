@@ -1950,6 +1950,14 @@ class NewtonBackend(SimBackend):
         substep until overwritten; ``state.clear_forces()`` never touches
         control arrays, and tensor/host resets do not clear it either.
 
+        Ball-joint torque columns inside ``joint_f`` are interpreted in the
+        body frame, dual to the public qvel layout, and rotate into Newton's
+        parent anchor frame with the ball's current orientation at injection
+        time (mirroring the state write path). The resident torque is not
+        re-rotated as the pose evolves afterwards; consumers tracking the
+        pose, such as a per-substep wrist PD servo, rewrite the channel every
+        substep.
+
         ``body_f`` is a contiguous float32 Torch tensor with shape
         ``(num_envs, num_bodies, 6)`` in public body order; each row is the
         world-frame spatial wrench ``(f_x, f_y, f_z, t_x, t_y, t_z)`` with the
@@ -1974,7 +1982,9 @@ class NewtonBackend(SimBackend):
             if self._portable_mode:
                 self._inject_portable_joint_f(joint_f)
             else:
-                self._assign_warp_tensor(self._control.joint_f, joint_f)
+                self._assign_warp_tensor(
+                    self._control.joint_f, self._joint_f_engine_layout(joint_f)
+                )
         if body_f is not None:
             body_count = len(self._body_names)
             if int(self._model.body_count) != self._num_envs * body_count:
@@ -1994,16 +2004,68 @@ class NewtonBackend(SimBackend):
             )
             self._tensor_body_f_armed = True
 
+    def _joint_f_engine_layout(self, joint_f: Any) -> Any:
+        """Rotate public ball-torque columns into Newton's parent anchor frame.
+
+        Generalized forces are dual to generalized velocities, so a ball
+        joint's torque columns follow the same frame rule as its qvel: the
+        public MJCF layout carries body-frame torques while Newton's
+        ``Control.joint_f`` expects the parent anchor frame. Each ball column
+        rotates by the ball's current orientation read from the live state,
+        mirroring the ``_raw_state_from_public`` velocity translation.
+        """
+
+        addresses = self._metadata.ball_joint_addresses
+        if not addresses:
+            return joint_f
+        import torch
+
+        qpos_raw = self._deps.warp.to_torch(
+            self._view.get_dof_positions(self._state)
+        ).squeeze(1)
+        converted = joint_f.clone()
+        for qpos_adr, qvel_adr in addresses:
+            # Newton exposes ball coordinates as xyzw quaternions; the public
+            # layout and the torch quat helpers are wxyz.
+            xyzw = qpos_raw[:, qpos_adr : qpos_adr + 4]
+            ball_quat = torch.cat((xyzw[:, 3:4], xyzw[:, 0:3]), dim=1)
+            converted[:, qvel_adr : qvel_adr + 3] = torch_quat_rotate(
+                torch, ball_quat, joint_f[:, qvel_adr : qvel_adr + 3]
+            )
+        return converted
+
     def _inject_portable_joint_f(self, joint_f: Any) -> None:
-        """Scatter public-qvel-layout joint_f through the per-entity control views."""
+        """Scatter public-qvel-layout joint_f through the per-entity control views.
+
+        Ball-joint torque columns arrive in the body frame (dual to public
+        qvel) and rotate into Newton's parent anchor frame with the ball's
+        current orientation before the scatter, exactly like the single-scene
+        ``_joint_f_engine_layout``.
+        """
+
+        import torch
 
         indices = self._portable_tensor_layout()
         for entity_name, runtime in self._entity_runtimes.items():
-            v_columns = indices[entity_name]["v"]
+            entry = indices[entity_name]
+            v_columns = entry["v"]
             # Zero-DoF static entities own no generalized-force columns.
             if not v_columns.numel():
                 continue
+            # Advanced indexing copies, so the caller's tensor is never mutated.
             block = joint_f[:, v_columns]
+            if entry["ball_v_local"]:
+                qpos_raw = self._deps.warp.to_torch(
+                    runtime.view.get_dof_positions(self._state)
+                ).squeeze(1)
+                for local_q, local_v in zip(
+                    entry["ball_q_local"], entry["ball_v_local"], strict=True
+                ):
+                    xyzw = qpos_raw[:, local_q : local_q + 4]
+                    ball_quat = torch.cat((xyzw[:, 3:4], xyzw[:, 0:3]), dim=1)
+                    block[:, local_v : local_v + 3] = torch_quat_rotate(
+                        torch, ball_quat, block[:, local_v : local_v + 3]
+                    )
             runtime.view.set_dof_forces(
                 self._control,
                 self._deps.warp.from_torch(block.unsqueeze(1).contiguous()),
