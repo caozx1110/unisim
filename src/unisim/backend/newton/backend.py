@@ -604,10 +604,13 @@ class NewtonBackend(SimBackend):
             if columns.size == 0:
                 continue
             values = np.ascontiguousarray(selected_defaults[:, columns])
-            if entity.root_mode == "floating":
+            if entity.root_mode == "floating" and not entity.root_joints:
                 values[:, 3:7] = self._wxyz_to_xyzw(values[:, 3:7])
             raw_qpos[:, columns] = values
-            for joint in entity.joints:
+            # A composite floating base carries its terminal ball (the root
+            # orientation columns) in ``root_joints``; the same raw xyzw seeding
+            # applies there.
+            for joint in (*entity.joints, *entity.root_joints):
                 if joint.kind != "ball":
                     continue
                 qpos_adr = joint.qpos_indices[0]
@@ -896,6 +899,11 @@ class NewtonBackend(SimBackend):
         device = self._tensor_device()
         layout: dict[str, dict[str, Any]] = {}
         for entity in self._entity_layout.entities:
+            balls = tuple(
+                joint
+                for joint in (*entity.joints, *entity.root_joints)
+                if joint.kind == "ball"
+            )
             entry: dict[str, Any] = {
                 "q": torch.tensor(entity.qpos_indices, dtype=torch.int64, device=device),
                 "v": torch.tensor(entity.qvel_indices, dtype=torch.int64, device=device),
@@ -909,11 +917,22 @@ class NewtonBackend(SimBackend):
                     dtype=torch.int64,
                     device=device,
                 ),
+                # Ball joints need the same xyzw/parent-anchor to wxyz/
+                # body-frame translation as the host paths; a composite
+                # floating base carries its terminal ball in ``root_joints``.
+                "ball_q": tuple(joint.qpos_indices[0] for joint in balls),
+                "ball_v": tuple(joint.qvel_indices[0] for joint in balls),
+                "ball_q_local": tuple(
+                    entity.qpos_indices.index(joint.qpos_indices[0]) for joint in balls
+                ),
+                "ball_v_local": tuple(
+                    entity.qvel_indices.index(joint.qvel_indices[0]) for joint in balls
+                ),
                 "root_quat": None,
                 "root_v": None,
                 "root_row": -1,
             }
-            if entity.root_mode == "floating":
+            if entity.root_mode == "floating" and not entity.root_joints:
                 entry["root_quat"] = torch.tensor(
                     entity.root_qpos_indices[3:7], dtype=torch.int64, device=device
                 )
@@ -979,15 +998,24 @@ class NewtonBackend(SimBackend):
                     self._tensor_qpos[:, entry["root_quat"]] = torch.cat(
                         (xyzw[:, 3:4], xyzw[:, 0:3]), dim=1
                     )
+                for qpos_adr in entry["ball_q"]:
+                    # Newton exposes ball coordinates as xyzw quaternions; the
+                    # public MJCF layout is wxyz (mirrors the host cache).
+                    xyzw = self._tensor_qpos[:, qpos_adr : qpos_adr + 4]
+                    self._tensor_qpos[:, qpos_adr : qpos_adr + 4] = torch.cat(
+                        (xyzw[:, 3:4], xyzw[:, 0:3]), dim=1
+                    )
             if entry["v"].numel():
                 qvel_raw = self._deps.warp.to_torch(
                     runtime.view.get_dof_velocities(self._state)
                 ).squeeze(1)
                 self._tensor_qvel[:, entry["v"]] = qvel_raw
         # Root velocities convert exactly like the portable host cache: each
-        # floating entity's public qvel carries link-origin linear velocity and
-        # body-frame angular velocity, while Newton exposes world-frame
-        # quantities at the COM.
+        # free-root floating entity's public qvel carries link-origin linear
+        # velocity and body-frame angular velocity, while Newton exposes
+        # world-frame quantities at the COM. Composite bases skip this block:
+        # their slide qvel is already the world-frame mount-origin velocity,
+        # and the ball loop below owns the terminal ball's angular velocity.
         for entity_name in self._entity_runtimes:
             entry = indices[entity_name]
             if entry["root_v"] is None:
@@ -1003,6 +1031,16 @@ class NewtonBackend(SimBackend):
             self._tensor_qvel[:, root_v[3:6]] = torch_quat_rotate_inverse(
                 torch, root_quat, root_omega
             )
+        for entity_name in self._entity_runtimes:
+            entry = indices[entity_name]
+            for qpos_adr, qvel_adr in zip(entry["ball_q"], entry["ball_v"], strict=True):
+                # Newton exposes ball angular velocity in the parent anchor
+                # frame; the public MJCF layout carries body-frame angular
+                # velocity. The quaternion above is already public wxyz.
+                ball_quat = self._tensor_qpos[:, qpos_adr : qpos_adr + 4]
+                self._tensor_qvel[:, qvel_adr : qvel_adr + 3] = torch_quat_rotate_inverse(
+                    torch, ball_quat, self._tensor_qvel[:, qvel_adr : qvel_adr + 3]
+                )
         self._tensor_state_stale = False
         self._tensor_body_state_stale = False
 
@@ -1172,13 +1210,15 @@ class NewtonBackend(SimBackend):
                 qvel_raw = self._view_array(view.get_dof_velocities(self._state), qvel_width)
                 self._qvel_cache[:, runtime.qvel_indices] = qvel_raw
 
-            for joint in entity.joints:
+            # Same translation as the single-scene host refresh: Newton's view
+            # exposes raw ball coordinates (xyzw quaternion, parent-anchor-frame
+            # angular velocity) while the public MJCF layout carries wxyz with
+            # body-frame angular velocity. A composite floating base carries its
+            # terminal ball in ``root_joints``; its columns are the root state
+            # columns, so the same loop covers the root pose/velocity there.
+            for joint in (*entity.joints, *entity.root_joints):
                 if joint.kind != "ball":
                     continue
-                # Same translation as the single-scene host refresh: Newton's
-                # view exposes raw ball coordinates (xyzw quaternion,
-                # parent-anchor-frame angular velocity) while the public MJCF
-                # layout carries wxyz with body-frame angular velocity.
                 qpos_adr = joint.qpos_indices[0]
                 qvel_adr = joint.qvel_indices[0]
                 ball_quat = self._xyzw_to_wxyz(self._qpos_cache[:, qpos_adr : qpos_adr + 4])
@@ -1197,7 +1237,13 @@ class NewtonBackend(SimBackend):
             self._body_lin_vel_cache[:, body_rows] = link_qd[:, native_rows, :3] - np.cross(
                 self._body_ang_vel_cache[:, body_rows], offset_w[:, body_rows]
             )
-            if entity.root_mode != "floating":
+            if entity.root_mode != "floating" or entity.root_joints:
+                # A composite base needs no root-velocity correction: its slide
+                # qvel is already the world-frame mount-origin velocity, and the
+                # ball loop above already brought the terminal ball's angular
+                # velocity into the palm body frame. The correction below would
+                # read the identity-orientation slide dummy (zero angular
+                # velocity) and zero the published root angular velocity.
                 continue
             root_row = body_rows[0]
             root_quat = self._body_quat_cache[:, root_row]
@@ -2343,13 +2389,16 @@ class NewtonBackend(SimBackend):
             v_columns = runtime.qvel_indices
             raw_qpos[:, q_columns] = qpos[:, q_columns]
             raw_qvel[:, v_columns] = qvel[:, v_columns]
-            for joint in entity.joints:
+            for joint in (*entity.joints, *entity.root_joints):
                 if joint.kind != "ball":
                     continue
                 # Inverse of the portable host-cache refresh, valid for fixed
                 # and floating roots alike: public wxyz quaternions become raw
                 # xyzw, and public body-frame angular velocity rotates into
                 # Newton's parent anchor frame with the ball's own orientation.
+                # A composite floating base carries its terminal ball (and thus
+                # the root orientation/angular-velocity columns) in
+                # ``root_joints``.
                 qpos_adr = joint.qpos_indices[0]
                 qvel_adr = joint.qvel_indices[0]
                 ball_quat = qpos[:, qpos_adr : qpos_adr + 4]
@@ -2357,7 +2406,11 @@ class NewtonBackend(SimBackend):
                 raw_qvel[:, qvel_adr : qvel_adr + 3] = np_quat_apply_batched(
                     ball_quat, qvel[:, qvel_adr : qvel_adr + 3]
                 )
-            if entity.root_mode != "floating":
+            if entity.root_mode != "floating" or entity.root_joints:
+                # Composite bases pass slide positions/velocities straight
+                # through (world-frame mount-origin state, no COM correction)
+                # and the ball loop above owns the root quaternion and angular
+                # velocity translation.
                 continue
             raw_qpos[:, q_columns[3:7]] = self._wxyz_to_xyzw(qpos[:, q_columns[3:7]])
             pose_quat = qpos[:, q_columns[3:7]]
@@ -2457,6 +2510,15 @@ class NewtonBackend(SimBackend):
                         ),
                         dim=1,
                     )
+                for local, qpos_adr in zip(
+                    entry["ball_q_local"], entry["ball_q"], strict=True
+                ):
+                    # Public wxyz ball quat to Newton's native xyzw; covers the
+                    # composite-base terminal ball carried in ``root_joints``.
+                    wxyz = full_qpos[:, qpos_adr : qpos_adr + 4]
+                    block_q[:, local : local + 4] = torch.cat(
+                        (wxyz[:, 1:4], wxyz[:, 0:1]), dim=1
+                    )
                 runtime.view.set_dof_positions(
                     self._state,
                     warp.from_torch(block_q.unsqueeze(1).contiguous()),
@@ -2467,7 +2529,9 @@ class NewtonBackend(SimBackend):
                 if entry["root_v"] is not None:
                     # Public root velocity is link-origin linear plus body-frame
                     # angular; Newton stores world-frame angular and COM-origin
-                    # linear (mirror of ``_raw_state_from_public``).
+                    # linear (mirror of ``_raw_state_from_public``). Composite
+                    # bases skip this block: slide velocities pass through and
+                    # the ball loop below owns the terminal ball conversion.
                     quat = full_qpos[:, entry["root_quat"]]
                     omega_world = torch_quat_rotate(torch, quat, block_v[:, 3:6])
                     offset_w = torch_quat_rotate(
@@ -2480,6 +2544,16 @@ class NewtonBackend(SimBackend):
                             block_v[:, 6:],
                         ),
                         dim=1,
+                    )
+                for local, qpos_adr, qvel_adr in zip(
+                    entry["ball_v_local"], entry["ball_q"], entry["ball_v"], strict=True
+                ):
+                    # Public body-frame angular velocity rotates into Newton's
+                    # parent anchor frame with the ball's own (public wxyz)
+                    # orientation, mirroring ``_raw_state_from_public``.
+                    ball_quat = full_qpos[:, qpos_adr : qpos_adr + 4]
+                    block_v[:, local : local + 3] = torch_quat_rotate(
+                        torch, ball_quat, full_qvel[:, qvel_adr : qvel_adr + 3]
                     )
                 runtime.view.set_dof_velocities(
                     self._state,
