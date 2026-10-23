@@ -1385,11 +1385,16 @@ _COMPOSITE_QUAT_A = _axis_angle_wxyz((1.0, 2.0, 3.0), 0.4)
 _COMPOSITE_QUAT_B = _axis_angle_wxyz((2.0, -1.0, 0.5), -0.7)
 
 
+_COMPOSITE_MOUNT = np.array((0.0, 0.0, 1.0), dtype=np.float32)
+
+
 def _composite_payload(layout_nq: int, layout_nv: int) -> tuple[np.ndarray, np.ndarray]:
     """Two full-width public-layout rows covering both hands and the object.
 
-    The composite and free hands carry identical root state in every row, so
-    their palm body poses/velocities must agree exactly after a commit.
+    Composite root columns are mount-origin-relative source values, so the
+    free hand carries the composite hand's root position translated by the
+    composite mount origin in every row; their palm body poses/velocities
+    must then agree exactly after a commit.
     """
     qpos = np.zeros((2, layout_nq), dtype=np.float32)
     qvel = np.zeros((2, layout_nv), dtype=np.float32)
@@ -1399,7 +1404,8 @@ def _composite_payload(layout_nq: int, layout_nv: int) -> tuple[np.ndarray, np.n
         qpos[row, 0:3] = (0.1, -0.05, 1.2) if row == 0 else (-0.08, 0.07, 0.9)
         qpos[row, 3:7] = hand_quat
         qpos[row, 7] = 0.4 if row == 0 else -0.2
-        qpos[row, 8:15] = qpos[row, 0:7]
+        qpos[row, 8:11] = qpos[row, 0:3] + _COMPOSITE_MOUNT
+        qpos[row, 11:15] = qpos[row, 3:7]
         qpos[row, 15] = qpos[row, 7]
         qpos[row, 16:19] = (0.3, 0.55, 1.2) if row == 0 else (0.2, 0.45, 1.15)
         qpos[row, 19:23] = object_quat
@@ -1429,10 +1435,12 @@ def _assert_composite_scene_matches_mujoco(
 ) -> mujoco.MjData:
     """Pin every body's kinematics against CPU MuJoCo on the playback file.
 
-    ``compose_scene`` bakes the composite base's declared initial position
-    into its slide joint ``ref`` values, and MuJoCo slide kinematics place
-    bodies at ``axis * (qpos - ref)`` while Newton's importer keeps slide
-    coordinates absolute; chain body positions therefore line up only after
+    The composite base's declared initial position locates only the mount
+    origin on the chain root body; slide joint ``ref`` values stay
+    source-owned (this fixture authors none, so they read back as zero).
+    MuJoCo slide kinematics place bodies at ``axis * (qpos - ref)`` while
+    Newton's importer keeps slide coordinates absolute, so whenever a source
+    authors nonzero references, chain body positions line up only after
     adding back the references accumulated along the body's own chain path.
     Joint velocities, orientations and angular velocities are ``ref``-
     invariant.
@@ -1519,21 +1527,29 @@ def test_portable_composite_root_state_matches_free_root_and_mujoco(tmp_path: Pa
 
         # Public defaults keep the MJCF wxyz layout with an identity root
         # orientation while the native model is seeded raw xyzw per world.
+        # Composite root columns are mount-origin-relative source values: the
+        # declared initial position locates only the mount origin on the chain
+        # root body, so the public default root pose is zero-relative while
+        # the palm spawns at the mount origin in world space.
         default_state = backend.get_entity_state("composite_hand")
         np.testing.assert_allclose(
-            default_state["root_pose"][0], (0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0), atol=1e-7
+            default_state["root_pose"][0], (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0), atol=1e-7
         )
         np.testing.assert_allclose(default_state["root_velocity"], 0.0, atol=1e-7)
         np.testing.assert_allclose(
             backend.get_entity_default_state("composite_hand")["root_pose"][0],
-            (0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
             atol=1e-7,
+        )
+        default_palm_row = layout.get_body_ids(["palm"], entity="composite_hand")[0] - 1
+        np.testing.assert_allclose(
+            backend._body_pos_cache[0, default_palm_row], (0.0, 0.0, 1.0), atol=1e-6
         )
         raw_default = np.asarray(backend.model.joint_q.numpy(), dtype=np.float32).reshape(
             backend.num_envs, layout.nq
         )
         for env in range(backend.num_envs):
-            np.testing.assert_allclose(raw_default[env, 0:3], (0.0, 0.0, 1.0), atol=1e-7)
+            np.testing.assert_allclose(raw_default[env, 0:3], (0.0, 0.0, 0.0), atol=1e-7)
             np.testing.assert_allclose(raw_default[env, 3:7], (0.0, 0.0, 0.0, 1.0), atol=1e-7)
 
         # Asymmetric-quaternion pose + displacement writes round-trip
@@ -1544,8 +1560,9 @@ def test_portable_composite_root_state_matches_free_root_and_mujoco(tmp_path: Pa
             np.testing.assert_allclose(backend._qpos_cache[env], qpos[row], rtol=1e-6, atol=1e-6)
             np.testing.assert_allclose(backend._qvel_cache[env], qvel[row], rtol=1e-6, atol=1e-6)
 
-        # Identical public root state drives the composite and free palms to
-        # identical world poses and angular velocities.
+        # The free hand carries the composite root state translated by the
+        # composite mount origin, so both palms reach identical world poses
+        # and angular velocities.
         composite_palm_row = layout.get_body_ids(["palm"], entity="composite_hand")[0] - 1
         free_palm_row = layout.get_body_ids(["palm"], entity="free_hand")[0] - 1
         for env in (1, 3):
@@ -1639,10 +1656,12 @@ def test_portable_composite_root_tensor_lifecycle_round_trip(tmp_path: Path):
         layout = backend.get_scene_layout()
 
         views0 = backend.get_state_views()
-        # Composite root defaults publish identity wxyz on the tensor plane.
+        # Composite root defaults publish zero-relative source columns with an
+        # identity wxyz orientation on the tensor plane (the declared position
+        # locates only the mount origin, not the public root state).
         np.testing.assert_allclose(
             views0["qpos"][:, 0:7].cpu().numpy(),
-            np.tile((0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0), (5, 1)),
+            np.tile((0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0), (5, 1)),
             atol=1e-6,
         )
 
