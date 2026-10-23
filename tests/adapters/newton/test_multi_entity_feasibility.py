@@ -691,6 +691,61 @@ def test_variant_mass_and_inertia_change_solver_force_response(tmp_path: Path):
         backend.close()
 
 
+def test_rotated_principal_inertia_frame_survives_variant_audit(tmp_path: Path):
+    """#441: off-diagonal fullinertia (rotated principal frame) materializes.
+
+    Newton stores ``body_inertia`` as the full tensor in the body frame; the
+    audit expectation is rotated out of the MuJoCo principal frame with
+    ``body_iquat``, so a rotated principal frame no longer false-rejects.
+    """
+    path = tmp_path / "tilted.xml"
+    path.write_text(
+        """
+        <mujoco><option gravity="0 0 0" integrator="Euler"/><worldbody>
+          <body name="base">
+            <freejoint name="root"/>
+            <inertial pos="0 0 0" mass="1.5" fullinertia=".11 .2 .3 .015 -.02 .005"/>
+            <geom name="object_geom" type="sphere" size="0.1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody></mujoco>
+        """,
+        encoding="utf-8",
+    )
+    scene = SceneCfg(
+        entity_assets=(
+            SceneEntitySpec("object", ModelSourceDescriptor(str(path))),
+            SceneEntitySpec(
+                "table",
+                _table(tmp_path),
+                kind="rigid",
+                root_mode="fixed",
+                initial_state=EntityInitialState((0.0, 0.0, -3.0)),
+            ),
+        )
+    )
+    backend = _backend(scene)
+    try:
+        backend.model  # materialize; the variant audit runs here
+        reference = mujoco.MjModel.from_xml_path(str(path))
+        native = np.asarray(backend.model.body_inertia.numpy(), dtype=np.float64)
+        object_row = backend.get_scene_layout().get_entity("object").body_ids[0] - 1
+        w, x, y, z = np.asarray(reference.body_iquat[1], dtype=np.float64)
+        rotation = np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+            ]
+        )
+        expected = (
+            rotation @ np.diag(reference.body_inertia[1].astype(np.float64)) @ rotation.T
+        )
+        assert not np.allclose(expected, np.diag(np.diag(expected)), atol=1e-9)
+        np.testing.assert_allclose(native[object_row], expected, rtol=2e-5, atol=2e-6)
+    finally:
+        backend.close()
+
+
 def test_selected_world_matches_independent_single_world_solver(tmp_path: Path):
     batched = _backend(_scene(tmp_path / "batched", assignment=(1, 1, 1, 1, 1)))
     single = _backend(_scene(tmp_path / "single", assignment=(1,)))
