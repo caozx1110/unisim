@@ -208,8 +208,10 @@ _COMPOSITE_BASE_AXES = (
 )
 _COMPOSITE_BASE_RULE = (
     "a composite floating base of exactly three slide joints with canonical "
-    "x/y/z unit axes on a single zero/identity-frame body chain, followed by "
-    "one ball joint on the terminal zero/identity-frame body"
+    "x/y/z unit axes on a single body chain, followed by one ball joint on "
+    "the terminal body; every chain body keeps an identity orientation and "
+    "only the root chain body may carry a non-zero position (the mount origin "
+    "declared by EntityInitialState)"
 )
 _IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
 
@@ -221,10 +223,13 @@ def _composite_floating_base_joints(
 
     A composite floating base is a single chain of exactly three slide joints
     with canonical x/y/z unit axes, each the sole joint of its body, followed
-    by one ball joint as the sole joint of the terminal body; every chain body
-    uses a zero/identity frame. The base qpos ``[x, y, z, qw, qx, qy, qz]``
-    and qvel ``[vx, vy, vz, wx, wy, wz]`` layouts then match a free joint
-    exactly. Any deviation returns a human-readable failure reason.
+    by one ball joint as the sole joint of the terminal body. Every chain body
+    keeps an identity orientation; only the root chain body may carry a
+    non-zero position, which is the mount origin declared by
+    EntityInitialState. The base qpos ``[x, y, z, qw, qx, qy, qz]`` and qvel
+    ``[vx, vy, vz, wx, wy, wz]`` layouts then match a free joint exactly,
+    measured from the mount origin. Any deviation returns a human-readable
+    failure reason.
     """
     slide = int(mujoco.mjtJoint.mjJNT_SLIDE)
     ball = int(mujoco.mjtJoint.mjJNT_BALL)
@@ -232,7 +237,7 @@ def _composite_floating_base_joints(
     body = int(root_body)
     while True:
         name = str(model.body(body).name)
-        if np.any(model.body_pos[body] != 0.0) or np.any(
+        if (body != int(root_body) and np.any(model.body_pos[body] != 0.0)) or np.any(
             model.body_quat[body] != np.array(_IDENTITY_QUAT)
         ):
             return f"{_COMPOSITE_BASE_RULE}; chain body {name!r} has a non-identity frame"
@@ -387,14 +392,12 @@ def load_entity_source(
     # Compile before changing root/actuation topology. This resolves source
     # angular units, defaults and keyframe widths independently of the scene.
     original_model = spec.compile()
-    base_joint_ids: tuple[int, ...] = ()
     if composite_base:
         resolved = _composite_floating_base_joints(original_model, 1)
         if isinstance(resolved, str):
             raise ValueError(
                 f"floating entity {entity.name!r} requires one root free joint or {resolved}"
             )
-        base_joint_ids = resolved
     if any(not original_model.key(i).name for i in range(original_model.nkey)):
         raise ValueError(f"entity {entity.name!r}: composition requires named source keyframes")
     for key in list(spec.keys):
@@ -425,15 +428,12 @@ def load_entity_source(
             geom.conaffinity = 0
         for pair in list(spec.pairs):
             spec.delete(pair)
-    if composite_base:
-        # The declared initial position is baked into the slide joint
-        # references instead of the root frame, keeping base qpos equal to
-        # the world root pose like a free joint.
-        spec_joints = {joint.name: joint for joint in spec.joints}
-        for joint_id, component in zip(base_joint_ids[:3], entity.initial_state.position):
-            spec_joints[str(original_model.joint(joint_id).name)].ref = component
-    else:
-        root.pos = entity.initial_state.position
+    # A composite base keeps its source slide references: the declared initial
+    # state positions only the mount chain origin, so the base qpos columns
+    # stay source-owned (qpos0 equals the slide references, and merged
+    # keyframes carry the source root values).
+    root.pos = entity.initial_state.position
+    if not composite_base:
         root.quat = entity.initial_state.quaternion
     # MjSpec attachment preserves authored references, but the generated XML
     # lives elsewhere. Resolve external resources before serialization.
@@ -1051,10 +1051,13 @@ def _merge_keys(
 ) -> tuple[str, ...]:
     """Merge named keys by native joint/control addresses, never concatenation.
 
-    Source root poses AND root velocities are intentionally overridden by each
-    EntityInitialState pose and zero initial velocity. A future import report
-    must retain that override provenance. Mirrors retain their independent
-    initial mocap pose and contribute no joint, control or activation state.
+    Free-joint source root poses AND root velocities are intentionally
+    overridden by each EntityInitialState pose and zero initial velocity; a
+    composite base instead positions only its mount chain origin through
+    EntityInitialState, so its root columns are copied from the source keys
+    exactly like articulation joints. A future import report must retain that
+    override provenance. Mirrors retain their independent initial mocap pose
+    and contribute no joint, control or activation state.
     """
     names = tuple(
         sorted({source.key(i).name for source in sources.values() for i in range(source.nkey)})
@@ -1079,7 +1082,10 @@ def _merge_keys(
                 if not np.isfinite(field[key_id]).all():
                     raise ValueError(f"entity {entity_name!r}: keyframe {name!r} must be finite")
             entity_layout = layout.get_entity(entity_name)
-            for joint in entity_layout.joints:
+            # Composite-base root columns follow the source keys exactly like
+            # articulation joints; free-joint roots keep the qpos0/zero-qvel
+            # columns seeded from each EntityInitialState pose above.
+            for joint in (*entity_layout.joints, *entity_layout.root_joints):
                 source_id = mujoco.mj_name2id(source, mujoco.mjtObj.mjOBJ_JOINT, joint.name)
                 if source_id < 0:
                     raise ValueError(f"keyframe source lost joint {entity_name}/{joint.name}")
@@ -1291,10 +1297,13 @@ def compose_scene(
 ) -> ComposedScene:
     """Compile independent full-scene realizations with immutable assignments.
 
-    Root declarations override source and keyframe root poses; their root
-    velocities are overridden to zero. Joint ref/qpos0 is preserved. Named
-    source keys are merged by name; an entity missing a key contributes its
-    qpos0 and zero qvel/ctrl/act. Shared key times must agree. Mirrors retain
+    Root declarations override source and keyframe root poses of free-joint
+    roots; their root velocities are overridden to zero. A composite floating
+    base instead declares only its mount chain origin: its slide references
+    stay source-owned, and merged keyframes carry the source root columns
+    exactly. Joint ref/qpos0 is preserved. Named source keys are merged by
+    name; an entity missing a key contributes its qpos0 and zero qvel/ctrl/act.
+    Shared key times must agree. Mirrors retain
     independent initial mocap poses. Named default selection must exist in
     every realization; selection itself remains the consuming backend's job.
     Global options must agree across every source and variant, except factory dt.
