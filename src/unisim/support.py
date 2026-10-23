@@ -965,6 +965,17 @@ def get_adapter_capabilities(name: str, profile: str = "default") -> CapabilityR
                 (CapabilityCondition("entity.asset_format", "mjcf"),),
             )
             declare(
+                "joint.ball",
+                exact,
+                "Single-scene and portable multi-entity MJCF ball joints materialize "
+                "as native Newton ball joints; public state keeps the MJCF layout "
+                "(wxyz quaternion, body-frame angular velocity) on the host state "
+                "paths. Ball joints must be named and cannot be actuator targets; "
+                "multi-entity portable scenes keep the device-resident tensor "
+                "lifecycle gated independently of ball joints.",
+                (CapabilityCondition("entity.asset_format", "mjcf"),),
+            )
+            declare(
                 "contact.query",
                 exact,
                 "Only named geom-pair contact found sensors with num=1 are mapped.",
