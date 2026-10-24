@@ -1392,3 +1392,81 @@ def test_portable_multi_entity_tensor_lifecycle_matches_per_entity_references(tm
         backend.close()
         ref_a.close()
         ref_b.close()
+
+
+def test_portable_multi_entity_tracked_body_views_match_references(tmp_path: Path):
+    """Tracked-body sensor views are live and match per-entity references."""
+    torch = pytest.importorskip("torch")
+
+    scene = _floating_actuated_scene(tmp_path)
+    backend = _backend(scene)
+    ref_a = _backend(SceneCfg(model_file=str(tmp_path / "obj_a.xml")))
+    ref_b = _backend(SceneCfg(model_file=str(tmp_path / "obj_b.xml")))
+    try:
+        device = torch.device(backend._device)
+        layout = backend.get_scene_layout()
+        entities = {name: layout.get_entity(name) for name in ("obj_a", "obj_b")}
+        qcols = {name: list(entity.qpos_indices) for name, entity in entities.items()}
+        vcols = {name: list(entity.qvel_indices) for name, entity in entities.items()}
+        acols = {name: list(entity.actuator_indices) for name, entity in entities.items()}
+
+        views0 = backend.get_state_views()
+        all_rows = np.arange(5, dtype=np.intp)
+        for name, ref in (("obj_a", ref_a), ("obj_b", ref_b)):
+            ref._host_set_state(
+                all_rows,
+                views0["qpos"][:, qcols[name]].cpu().numpy(),
+                views0["qvel"][:, vcols[name]].cpu().numpy(),
+            )
+
+        pos_view = backend.get_sensor_view("track_pos_w_obj_a/base")
+        quat_view = backend.get_sensor_view("track_quat_w_obj_a/link")
+        linvel_view = backend.get_sensor_view("track_linvel_w_obj_b/base")
+        angvel_view = backend.get_sensor_view("track_angvel_w_obj_b/link")
+
+        ctrl = np.zeros((5, backend.num_actuators), dtype=np.float32)
+        ctrl[:, acols["obj_a"]] = 0.6
+        ctrl[:, acols["obj_b"]] = -0.4
+        backend.step_tensor(torch.as_tensor(ctrl, device=device), nsteps=4)
+        ref_a._host_step(ctrl[:, acols["obj_a"]], nsteps=4)
+        ref_b._host_step(ctrl[:, acols["obj_b"]], nsteps=4)
+        backend._refresh_host_cache(sensor_dt=None)
+        ref_a._refresh_host_cache(sensor_dt=None)
+        ref_b._refresh_host_cache(sensor_dt=None)
+        np.testing.assert_allclose(
+            pos_view.cpu().numpy(), ref_a._body_pos_cache[:, 0], rtol=1e-5, atol=1e-6
+        )
+        np.testing.assert_allclose(
+            quat_view.cpu().numpy(), ref_a._body_quat_cache[:, 1], rtol=1e-5, atol=1e-6
+        )
+        np.testing.assert_allclose(
+            linvel_view.cpu().numpy(),
+            ref_b._body_lin_vel_cache[:, 0],
+            rtol=1e-4,
+            atol=1e-5,
+        )
+        np.testing.assert_allclose(
+            angvel_view.cpu().numpy(),
+            ref_b._body_ang_vel_cache[:, 1],
+            rtol=1e-4,
+            atol=1e-5,
+        )
+
+        before = pos_view.cpu().numpy().copy()
+        backend.step_tensor(torch.as_tensor(ctrl, device=device), nsteps=2)
+        ref_a._host_step(ctrl[:, acols["obj_a"]], nsteps=2)
+        ref_b._host_step(ctrl[:, acols["obj_b"]], nsteps=2)
+        backend._refresh_host_cache(sensor_dt=None)
+        ref_a._refresh_host_cache(sensor_dt=None)
+        ref_b._refresh_host_cache(sensor_dt=None)
+        after = pos_view.cpu().numpy()
+        assert not np.allclose(before, after)
+        np.testing.assert_allclose(after, ref_a._body_pos_cache[:, 0], rtol=1e-4, atol=1e-5)
+
+        for bad in ("track_pos_w_obj_a/nope", "track_pos_w_base"):
+            with pytest.raises(KeyError, match="unknown Newton tensor tracked body"):
+                backend.get_sensor_view(bad)
+    finally:
+        backend.close()
+        ref_a.close()
+        ref_b.close()
