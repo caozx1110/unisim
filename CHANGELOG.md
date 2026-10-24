@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Enabled MJCF collision mesh geometry on Newton. The Newton importer and `SolverMuJoCo` now own convex-hull construction and its default 64-vertex budget, while an explicitly authored `maxhullvert` is preserved for the backend. UniSim no longer rejects collision meshes or imposes host-side hull budgets, `require_convex`, mesh reconstruction, or additional closedness/convexity gates; open and non-convex meshes use the backend's convex-hull collision semantics. Visual-only meshes remain collision-free, and unsupported cone geometry still fails closed.
 - Fixed Motrix packed `geom_friction` resets for MJCF scenes containing visual-only geoms. The adapter now retains visual-only rows from the complete public baseline, so unchanged rows round-trip while selected collision rows are applied through both direct tensor/mask resets and packed-reset transactions. An explicit request to change a visual-only friction row still fails closed (#428).
 
 ## 2.1.1 - 2026-10-22

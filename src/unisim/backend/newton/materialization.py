@@ -340,20 +340,6 @@ def _reject_silent_geometry_gaps(mujoco: Any, model: Any) -> None:
             "newton SolverMuJoCo does not map GeoType.CONE; replace cone geometry "
             "before selecting the newton backend"
         )
-    mesh = int(mujoco.mjtGeom.mjGEOM_MESH)
-    masks = np.asarray(model.geom_contype, dtype=np.int64) | np.asarray(
-        model.geom_conaffinity, dtype=np.int64
-    )
-    colliding_mesh_ids = np.flatnonzero((geom_types == mesh) & (masks != 0))
-    if colliding_mesh_ids.size:
-        names = [
-            str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(geom_id)) or geom_id)
-            for geom_id in colliding_mesh_ids
-        ]
-        raise NotImplementedError(
-            "newton SolverMuJoCo convexifies triangle-mesh collision geometry; "
-            f"colliding mesh geoms are rejected: {', '.join(names)}"
-        )
 
 
 def scan_newton_model_metadata(mujoco: Any, scene: SceneCfg) -> NewtonModelMetadata:
