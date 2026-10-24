@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed the Newton portable variant audit for rotated principal inertia frames (#441). MuJoCo's principal `body_inertia` diagonal is now rotated with `body_iquat` into the body frame before comparison with Newton's full tensor, so equivalent off-diagonal `fullinertia` models pass while actual inertia mismatches remain fail-closed.
+
 - Fixed Motrix packed `geom_friction` resets for MJCF scenes containing visual-only geoms. The adapter now retains visual-only rows from the complete public baseline, so unchanged rows round-trip while selected collision rows are applied through both direct tensor/mask resets and packed-reset transactions. An explicit request to change a visual-only friction row still fails closed (#428).
 
 ## 2.1.1 - 2026-10-22

@@ -10,6 +10,7 @@ import numpy as np
 from unisim.backend.scene_cleanup import TemporarySceneCleanup
 from unisim.scene import SceneCfg
 from unisim.scene_layout import CompiledSceneLayout
+from unisim.utils.rotation import np_matrix_from_quat
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,7 @@ class NewtonModelMetadata:
     body_mass: np.ndarray
     body_ipos: np.ndarray
     body_inertia: np.ndarray
+    body_iquat: np.ndarray
     geom_contype: np.ndarray
     geom_conaffinity: np.ndarray
     joint_names: tuple[str, ...]
@@ -479,6 +481,7 @@ def scan_newton_model_metadata(mujoco: Any, scene: SceneCfg) -> NewtonModelMetad
         body_mass=np.asarray(model.body_mass, dtype=np.float32).copy(),
         body_ipos=np.asarray(model.body_ipos, dtype=np.float32).copy(),
         body_inertia=np.asarray(model.body_inertia, dtype=np.float32).copy(),
+        body_iquat=np.asarray(model.body_iquat, dtype=np.float32).copy(),
         geom_contype=np.asarray(model.geom_contype, dtype=np.int32).copy(),
         geom_conaffinity=np.asarray(model.geom_conaffinity, dtype=np.int32).copy(),
         joint_names=tuple(joint_names),
@@ -580,15 +583,14 @@ def audit_newton_variant_model(
     )
     variant_inertia: list[np.ndarray] = []
     for item in metadata:
-        body_inertia = np.asarray(item.body_inertia, dtype=np.float32)
-        if body_inertia.shape != (item.nbody, 3):
+        body_inertia = np.asarray(item.body_inertia, dtype=np.float64)
+        body_iquat = np.asarray(item.body_iquat, dtype=np.float64)
+        if body_inertia.shape != (item.nbody, 3) or body_iquat.shape != (item.nbody, 4):
             raise RuntimeError("Newton metadata owner did not compile body inertia")
-        diagonal = body_inertia[1:]
-        full = np.zeros((diagonal.shape[0], 3, 3), dtype=np.float32)
-        full[:, 0, 0] = diagonal[:, 0]
-        full[:, 1, 1] = diagonal[:, 1]
-        full[:, 2, 2] = diagonal[:, 2]
-        variant_inertia.append(full)
+        # MuJoCo stores principal eigenvalues; Newton stores the full body-frame tensor.
+        rotation = np_matrix_from_quat(body_iquat[1:])
+        full = np.einsum("bij,bj,bkj->bik", rotation, body_inertia[1:], rotation)
+        variant_inertia.append(full.astype(np.float32))
     selected_inertia = np.stack(variant_inertia)[assignment_array]
     if mass.size != num_envs * expected_bodies:
         raise RuntimeError("newton compiled body-mass layout differs from the portable layout")

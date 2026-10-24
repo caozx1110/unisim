@@ -47,6 +47,30 @@ def test_metadata_scans_keyframes_and_supported_sensors(tmp_path: Path) -> None:
     assert metadata.sensor_plans[0].dim == 3
 
 
+def test_metadata_scans_principal_inertia_frame(tmp_path: Path) -> None:
+    path = _write_model(
+        tmp_path,
+        '<body name="base"><joint name="hinge" type="hinge"/>'
+        '<inertial pos="0 0 0" mass="1" fullinertia=".11 .2 .3 .015 -.02 .005"/>'
+        "</body>",
+    )
+    metadata = scan_newton_model_metadata(mujoco, SceneCfg(model_file=str(path)))
+    w, x, y, z = np.asarray(metadata.body_iquat[1], dtype=np.float64)
+    assert not np.allclose([w, x, y, z], [1, 0, 0, 0], atol=1e-6)
+    rotation = np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+    authored = np.array(
+        [[0.11, 0.015, -0.02], [0.015, 0.2, 0.005], [-0.02, 0.005, 0.3]]
+    )
+    rebuilt = rotation @ np.diag(metadata.body_inertia[1].astype(np.float64)) @ rotation.T
+    np.testing.assert_allclose(rebuilt, authored, atol=1e-6)
+
+
 def test_metadata_preserves_nonleading_passive_and_actuator_addresses(
     tmp_path: Path,
 ) -> None:
