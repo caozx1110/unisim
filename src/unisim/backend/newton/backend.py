@@ -446,6 +446,8 @@ class NewtonBackend(SimBackend):
             else:
                 template = newton.ModelBuilder()
                 newton.solvers.SolverMuJoCo.register_custom_attributes(template)
+                # Same implicit gap=0 pin as the portable source-builder path.
+                template.rigid_gap = 0.0
                 template.add_mjcf(self._metadata.source_model_file, ctrl_direct=False)
                 has_authored_floor = _prepare_newton_render_floor(template, newton)
                 builder = newton.ModelBuilder()

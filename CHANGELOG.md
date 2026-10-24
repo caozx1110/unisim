@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserved MuJoCo's implicit `gap=0` on both Newton MJCF import paths. Newton's `rigid_gap=0.1` fallback no longer manufactures contacts when MjSpec serialization omits the default-valued attribute; a real Newton regression checks two separated spheres remain contact-free.
+
 - Fixed Motrix packed `geom_friction` resets for MJCF scenes containing visual-only geoms. The adapter now retains visual-only rows from the complete public baseline, so unchanged rows round-trip while selected collision rows are applied through both direct tensor/mask resets and packed-reset transactions. An explicit request to change a visual-only friction row still fails closed (#428).
 
 ## 2.1.1 - 2026-10-22

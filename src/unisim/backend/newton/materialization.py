@@ -93,6 +93,9 @@ def build_source_builder(
     """Import one independently compiled portable full-scene source."""
     builder = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    # MjSpec round-trips drop geom gap="0" (the MuJoCo default); do not let
+    # Newton's 0.1 fallback manufacture contacts absent from the authored model.
+    builder.rigid_gap = 0.0
     builder.add_mjcf(model_file, ctrl_direct=False)
     if gravity is not None:
         builder.gravity = tuple(float(value) for value in gravity)

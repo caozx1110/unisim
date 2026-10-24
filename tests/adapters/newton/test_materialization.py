@@ -7,10 +7,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from unisim.backend.newton.materialization import scan_newton_model_metadata
+from unisim.backend.newton.materialization import (
+    build_source_builder,
+    scan_newton_model_metadata,
+)
 from unisim.scene import SceneCfg
 
 mujoco = pytest.importorskip("mujoco")
+newton = pytest.importorskip("newton")
 
 
 def _write_model(tmp_path: Path, body: str) -> Path:
@@ -76,6 +80,37 @@ def test_metadata_preserves_nonleading_passive_and_actuator_addresses(
     assert metadata.nu == 1
     assert metadata.actuator_target_qpos_adrs == (8,)
     assert metadata.actuator_target_qvel_adrs == (7,)
+
+
+def test_source_builder_keeps_mujoco_default_rigid_gap(tmp_path: Path) -> None:
+    path = _write_model(
+        tmp_path,
+        "<body name='a' pos='0 0 0'>"
+        "<inertial pos='0 0 0' mass='1' diaginertia='.1 .1 .1'/>"
+        "<freejoint name='a_root'/>"
+        "<geom type='sphere' size='.05'/>"
+        "</body>"
+        "<body name='b' pos='0 0 .15'>"
+        "<inertial pos='0 0 0' mass='1' diaginertia='.1 .1 .1'/>"
+        "<freejoint name='b_root'/>"
+        "<geom type='sphere' size='.05'/>"
+        "</body>",
+    )
+    builder = build_source_builder(newton, str(path))
+    assert builder.rigid_gap == 0.0
+    model = builder.finalize(device="cpu")
+    solver = newton.solvers.SolverMuJoCo(model, nconmax=4, njmax=4)
+    contacts = newton.Contacts(
+        rigid_contact_max=solver.get_max_contact_count(),
+        soft_contact_max=0,
+        device="cpu",
+    )
+    state = model.state()
+    state_out = model.state()
+    control = model.control()
+    state.clear_forces()
+    solver.step(state, state_out, control, contacts, 0.01)
+    assert int(np.asarray(solver.mjw_data.nacon.numpy()).reshape(-1)[0]) == 0
 
 
 def test_metadata_rejects_cone_geometry(tmp_path: Path) -> None:
