@@ -7,7 +7,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from unisim.backend.newton.materialization import scan_newton_model_metadata
+from unisim.backend.newton.materialization import (
+    build_source_builder,
+    scan_newton_model_metadata,
+)
 from unisim.scene import SceneCfg
 
 mujoco = pytest.importorskip("mujoco")
@@ -76,6 +79,32 @@ def test_metadata_preserves_nonleading_passive_and_actuator_addresses(
     assert metadata.nu == 1
     assert metadata.actuator_target_qpos_adrs == (8,)
     assert metadata.actuator_target_qvel_adrs == (7,)
+
+
+def test_source_builder_preserves_authored_free_joint_armature(tmp_path: Path) -> None:
+    newton = pytest.importorskip("newton")
+    path = _write_model(
+        tmp_path,
+        "<body name='base'>"
+        "<inertial pos='0 0 0' mass='1' diaginertia='.1 .1 .1'/>"
+        "<joint name='root' type='free' armature='2'/>"
+        "<geom type='sphere' size='.1'/>"
+        "</body>",
+    )
+    direct_model = mujoco.MjModel.from_xml_path(str(path))
+    expected = np.full((6,), 2.0, dtype=np.float32)
+    np.testing.assert_array_equal(direct_model.dof_armature, expected)
+
+    metadata = scan_newton_model_metadata(mujoco, SceneCfg(model_file=str(path)))
+    builder = build_source_builder(newton, str(path), metadata=metadata)
+    np.testing.assert_array_equal(builder.joint_armature, expected)
+
+    model = builder.finalize(device="cpu")
+    np.testing.assert_array_equal(model.joint_armature.numpy(), expected)
+
+    solver = newton.solvers.SolverMuJoCo(model, nconmax=4, njmax=4)
+    solver_armature = solver.mjw_model.dof_armature.numpy().reshape(-1)
+    np.testing.assert_array_equal(solver_armature, expected)
 
 
 def test_metadata_rejects_cone_geometry(tmp_path: Path) -> None:

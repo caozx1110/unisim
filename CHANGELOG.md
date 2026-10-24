@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed Newton MJCF import dropping authored armature on free joints (#445). Both portable and whole-MJCF materialization now restore the six free-root DOF values from the direct MuJoCo compile before native model finalization, keeping `SolverMuJoCo.mjw_model.dof_armature` consistent with the authored model instead of silently replacing non-zero values with zero.
+
 - Fixed Motrix packed `geom_friction` resets for MJCF scenes containing visual-only geoms. The adapter now retains visual-only rows from the complete public baseline, so unchanged rows round-trip while selected collision rows are applied through both direct tensor/mask resets and packed-reset transactions. An explicit request to change a visual-only friction row still fails closed (#428).
 
 ## 2.1.1 - 2026-10-22

@@ -88,15 +88,38 @@ class NewtonModelAudit:
 
 
 def build_source_builder(
-    newton: Any, model_file: str, gravity: np.ndarray | None = None
+    newton: Any,
+    model_file: str,
+    gravity: np.ndarray | None = None,
+    *,
+    metadata: NewtonModelMetadata,
 ) -> Any:
-    """Import one independently compiled portable full-scene source."""
+    """Import one full-scene source without dropping free-joint armature."""
     builder = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     builder.add_mjcf(model_file, ctrl_direct=False)
+    _restore_free_joint_armature(newton, builder, metadata)
     if gravity is not None:
         builder.gravity = tuple(float(value) for value in gravity)
     return builder
+
+
+def _restore_free_joint_armature(
+    newton: Any, builder: Any, metadata: NewtonModelMetadata
+) -> None:
+    """Restore authored free-root armature dropped by Newton's importer (#445)."""
+    free_type = int(newton.JointType.FREE)
+    joint_types = tuple(int(value) for value in builder.joint_type)
+    qd_starts = tuple(int(value) for value in builder.joint_qd_start)
+    if len(joint_types) != len(qd_starts) or len(builder.joint_armature) != metadata.nv:
+        raise RuntimeError("Newton importer exposed an inconsistent joint DOF layout")
+    for joint_type, qd_start in zip(joint_types, qd_starts, strict=True):
+        if joint_type != free_type:
+            continue
+        if qd_start < 0 or qd_start + 6 > metadata.nv:
+            raise RuntimeError("Newton importer exposed an invalid free-joint DOF layout")
+        authored = np.asarray(metadata.dof_armature[qd_start : qd_start + 6], dtype=np.float32)
+        builder.joint_armature[qd_start : qd_start + 6] = authored.tolist()
 
 
 def validate_newton_variant_sources(
