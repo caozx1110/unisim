@@ -800,7 +800,7 @@ class NewtonBackend(SimBackend):
                 )
             root_offset = torch_quat_rotate(torch, root_quat, self._tensor_root_ipos)
             public_qvel[:, :3] = qvel_raw[:, :3] - torch_cross(torch, root_omega, root_offset)
-            public_qvel[:, 3:6] = torch_quat_rotate(torch, root_quat, root_omega)
+            public_qvel[:, 3:6] = torch_quat_rotate_inverse(torch, root_quat, root_omega)
         self._tensor_qvel.copy_(public_qvel)
         self._tensor_state_stale = False
         self._tensor_body_state_stale = False

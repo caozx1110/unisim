@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed Newton single-scene tensor state refresh publishing root angular velocity in the wrong frame for non-identity root orientations. The public MJCF-layout qvel now uses the inverse root rotation, matching the host path's body-frame angular velocity; a real-CUDA regression checks host/tensor equality after a rotated-root state write (#427).
+
 - Fixed Motrix packed `geom_friction` resets for MJCF scenes containing visual-only geoms. The adapter now retains visual-only rows from the complete public baseline, so unchanged rows round-trip while selected collision rows are applied through both direct tensor/mask resets and packed-reset transactions. An explicit request to change a visual-only friction row still fails closed (#428).
 
 ## 2.1.1 - 2026-10-22
