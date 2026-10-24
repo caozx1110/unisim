@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed Newton `kp`/`kd` reset randomization writing public authored actuator rows directly into SolverMuJoCo's reordered native parameter table (#448). The adapter now resolves each public motor, position, and velocity actuator through `mjc_actuator_ctrl_source` and `mjc_actuator_to_newton_idx`, requiring one unambiguous match per row and a complete native permutation before scattering direct, selected-mask, or packed device resets; missing or malformed mappings fail closed. CUDA regression coverage uses distinct authored/native orders and checks every native parameter row, untouched parameter components, and unselected environments. Host-plane reset randomization remains unsupported.
+
 - Fixed Motrix packed `geom_friction` resets for MJCF scenes containing visual-only geoms. The adapter now retains visual-only rows from the complete public baseline, so unchanged rows round-trip while selected collision rows are applied through both direct tensor/mask resets and packed-reset transactions. An explicit request to change a visual-only friction row still fails closed (#428).
 
 ## 2.1.1 - 2026-10-22

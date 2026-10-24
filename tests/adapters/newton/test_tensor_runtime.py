@@ -42,6 +42,32 @@ _SENSOR_MODEL = (
 )
 
 
+_REORDERED_ACTUATOR_MODEL = """
+<mujoco model="newton-reordered-actuator-reset">
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+  <worldbody>
+    <body name="base" pos="0 0 1">
+      <freejoint name="root"/>
+      <geom name="base_geom" type="sphere" size=".08" mass="1"/>
+      <body name="selected_link" pos=".1 0 0">
+        <joint name="selected" type="hinge" axis="0 1 0"/>
+        <geom name="selected_geom" type="capsule" fromto="0 0 0 .1 0 0" size=".03" mass=".2"/>
+      </body>
+      <body name="other_link" pos="-.1 0 0">
+        <joint name="other" type="hinge" axis="0 1 0"/>
+        <geom name="other_geom" type="capsule" fromto="0 0 0 .1 0 0" size=".03" mass=".2"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="other_motor" joint="other"/>
+    <position name="selected_pos" joint="selected" kp="20"/>
+    <velocity name="selected_vel" joint="selected" kv="2"/>
+  </actuator>
+</mujoco>
+"""
+
+
 def _portable_fake(entity_count: int) -> NewtonBackend:
     backend = cast(Any, NewtonBackend.__new__(NewtonBackend))
     backend._portable_mode = True
@@ -417,6 +443,81 @@ def test_newton_tensor_hot_path_has_bounded_scalar_synchronization(
         qvel = views["qvel"][1:2].clone()
         backend.set_state_tensor(rows, qpos, qvel)
         assert scalar_reads == ["item"]
+    finally:
+        backend.close()
+
+
+def test_newton_actuator_mapping_rejects_ambiguous_rows() -> None:
+    backend = cast(Any, NewtonBackend.__new__(NewtonBackend))
+    backend._public_to_native_actuator_rows = None
+    backend._metadata = SimpleNamespace(
+        actuator_names=("motor", "position", "velocity"),
+        actuator_target_kinds=("direct", "position", "velocity"),
+        actuator_target_qvel_adrs=np.zeros(3, dtype=np.int32),
+    )
+    backend._solver = SimpleNamespace(
+        mjc_actuator_ctrl_source=SimpleNamespace(
+            numpy=lambda: np.array([0, 0, 1], dtype=np.int32)
+        ),
+        mjc_actuator_to_newton_idx=SimpleNamespace(
+            numpy=lambda: np.array([0, 0, 0], dtype=np.int32)
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="public position actuator row 1.*exactly one"):
+        backend._native_actuator_rows()
+
+
+def test_newton_direct_reset_randomization_maps_reordered_native_actuators(
+    tmp_path: Path,
+) -> None:
+    torch = pytest.importorskip("torch")
+    from unisim.dr.types import TensorResetRandomizationPayload
+
+    backend = _cuda_backend(tmp_path, _REORDERED_ACTUATOR_MODEL)
+    try:
+        assert backend.get_actuator_names() == ("other_motor", "selected_pos", "selected_vel")
+        source = np.asarray(backend._solver.mjc_actuator_ctrl_source.numpy(), dtype=np.int32)
+        mapping = np.asarray(
+            backend._solver.mjc_actuator_to_newton_idx.numpy(), dtype=np.int32
+        )
+        native_rows: list[int] = []
+        for public_row, kind in enumerate(backend._metadata.actuator_target_kinds):
+            if kind == "direct":
+                matches = np.flatnonzero((source != 0) & (mapping == public_row))
+            else:
+                dof = int(backend._metadata.actuator_target_qvel_adrs[public_row])
+                encoded = dof if kind == "position" else -(dof + 2)
+                matches = np.flatnonzero((source == 0) & (mapping == encoded))
+            assert matches.size == 1
+            native_rows.append(int(matches[0]))
+        assert native_rows != list(range(backend.num_actuators))
+
+        warp = backend._deps.warp
+        gainprm = warp.to_torch(backend._solver.mjw_model.actuator_gainprm)
+        biasprm = warp.to_torch(backend._solver.mjw_model.actuator_biasprm)
+        baseline_gain = gainprm.clone()
+        baseline_bias = biasprm.clone()
+        views = backend.get_state_views()
+        device = views["qpos"].device
+        kp = torch.tensor([[11.0, 22.0, 33.0]], dtype=torch.float32, device=device)
+        kd = torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32, device=device)
+        backend.set_state_tensor(
+            torch.tensor([1], dtype=torch.int64, device=device),
+            views["qpos"][1:2].clone(),
+            views["qvel"][1:2].clone(),
+            TensorResetRandomizationPayload(kp=kp, kd=kd),
+        )
+
+        expected_gain = baseline_gain.clone()
+        expected_bias = baseline_bias.clone()
+        expected_gain[1, native_rows, 0] = kp[0]
+        expected_bias[1, native_rows, 1] = -kp[0]
+        expected_bias[1, native_rows, 2] = -kd[0]
+        torch.testing.assert_close(gainprm, expected_gain)
+        torch.testing.assert_close(biasprm, expected_bias)
+        torch.testing.assert_close(gainprm[0], baseline_gain[0])
+        torch.testing.assert_close(biasprm[0], baseline_bias[0])
     finally:
         backend.close()
 

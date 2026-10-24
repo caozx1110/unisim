@@ -356,6 +356,7 @@ class NewtonBackend(SimBackend):
         self._tensor_raw_quat_indices: Any = None
         self._tensor_control_q_indices: Any = None
         self._tensor_control_qd_indices: Any = None
+        self._public_to_native_actuator_rows: np.ndarray | None = None
         self._shape_world: np.ndarray | None = None
         self._contact_sensor_pairs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._playback_model_validated = False
@@ -1322,6 +1323,53 @@ class NewtonBackend(SimBackend):
     def get_actuator_gains(self) -> tuple[np.ndarray, np.ndarray]:
         return self._metadata.actuator_kp.copy(), self._metadata.actuator_kd.copy()
 
+    def _native_actuator_rows(self) -> np.ndarray:
+        """Map public MuJoCo actuator rows to SolverMuJoCo parameter rows."""
+        if self._public_to_native_actuator_rows is not None:
+            return self._public_to_native_actuator_rows
+        if self.num_actuators == 0:
+            self._public_to_native_actuator_rows = np.empty(0, dtype=np.intp)
+            return self._public_to_native_actuator_rows
+
+        source_array = getattr(self._solver, "mjc_actuator_ctrl_source", None)
+        mapping_array = getattr(self._solver, "mjc_actuator_to_newton_idx", None)
+        if source_array is None or mapping_array is None:
+            raise TypeError("Newton SolverMuJoCo actuator mapping is unavailable")
+        source = np.asarray(source_array.numpy(), dtype=np.int32)
+        mapping = np.asarray(mapping_array.numpy(), dtype=np.int32)
+        if source.ndim != 1 or mapping.shape != source.shape or source.size != self.num_actuators:
+            raise RuntimeError(
+                "Newton MuJoCo actuator mapping differs from the public actuator table: "
+                f"source={source.shape}, mapping={mapping.shape}, nu={self.num_actuators}"
+            )
+
+        rows: list[int] = []
+        for public_row, kind in enumerate(self._metadata.actuator_target_kinds):
+            if kind == "direct":
+                matches = np.flatnonzero((source != 0) & (mapping == public_row))
+                label = "direct"
+            else:
+                dof = int(self._metadata.actuator_target_qvel_adrs[public_row])
+                encoded = dof if kind == "position" else -(dof + 2)
+                matches = np.flatnonzero((source == 0) & (mapping == encoded))
+                label = kind
+            if matches.size != 1:
+                raise RuntimeError(
+                    f"public {label} actuator row {public_row} must map to exactly one "
+                    f"Newton actuator, got {matches.tolist()}"
+                )
+            rows.append(int(matches[0]))
+
+        result = np.asarray(rows, dtype=np.intp)
+        if result.size != self.num_actuators or not np.array_equal(
+            np.sort(result), np.arange(self.num_actuators, dtype=np.intp)
+        ):
+            raise RuntimeError(
+                f"Newton MuJoCo actuator mapping is not a permutation: {result.tolist()}"
+            )
+        self._public_to_native_actuator_rows = result
+        return result
+
     def get_tensor_execution(self) -> TensorExecution:
         if not self._tensor_lifecycle_supported:
             return TensorExecution.UNSUPPORTED
@@ -1758,16 +1806,23 @@ class NewtonBackend(SimBackend):
         rows: Any,
         randomization: TensorResetRandomizationPayload,
     ) -> None:
-        """Write selected MuJoCo-family PD gains into Newton's device model."""
+        """Write selected public-order MuJoCo-family PD gains into Newton."""
+
+        import torch
 
         warp = self._deps.warp
         gainprm = warp.to_torch(self._solver.mjw_model.actuator_gainprm)
         biasprm = warp.to_torch(self._solver.mjw_model.actuator_biasprm)
+        native_rows = torch.as_tensor(
+            self._native_actuator_rows(), device=gainprm.device, dtype=torch.int64
+        )
+        selected_rows = rows.reshape(-1, 1)
+        parameter_indices = (selected_rows, native_rows.unsqueeze(0))
         if randomization.kp is not None:
-            gainprm[rows, :, 0] = randomization.kp
-            biasprm[rows, :, 1] = -randomization.kp
+            gainprm[parameter_indices + (0,)] = randomization.kp
+            biasprm[parameter_indices + (1,)] = -randomization.kp
         if randomization.kd is not None:
-            biasprm[rows, :, 2] = -randomization.kd
+            biasprm[parameter_indices + (2,)] = -randomization.kd
         warp.synchronize_device(self._device)
 
     def set_state_tensor(
