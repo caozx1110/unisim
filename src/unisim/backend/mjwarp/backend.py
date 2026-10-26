@@ -338,6 +338,46 @@ class MjwarpBackend(SimBackend):
                 "host or select the mujoco backend."
             )
 
+        report_requested = self._allocate_continuation_storage(
+            scene,
+            num_envs,
+            sim_dt,
+            base_name=base_name,
+            push_body_name=push_body_name,
+            nconmax=nconmax,
+            njmax=njmax,
+            add_body_sensors=add_body_sensors,
+            deps=deps,
+        )
+        self._mujoco_warp.forward(self._device_model, self._device_data)
+        self._synchronize()
+        self._refresh_host_cache()
+        self._initialize_cuda_graphs(device)
+        self._capture_import_report(report_requested)
+        if self._fixed_variant_realization is not None:
+            self._fixed_variant_realization = replace(
+                self._fixed_variant_realization, report_requested=()
+            )
+
+    def _allocate_continuation_storage(
+        self,
+        scene: SceneCfg,
+        num_envs: int,
+        sim_dt: float,
+        *,
+        base_name: str | None,
+        push_body_name: str | None,
+        nconmax: int,
+        njmax: int,
+        add_body_sensors: bool,
+        deps: Any,
+    ) -> Any:
+        """Constructor-owned numeric allocations, before forward or graph setup.
+
+        The production caller enforces CUDA before reaching this cold path.
+        CPU audit carriers use these same allocations to check restore payloads
+        without executing physics or advertising a CPU MJWarp backend.
+        """
         scene_context = materialize_scene(scene, add_body_sensors=add_body_sensors)
         self._scene_cleanup_handle = scene_context.cleanup_handle
         self.scene_model_file = scene_context.diagnostic_model_file
@@ -531,15 +571,7 @@ class MjwarpBackend(SimBackend):
         self._qvel_cache.fill(0.0)
         self._upload(self._device_data.qpos, self._qpos_cache)
         self._upload(self._device_data.qvel, self._qvel_cache)
-        self._mujoco_warp.forward(self._device_model, self._device_data)
-        self._synchronize()
-        self._refresh_host_cache()
-        self._initialize_cuda_graphs(device)
-        self._capture_import_report(report_requested)
-        if self._fixed_variant_realization is not None:
-            self._fixed_variant_realization = replace(
-                self._fixed_variant_realization, report_requested=()
-            )
+        return report_requested
 
     def _initialize_entities(self, scene: SceneCfg) -> None:
         from unisim.mjcf_compiler import _layout_without_geoms, compile_scene_layout
@@ -1699,6 +1731,20 @@ class MjwarpBackend(SimBackend):
         if self._reset_scratch_capacity == 0 or self._reset_scratch_data is not None:
             return
 
+        self._allocate_reset_scratch_storage()
+        data = self._reset_scratch_data
+        # Warm dynamically specialized reset/forward kernels before capture;
+        # compiling or allocating from inside a CUDA capture is unsupported.
+        self._mujoco_warp.reset_data(
+            self._device_model, data, reset=self._reset_scratch_mask_device
+        )
+        self._upload(data.qpos, self._reset_scratch_qpos_staging)
+        self._upload(data.qvel, self._reset_scratch_qvel_staging)
+        self._mujoco_warp.forward(self._device_model, data)
+        self._synchronize()
+
+    def _allocate_reset_scratch_storage(self) -> None:
+        """Allocate the cold reset carrier; warming belongs to the CUDA caller."""
         capacity = self._reset_scratch_capacity
         data = self._mujoco_warp.make_data(
             self._cpu_model,
@@ -1720,14 +1766,6 @@ class MjwarpBackend(SimBackend):
         self._reset_scratch_qvel_staging = qvel
         self._reset_scratch_sensor_storage = sensor_storage
         self._reset_scratch_sensor_cache = sensor_cache
-
-        # Warm dynamically specialized reset/forward kernels before capture;
-        # compiling or allocating from inside a CUDA capture is unsupported.
-        self._mujoco_warp.reset_data(self._device_model, data, reset=reset_mask)
-        self._upload(data.qpos, qpos)
-        self._upload(data.qvel, qvel)
-        self._mujoco_warp.forward(self._device_model, data)
-        self._synchronize()
 
     def _initialize_cuda_graphs(self, device: Any) -> None:
         """Capture fixed-address device operations or retain the eager fallback.

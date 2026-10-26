@@ -168,6 +168,50 @@ def export_continuation_state(backend: Any) -> dict[str, Any]:
     }
 
 
+def stage_array_payload(
+    arrays: Mapping[str, Any],
+    values: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    array_type: Any,
+) -> list[tuple[Any, np.ndarray]]:
+    """Validate numeric payload against constructor-owned allocations.
+
+    No arrays are allocated from snapshot shapes. This shared core accepts real
+    CPU native carriers for byte audits without claiming CUDA graph validation.
+    Identity, synchronization and fault ownership remain with the caller.
+    """
+    if not isinstance(values, Mapping) or not isinstance(metadata, Mapping):
+        raise ValueError("MJWarp continuation arrays and metadata must be mappings")
+    if set(values) != set(arrays) or set(metadata) != set(arrays):
+        raise ValueError("MJWarp continuation array inventory mismatch")
+    for name, target in arrays.items():
+        value = values[name]
+        if metadata[name] != _metadata(target, array_type):
+            raise ValueError(f"MJWarp continuation native layout mismatch: {name}")
+        if not isinstance(value, np.ndarray) or value.dtype.hasobject:
+            raise ValueError(f"MJWarp continuation requires numeric NumPy arrays: {name}")
+        # A single native field is downloaded at a time, never a second complete
+        # backend snapshot. No data writes happen during this validation phase.
+        reference = target if isinstance(target, np.ndarray) else target.numpy()
+        if value.shape != reference.shape or value.dtype != reference.dtype:
+            raise ValueError(f"MJWarp continuation storage layout mismatch: {name}")
+        if isinstance(target, np.ndarray) and not target.flags.writeable:
+            if target.tobytes() != value.tobytes():
+                raise ValueError(f"MJWarp continuation immutable host array mismatch: {name}")
+        del reference
+    return [(target, values[name]) for name, target in arrays.items()]
+
+
+def restore_staged_arrays(staged: list[tuple[Any, np.ndarray]]) -> None:
+    """Apply a validated payload without replacing any constructor allocation."""
+    for target, value in staged:
+        if isinstance(target, np.ndarray):
+            if target.flags.writeable:
+                np.copyto(target, value)
+        else:
+            target.assign(value)
+
+
 def import_continuation_state(backend: Any, state: Mapping[str, Any]) -> None:
     """Validate the entire payload before copying into existing native allocations."""
     _require_supported(backend)
@@ -185,27 +229,14 @@ def import_continuation_state(backend: Any, state: Mapping[str, Any]) -> None:
         raise ValueError("Invalid MJWarp continuation schema or fields")
     if state["identity"] != _identity(backend):
         raise ValueError("MJWarp continuation model, runtime, graph or substep identity mismatch")
+    _import_continuation_payload(backend, state)
+
+
+def _import_continuation_payload(backend: Any, state: Mapping[str, Any]) -> None:
+    """Shared numeric core after the production identity and capability gates."""
     arrays = _arrays(backend)
     values, metadata = state["arrays"], state["array_metadata"]
-    if not isinstance(values, Mapping) or not isinstance(metadata, Mapping):
-        raise ValueError("MJWarp continuation arrays and metadata must be mappings")
-    if set(values) != set(arrays) or set(metadata) != set(arrays):
-        raise ValueError("MJWarp continuation array inventory mismatch")
-    for name, target in arrays.items():
-        value = values[name]
-        if metadata[name] != _metadata(target, backend._warp.array):
-            raise ValueError(f"MJWarp continuation native layout mismatch: {name}")
-        if not isinstance(value, np.ndarray) or value.dtype.hasobject:
-            raise ValueError(f"MJWarp continuation requires numeric NumPy arrays: {name}")
-        # A single native field is downloaded at a time, never a second complete
-        # backend snapshot. No data writes happen during this validation phase.
-        reference = target if isinstance(target, np.ndarray) else target.numpy()
-        if value.shape != reference.shape or value.dtype != reference.dtype:
-            raise ValueError(f"MJWarp continuation storage layout mismatch: {name}")
-        if isinstance(target, np.ndarray) and not target.flags.writeable:
-            if target.tobytes() != value.tobytes():
-                raise ValueError(f"MJWarp continuation immutable host array mismatch: {name}")
-        del reference
+    staged = stage_array_payload(arrays, values, metadata, backend._warp.array)
     flags = state["flags"]
     if not isinstance(flags, Mapping) or set(flags) != set(_FLAGS):
         raise ValueError("MJWarp continuation flag inventory mismatch")
@@ -224,12 +255,7 @@ def import_continuation_state(backend: Any, state: Mapping[str, Any]) -> None:
         raise ValueError("MJWarp continuation byte accounting mismatch")
     backend._synchronize()
     try:
-        for name, target in arrays.items():
-            if isinstance(target, np.ndarray):
-                if target.flags.writeable:
-                    np.copyto(target, values[name])
-            else:
-                target.assign(values[name])
+        restore_staged_arrays(staged)
         backend._synchronize()
         for name in _FLAGS:
             setattr(backend, name, flags[name])
