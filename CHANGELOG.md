@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add optional `SimBackend.export_continuation_state()` / `import_continuation_state()` with fail-closed defaults. The local MJWarp source implementation preserves complete native Data, randomizable Model fields, adapter caches and substep histories in version-bound CPU snapshots and restores existing allocations without reset/forward. Other adapters remain unsupported. CPU validation is separate from the required new-process CUDA continuation acceptance; see `docs/en/continuation-checkpoints.md` and its Chinese counterpart.
+
 - Restore the optional public `PhysicsStepTensorDataView` and `SimBackend.bind_physics_step_tensor_data()` contract for SONIC's unchanged substep rewards. MJWarp samples final-substep joint finite differences and signed normal-only world contact-force history on its native Warp stream, before publishing the asynchronous step completion receipt. Selected integer, host commit, and full-width mask resets clear only affected sample rows. This source port derives from SONIC fork commits `4f0a058f1e47` and `10fb1b3a68b8` (Apache-2.0); it is not a claim that released 2.1.1 included the interface. CPU contract/kernel coverage and CUDA oracle fixtures are maintained separately; CPU results do not establish GPU runtime support.
 
 ## 2.1.1 - 2026-10-22

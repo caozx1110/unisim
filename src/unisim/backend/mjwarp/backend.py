@@ -3935,6 +3935,18 @@ class MjwarpBackend(SimBackend):
         """Return the snapshot layout, including the mocap tail when present."""
         return PhysicsStateLayout(nq=self._nq, nv=self._nv, nmocap=self._nmocap)
 
+    def export_continuation_state(self) -> Mapping[str, Any]:
+        """Snapshot native and adapter state without resetting or forwarding physics."""
+        from .continuation import export_continuation_state
+
+        return export_continuation_state(self)
+
+    def import_continuation_state(self, state: Mapping[str, Any]) -> None:
+        """Restore fixed-address arrays; existing CUDA graphs and aliases stay valid."""
+        from .continuation import import_continuation_state
+
+        import_continuation_state(self, state)
+
     def get_physics_state(self) -> np.ndarray:
         self._require_entity_healthy()
         self._sync_host_cache()

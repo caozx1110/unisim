@@ -1285,6 +1285,24 @@ class SimBackend(abc.ABC):
     _play_capabilities = PlayCapabilities()
     backend_type: str
 
+    def export_continuation_state(self) -> Mapping[str, Any]:
+        """Return detached CPU state sufficient to resume this backend at a step boundary.
+
+        This optional, adapter-versioned checkpoint contract is distinct from playback
+        state. The caller must stop stepping and retain its own task/RNG/collector state.
+        Unsupported adapters fail closed; no generalized-position fallback is allowed.
+        """
+        raise NotImplementedError(f"{self.backend_type} does not support continuation checkpoints")
+
+    def import_continuation_state(self, state: Mapping[str, Any]) -> None:
+        """Restore a compatible continuation checkpoint into an initialized backend.
+
+        The adapter validates compatibility before mutation and preserves live tensor
+        aliases. A partial native-copy failure faults the backend. This operation must
+        not reset or advance simulation, or consume task RNG.
+        """
+        raise NotImplementedError(f"{self.backend_type} does not support continuation checkpoints")
+
     def get_scene_layout(self) -> CompiledSceneLayout:
         """Return the immutable materialized public addresses, never native handles."""
         raise NotImplementedError(f"{self.backend_type} does not expose a scene layout")
