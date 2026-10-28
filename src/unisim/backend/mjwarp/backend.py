@@ -47,6 +47,7 @@ from unisim.backend.base import (
 from unisim.backend.model_index import CompiledModelIndex
 from unisim.dr._host import interval_payload_to_host, reset_payload_to_host_dict
 from unisim.dr.types import (
+    INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA,
     INTERVAL_TERM_BODY_FORCE,
     INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
     INTERVAL_TERM_BODY_TORQUE,
@@ -3143,7 +3144,8 @@ class MjwarpBackend(SimBackend):
             supported_interval_terms=frozenset(
                 {INTERVAL_TERM_BODY_FORCE, INTERVAL_TERM_BODY_TORQUE}
                 | (
-                    {INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA}
+                    {INTERVAL_TERM_BODY_LINEAR_VELOCITY_DELTA,
+                     INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA}
                     if self._interval_root_velocity_qvel_ids is not None
                     else set()
                 )
@@ -3649,9 +3651,7 @@ class MjwarpBackend(SimBackend):
         super().apply_interval_randomization(plan)
 
     def _interval_term_handlers(self) -> dict[str, Callable[[IntervalTermOp], None]]:
-        # Built lazily once.  The angular-velocity term intentionally has no
-        # handler and fails closed in the base dispatch (previously it was
-        # silently dropped).
+        # Built lazily once; both velocity terms require the configured free root.
         if self._interval_term_handler_cache is None:
             self._interval_term_handler_cache = {
                 INTERVAL_TERM_PUSH: lambda op: self.push_robots(
@@ -3669,6 +3669,13 @@ class MjwarpBackend(SimBackend):
                     lambda op: self._apply_body_linear_velocity_delta(
                         interval_payload_to_host(require_op_body_ids(op)),
                         interval_payload_to_host(op.payload),
+                    )
+                ),
+                INTERVAL_TERM_BODY_ANGULAR_VELOCITY_DELTA: (
+                    lambda op: self._apply_body_linear_velocity_delta(
+                        interval_payload_to_host(require_op_body_ids(op)),
+                        interval_payload_to_host(op.payload),
+                        angular=True,
                     )
                 ),
             }
@@ -3760,6 +3767,8 @@ class MjwarpBackend(SimBackend):
         self,
         body_ids: np.ndarray,
         velocity_delta: np.ndarray,
+        *,
+        angular: bool = False,
     ) -> None:
         """Apply a row-selective world-frame velocity kick to the configured free root."""
         qvel_ids = self._interval_root_velocity_qvel_ids
@@ -3822,13 +3831,28 @@ class MjwarpBackend(SimBackend):
         import torch
 
         qvel_columns = np.asarray(qvel_ids, dtype=np.intp)
+        layout = None
+        if angular:
+            layout = self.get_root_state_layout(self._base_name)
+            qvel_columns = np.asarray(layout.qvel_indices[3:6], dtype=np.intp)
         deltas = velocity_delta[active_rows, 0, :].astype(np.float32)
         qvel_view = self._stable_tensor_field_view("qvel")
         rows_tensor = torch.as_tensor(active_rows, dtype=torch.long, device=qvel_view.device)
         columns_tensor = torch.as_tensor(qvel_columns, dtype=torch.long, device=qvel_view.device)
-        qvel_view[rows_tensor[:, None], columns_tensor[None, :]] += torch.as_tensor(
-            deltas, device=qvel_view.device
-        )
+        delta_tensor = torch.as_tensor(deltas, device=qvel_view.device)
+        if angular:
+            # MuJoCo free-root angular qvel is body-local; the public interval
+            # contract is world-frame. Rotate with the live wxyz root quaternion.
+            qpos_view = self._stable_tensor_field_view("qpos")
+            quat_columns = torch.as_tensor(
+                layout.qpos_indices[3:7], dtype=torch.long, device=qvel_view.device
+            )
+            quat = qpos_view[rows_tensor[:, None], quat_columns[None, :]]
+            inverse_xyz = -quat[:, 1:]
+            twice_cross = 2.0 * torch.linalg.cross(inverse_xyz, delta_tensor)
+            delta_tensor = (delta_tensor + quat[:, :1] * twice_cross
+                            + torch.linalg.cross(inverse_xyz, twice_cross))
+        qvel_view[rows_tensor[:, None], columns_tensor[None, :]] += delta_tensor
         self._execute_device_forward()
         self._tracked_body_state_dirty = False
         self._host_cache_stale = True
